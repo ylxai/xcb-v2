@@ -77,8 +77,17 @@ private:
     std::string m_poolLabel;
     mutable std::mutex m_eventsMutex;
     std::deque<std::string> m_events;
-    std::unique_ptr<Dashboard> m_dash;  // FTXUI dashboard
+    // FTXUI dashboard. Owned by the stats thread (runFtxuiLoop), read by
+    // stop(). Guarded by m_dashMutex; never reset before ~Miner() so a
+    // pointer read under the lock stays valid (requestStop() on an exited
+    // loop is a safe no-op).
+    std::unique_ptr<Dashboard> m_dash;
+    mutable std::mutex m_dashMutex;
     std::chrono::steady_clock::time_point m_lastHrReport;
+
+    // Stats/UI thread (detached before; joinable so stop()/~Miner() can wait
+    // for it instead of racing with its destruction of m_dash).
+    std::thread m_statsThread;
 
     // Benchmark mode
     bool m_benchmark = false;

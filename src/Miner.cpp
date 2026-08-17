@@ -174,16 +174,22 @@ void Miner::start(const MinerConfig& cfg) {
     // --- Start worker threads (job is available / will arrive shortly) ---
     for (auto& w : m_workers) w->thread = std::thread(&Miner::workerLoop, this, w.get());
 
-    // --- Stats printer thread ---
-    std::thread statsThread([this]() { statsLoop(); });
-    statsThread.detach();
+    // --- Stats printer thread (joinable: stop()/~Miner() join it) ---
+    m_statsThread = std::thread([this]() { statsLoop(); });
 }
 
 void Miner::stop() {
-    // Ask the FTXUI dashboard to leave fullscreen (thread-safe).
-    if (m_dash) m_dash->requestStop();
+    // Ask the FTXUI dashboard to leave fullscreen (thread-safe). The pointer
+    // is read under m_dashMutex and never reset, so it stays valid; the
+    // stats thread is joined below before ~Miner() destroys the object.
+    Dashboard* dash = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_dashMutex);
+        dash = m_dash.get();
+    }
+    if (dash) dash->requestStop();
     if (m_dashboard) {
-        // The detached stats thread may not have woken up yet.
+        // The stats thread may not have woken up yet.
         printf("\x1b[?25h\n");
         fflush(stdout);
     }
@@ -217,6 +223,11 @@ void Miner::stop() {
         randomx_release_cache(m_cache);
         m_cache = nullptr;
     }
+
+    // Wait for the stats/UI thread (and thus the FTXUI dashboard loop) to
+    // wind down before returning, so ~Miner() never destroys m_dash while
+    // the stats thread is still inside Dashboard::run().
+    if (m_statsThread.joinable()) m_statsThread.join();
 }
 
 std::string Miner::finalSummary() const { return m_stats.finalSummary(); }
@@ -403,10 +414,15 @@ void Miner::runFtxuiLoop() {
     };
     dc.onQuit = [this] { m_running.store(false, std::memory_order_relaxed); };
 
-    m_dash = std::make_unique<Dashboard>(m_stats, std::move(dc));
+    {
+        std::lock_guard<std::mutex> lock(m_dashMutex);
+        m_dash = std::make_unique<Dashboard>(m_stats, std::move(dc));
+    }
     logEvent("dashboard: 1/2/3 tab, q quit");
     m_dash->run();  // blocks; refresh + hashrate reporting happen inside
-    m_dash.reset();
+    // Note: m_dash is intentionally NOT reset here. stop() may read the
+    // pointer (under m_dashMutex) and call requestStop() on it; keeping the
+    // object alive until ~Miner() guarantees that read stays valid.
 
     if (m_benchmark && m_benchmarkDone.load(std::memory_order_relaxed) >= m_benchmarkNonces) {
         reportBenchmark();
