@@ -107,7 +107,7 @@ void Miner::start(const MinerConfig& cfg) {
 
     initDataset();
 
-    // --- Worker threads ---
+    // --- Build workers (VMs + statsIdx ready, threads NOT started yet) ---
     int statsIdx = 0;
     for (int i = 0; i < m_numThreads; i++) {
         auto w = std::make_unique<Worker>();
@@ -118,7 +118,6 @@ void Miner::start(const MinerConfig& cfg) {
             continue;
         }
         w->statsIdx = statsIdx++;
-        w->thread = std::thread(&Miner::workerLoop, this, w.get());
         m_workers.push_back(std::move(w));
     }
     if (m_workers.empty()) {
@@ -129,6 +128,9 @@ void Miner::start(const MinerConfig& cfg) {
     m_stats.setWorkers(statsIdx);
     for (auto& w : m_workers) m_stats.worker(w->statsIdx).running = true;
 
+    // Workers must only start once setWorkers() has populated the stats array
+    // AND m_running is true, otherwise a worker can touch Stats::worker(idx)
+    // (e.g. running=false on exit) before the vector exists -> out_of_range.
     m_running.store(true);
     if (m_uiMode != UiMode::Log)
         logEvent("miner started, " + std::to_string(m_workers.size()) + " threads");
@@ -168,6 +170,9 @@ void Miner::start(const MinerConfig& cfg) {
         m_client->connect();
         lg::info("miner", "Stratum client started");
     }
+
+    // --- Start worker threads (job is available / will arrive shortly) ---
+    for (auto& w : m_workers) w->thread = std::thread(&Miner::workerLoop, this, w.get());
 
     // --- Stats printer thread ---
     std::thread statsThread([this]() { statsLoop(); });
