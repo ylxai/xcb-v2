@@ -58,9 +58,9 @@ Semua env vars dibaca langsung (precedence ≥ config file & CLI):
 
 ### Persyaratan
 - Linux x86_64 dengan **AES-NI + AVX2** (build memakai `-march=x86-64-v3`) atau aarch64 dengan crypto extensions
-- CMake ≥ 3.10
+- CMake ≥ 3.10 (versi sistem yang lebih baru lebih baik — CMake ≥ 3.16 disarankan)
 - Compiler C++17 (g++ ≥ 8 atau clang ≥ 7)
-- OpenSSL dev headers
+- OpenSSL dev headers (di-`find_package` oleh CMakeLists — wajib ada meski kode tidak memanggilnya)
 
 ### Build
 ```bash
@@ -73,6 +73,18 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 # Binary: build/miner-saya (stripped)
 ```
+
+> Submodule **harus** di-init dulu sebelum `cmake ..` — kalau belum, CMake gagal
+> dengan `RandomY not found` / `FTXUI not found`.
+
+### Verifikasi Build
+```bash
+./build/miner-saya --selftest        # cek hash SHA3-512 vs vektor NIST/OpenSSL (30 cek)
+./build/miner-saya --benchmark 10000 # smoke test tanpa pool, lalu Ctrl+C
+```
+
+`--selftest` wajib lolos sebelum mining: ia memverifikasi implementasi keccak
+hot-path (`len%72==71` dan kasus edge lain yang pernah salah di picosha3).
 
 ---
 
@@ -110,19 +122,16 @@ light=true
 
 Secara default di terminal (TTY) miner menampilkan **dashboard FTXUI** full-screen yang hidup:
 
-```
-┌───────────────────────────────────────────────────────────────┐
-│ miner-saya v2 | RandomY | pool sg.catch... | wallet XCB... │
-│ diff 1.2M | job abc123 | uptime 00:12:34                     │
-├───────────────────────────────────────────────────────────────┤
-│ 1 Overview   2 Threads   3 Shares      [1/2/3] switch tab [q] quit │
-│  HASHRATE                                                      │
-│  cur 0.42 H/s  avg 0.40 H/s  best 0.50 H/s                    │
-│  ▁▂▃▅▇█▇▅▃▂ (sparkline 48 detik)                              │
-│  THREADS  T0 0.21 H/s total 1.2M A 10 R 0 W 0 ...              │
-│  SHARES   A 20 (100%) R 0 W 0 found 5 | EVENTS ...             │
-└───────────────────────────────────────────────────────────────┘
-```
+| Tab Overview — benchmark progress + hashrate | Tab Threads — rate & share per worker |
+|-----------------------------------------------|---------------------------------------|
+| ![Overview](docs/screenshots/dashboard-overview.png) | ![Threads](docs/screenshots/dashboard-threads.png) |
+
+| Tab Shares — statistik share + event + rate history |
+|-----------------------------------------------------|
+| ![Shares](docs/screenshots/dashboard-shares.png) |
+
+> Screenshot diambil dari mode `--benchmark` (tanpa pool). Di mode mining biasa,
+> tab Overview menampilkan **sparkline hashrate live** (48 detik) alih-alih gauge benchmark.
 
 **Keyboard:**
 
@@ -278,6 +287,8 @@ xcb/
 ├── CMakeLists.txt           # Build system (-march=x86-64-v3 / armv8-a+crypto, -O3, LTO, stripped)
 ├── Dockerfile               # Multi-stage: builder → runtime ~32MB, user non-root
 ├── .gitlab-ci.yml           # CI Puzl RunMyJob (test 2m saat push, mine 55m/jam saat schedule)
+├── docs/
+│   └── screenshots/         # Screenshot dashboard (README)
 ├── k8s/
 │   └── deployment.yaml      # Deployment + Secret contoh
 ├── external/
