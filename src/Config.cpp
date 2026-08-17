@@ -141,19 +141,21 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         if (cfg.threads <= 0)
             cfg.threads = std::max(1, static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN)));
         applyEnvFlags();
-        std::cout << "[Config] Using env: POOL=" << envPool << " WALLET=" << envWallet << std::endl;
-        return cfg;  // Skip file parsing if env vars present
+        std::cout << "[Config] Using env: POOL=" << envPool << " WALLET=" << envWallet
+                  << std::endl;
+    } else {
+        // 2. Try loading pool.cfg (skipped when env WALLET+POOL are set)
+        cfg = loadFile("pool.cfg");
+        if (cfg.pools.empty()) cfg = loadFile("/miner/pool.cfg");
+        if (cfg.pools.empty()) cfg = loadFile("~/xcb/pool.cfg");
+        
+        // 3. Apply env overrides on top of the file (precedence: file < env < CLI).
+        applyEnvFlags();
     }
     
-    // 2. Try loading pool.cfg
-    cfg = loadFile("pool.cfg");
-    if (cfg.pools.empty()) cfg = loadFile("/miner/pool.cfg");
-    if (cfg.pools.empty()) cfg = loadFile("~/xcb/pool.cfg");
-    
-    // 3. Apply env overrides on top of the file (precedence: file < env < CLI).
-    applyEnvFlags();
-    
-    // Parse CLI args (override file & env)
+    // 4. Parse CLI args (override file & env). Always runs, even with env
+    //    pools, so flags like --selftest/--benchmark/-t/--light still work
+    //    (e.g. inside the docker image where WALLET/POOL are always set).
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         
