@@ -195,18 +195,19 @@ void Miner::stop() {
             return;
         }
     }
-    m_submitter.stop();  // flush queued shares before killing the connection
+    // Stop workers first so no new shares are pushed, then flush the submit
+    // queue while the connection is still alive.
+    for (auto& w : m_workers) {
+        if (w->thread.joinable()) w->thread.join();
+        if (w->vm) randomx_destroy_vm(w->vm);
+    }
+    m_submitter.stop();  // drain remaining queued shares
+    m_workers.clear();
 
     if (m_client) {
         m_client->disconnect();
         m_client.reset();
     }
-
-    for (auto& w : m_workers) {
-        if (w->thread.joinable()) w->thread.join();
-        if (w->vm) randomx_destroy_vm(w->vm);
-    }
-    m_workers.clear();
 
     if (m_dataset) {
         randomx_release_dataset(m_dataset);
