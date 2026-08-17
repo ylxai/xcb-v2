@@ -14,6 +14,17 @@ add_subdirectory(external/RandomY EXCLUDE_FROM_ALL)
 include_directories(external/RandomY/src)
 
 # ============================================================
+# FTXUI - terminal TUI library (dashboard, dari submodule)
+# ============================================================
+set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(FTXUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(FTXUI_BUILD_MODULES OFF CACHE BOOL "" FORCE)
+set(FTXUI_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(FTXUI_QUIET ON CACHE BOOL "" FORCE)
+add_subdirectory(external/FTXUI)
+
+# ============================================================
 # Cari dependency
 # ============================================================
 find_package(Threads REQUIRED)
@@ -27,12 +38,22 @@ set(MINER_SOURCES
     src/StratumClient.cpp
     src/Miner.cpp
     src/Config.cpp
+    src/Log.cpp
+    src/Stats.cpp
+    src/Submitter.cpp
+    src/Sha3_512.cpp
+    src/Dashboard.cpp
 )
 
 set(MINER_HEADERS
     src/StratumClient.hpp
     src/Miner.hpp
     src/Config.hpp
+    src/Log.hpp
+    src/Stats.hpp
+    src/Submitter.hpp
+    src/Sha3_512.hpp
+    src/Dashboard.hpp
 )
 
 # ============================================================
@@ -43,6 +64,7 @@ add_executable(miner-saya ${MINER_SOURCES} ${MINER_HEADERS})
 target_link_libraries(miner-saya
     PRIVATE
         randomx               # RandomY library
+        ftxui::ftxui          # FTXUI dashboard (TUI)
         pthread
         OpenSSL::SSL
         OpenSSL::Crypto

@@ -1,10 +1,11 @@
 #include "Config.hpp"
-#include <iostream>
-#include <fstream>
-#include <sstream>
+#include <algorithm>
 #include <cstring>
-#include <unistd.h>
+#include <fstream>
+#include <iostream>
 #include <pwd.h>
+#include <sstream>
+#include <unistd.h>
 
 static std::string expandHome(const std::string& path) {
     if (path.empty() || path[0] != '~') return path;
@@ -99,20 +100,28 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     const char* envThreads = getenv("THREADS");
     const char* envFullMem = getenv("FULL_MEM");
     const char* envLargePages = getenv("LARGE_PAGES");
-    
-    // FULL_MEM defaults to true; set "0" or "false" to disable
-    if (envFullMem && envFullMem[0] != '\0') {
-        std::string fm = envFullMem;
-        cfg.fullMem = (fm != "0" && fm != "false" && fm != "no");
-    }
-    
-    // LARGE_PAGES defaults to true; set "0" or "false" to disable
-    // (containers without hugepages/mlock must disable or cache alloc fails)
-    if (envLargePages && envLargePages[0] != '\0') {
-        std::string lp = envLargePages;
-        cfg.largePages = (lp != "0" && lp != "false" && lp != "no");
-    }
-    
+    const char* envReportHr = getenv("REPORT_HASHRATE");
+    const char* envPollMs = getenv("POLL_MS");
+    const char* envBench = getenv("BENCHMARK");
+
+    // Env feature flags, applied in both the env-pool and file-pool paths.
+    auto applyEnvFlags = [&]() {
+        if (envFullMem && envFullMem[0] != '\0') {
+            std::string fm = envFullMem;
+            cfg.fullMem = (fm != "0" && fm != "false" && fm != "no");
+        }
+        if (envLargePages && envLargePages[0] != '\0') {
+            std::string lp = envLargePages;
+            cfg.largePages = (lp != "0" && lp != "false" && lp != "no");
+        }
+        if (envReportHr && envReportHr[0] != '\0') {
+            std::string rh = envReportHr;
+            cfg.reportHashrate = (rh != "0" && rh != "false" && rh != "no");
+        }
+        if (envPollMs && envPollMs[0] != '\0') cfg.pollMs = std::max(200, std::stoi(envPollMs));
+        if (envBench && envBench[0] != '\0') cfg.benchmarkNonces = std::stoull(envBench);
+    };
+
     if (envWallet && envPool) {
         PoolConfig p;
         std::string poolStr = envPool;
@@ -131,6 +140,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         // Default threads = CPU cores (same as file/CLI path)
         if (cfg.threads <= 0)
             cfg.threads = std::max(1, static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN)));
+        applyEnvFlags();
         std::cout << "[Config] Using env: POOL=" << envPool << " WALLET=" << envWallet << std::endl;
         return cfg;  // Skip file parsing if env vars present
     }
@@ -140,7 +150,10 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     if (cfg.pools.empty()) cfg = loadFile("/miner/pool.cfg");
     if (cfg.pools.empty()) cfg = loadFile("~/xcb/pool.cfg");
     
-    // Parse CLI args (override file)
+    // 3. Apply env overrides on top of the file (precedence: file < env < CLI).
+    applyEnvFlags();
+    
+    // Parse CLI args (override file & env)
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         
@@ -183,15 +196,36 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         } else if (arg == "--no-jit") {
             cfg.useJIT = false;
             
+        } else if (arg == "-R" || arg == "--report-hashrate") {
+            cfg.reportHashrate = true;
+            
+        } else if (arg == "--selftest") {
+            cfg.selftest = true;
+            
+        } else if (arg == "--benchmark" && i + 1 < argc) {
+            cfg.benchmarkNonces = std::stoull(argv[++i]);
+            
+        } else if (arg.compare(0, 5, "--ui=") == 0) {
+            cfg.ui = arg.substr(5);
+            
+        } else if (arg == "--ui" && i + 1 < argc) {
+            cfg.ui = argv[++i];
+            
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: miner-saya [options]\n"
-                      << "  -o host:port     Pool address\n"
-                      << "  -u wallet[.worker]  Wallet address\n"
-                      << "  -p password      Pool password\n"
-                      << "  -t N             Thread count\n"
-                      << "  --light          Use light dataset (no full mem)\n"
-                      << "  --no-jit         Disable JIT\n"
-                      << "  Config file: pool.cfg\n";
+                      << "  -o host:port          Pool address\n"
+                      << "  -u wallet[.worker]    Wallet address\n"
+                      << "  -p password           Pool password\n"
+                      << "  -t N                  Thread count\n"
+                      << "  -R, --report-hashrate Submit hashrate to pool every 60s\n"
+                      << "  --benchmark N         Benchmark N nonces (no pool)\n"
+                      << "  --selftest            Verify SHA3-512 implementation, then exit\n"
+                      << "  --ui=MODE             Display: auto|ftxui|ansi|log (default auto)\n"
+                      << "  --light               Use light dataset (no full mem)\n"
+                      << "  --no-jit              Disable JIT\n"
+                      << "  Config file: pool.cfg\n"
+                      << "  Env: WALLET POOL WORKER THREADS FULL_MEM LARGE_PAGES LOG_LEVEL\n"
+                      << "       LOG_FORMAT REPORT_HASHRATE POLL_MS BENCHMARK\n";
             exit(0);
         }
     }

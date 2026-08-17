@@ -1,13 +1,14 @@
 # miner-saya — Core Coin (XCB) RandomY Miner
 
 Miner C++ pribadi untuk **Core Coin (XCB)** menggunakan algoritma **RandomY** (fork RandomX v1.2.1).
-Dibangun dari nol — **zero dev fee**, **zero dependensi eksternal** selain RandomY library.
+Dibangun dari nol — **zero dev fee**, dependensi eksternal hanya RandomY + FTXUI.
 
 - **Zero dev fee** — semua hash 100% ke wallet yang dikonfigurasi, tidak ada switch wallet
 - **ETHPROXY protocol** (`eth_submitLogin` / `eth_getWork` / `eth_submitWork`) untuk pool catchthatrabbit
 - **Light mode** (256MB cache) atau **full mode** (~2.6GB dataset), JIT compiler, huge pages auto-detect
 - **CPU affinity + nice priority** — thread di-pin per core
 - **Multi-pool config file** (`pool.cfg`) — failover otomatis antar server
+- **Dashboard TUI (FTXUI)** — live stats interaktif, keyboard-driven (1/2/3 pindah tab, q quit)
 
 ---
 
@@ -65,12 +66,12 @@ Semua env vars dibaca langsung (precedence ≥ config file & CLI):
 ```bash
 git clone <url-repo> xcb
 cd xcb
-git submodule update --init --recursive   # Wajib: tarik RandomY
+git submodule update --init --recursive   # Wajib: tarik RandomY + FTXUI
 
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
-# Binary: build/miner-saya (~215KB stripped)
+# Binary: build/miner-saya (stripped)
 ```
 
 ---
@@ -101,7 +102,48 @@ light=true
 ```
 
 > Precedence: **env vars > pool.cfg > CLI flags**. `WALLET`+`POOL` env aktif = pool.cfg diabaikan.
-> Commands flag: `-o host:port`, `-u wallet[.worker]`, `-p password`, `-t N`, `--light`, `--no-jit`, `-h`.
+> Commands flag: `-o host:port`, `-u wallet[.worker]`, `-p password`, `-t N`, `--light`, `--no-jit`, `--ui=MODE`, `-h`.
+
+---
+
+## Dashboard / UI Mode
+
+Secara default di terminal (TTY) miner menampilkan **dashboard FTXUI** full-screen yang hidup:
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│ miner-saya v2 | RandomY | pool sg.catch... | wallet XCB... │
+│ diff 1.2M | job abc123 | uptime 00:12:34                     │
+├───────────────────────────────────────────────────────────────┤
+│ 1 Overview   2 Threads   3 Shares      [1/2/3] switch tab [q] quit │
+│  HASHRATE                                                      │
+│  cur 0.42 H/s  avg 0.40 H/s  best 0.50 H/s                    │
+│  ▁▂▃▅▇█▇▅▃▂ (sparkline 48 detik)                              │
+│  THREADS  T0 0.21 H/s total 1.2M A 10 R 0 W 0 ...              │
+│  SHARES   A 20 (100%) R 0 W 0 found 5 | EVENTS ...             │
+└───────────────────────────────────────────────────────────────┘
+```
+
+**Keyboard:**
+
+| Tombol | Aksi |
+|--------|------|
+| `1` | Tab **Overview** — hashrate cur/avg/best + sparkline + ringkasan |
+| `2` | Tab **Threads** — hashrate & share per worker |
+| `3` | Tab **Shares** — statistik share lengkap + event + rate history |
+| `q` / `x` / `Esc` | Keluar (Ctrl+C juga berfungsi) |
+
+**Mode via `--ui=`:**
+
+| Mode | Kapan | Deskripsi |
+|------|-------|-----------|
+| `auto` *(default)* | TTY | FTXUI di terminal, log line jika bukan TTY (docker/CI) |
+| `ftxui` | TTY | Paksa dashboard FTXUI |
+| `ansi` | TTY | Dashboard ANSI sederhana (redraw in-place, tanpa keyboard) |
+| `log` | di mana saja | Hanya log line (one-liner tiap 5s + detail tiap 60s) |
+
+> Mode `auto` sudah aman untuk docker/CI: tanpa TTY otomatis jatuh ke log line,
+> dan `LOG_FORMAT=json` menghasilkan satu baris JSON per sample untuk monitoring.
 
 ---
 
@@ -207,10 +249,11 @@ sudo chrt -rr 1 ./miner-saya
 
 ## Logging
 
-- **Blok `=== HASHRATE ===`** setiap 5 detik (total + per-worker)
-- **Shares accepted** — ringkasan tiap 50 share (atau per-share jika `LOG_SHARES=1`)
-- **Rejected** — selalu ditampilkan
-- **Job baru dari pool** — auto-detect header/target
+- **Non-TTY / `--ui=log`** — one-liner tiap 5 detik (`HR cur (avg) | A n R n W n | diff | pool | job`) + tabel detail tiap 60 detik
+- **Shares accepted** — per-share jika `LOG_SHARES=1`, selain itu level debug
+- **Rejected / wasted** — selalu ditampilkan (dengan alasan)
+- **`LOG_FORMAT=json`** — satu objek JSON per baris (hashrate, A/R/W, diff, pool, job) untuk docker/CI
+- **`LOG_LEVEL`** — `debug | info | warn | error` (default `info`)
 
 ---
 
@@ -238,14 +281,19 @@ xcb/
 ├── k8s/
 │   └── deployment.yaml      # Deployment + Secret contoh
 ├── external/
-│   └── RandomY/             # RandomY library (submodule, BSD 3-Clause)
+│   ├── RandomY/             # RandomY library (submodule, BSD 3-Clause)
+│   └── FTXUI/               # Terminal TUI library (submodule, MIT)
 ├── pool.cfg                 # Multi-server config (wallet + 3 pool failover)
 └── src/
-    ├── main.cpp             # Entrypoint + signal handler
+    ├── main.cpp             # Entrypoint + signal handler + selftest
     ├── Config.hpp/.cpp      # Config parser (env vars + file + CLI)
     ├── StratumClient.hpp/.cpp # ETHPROXY protocol client
-    ├── Miner.hpp/.cpp       # Thread pool, VM management, mining loop, stats
-    └── picosha3.h           # SHA3-512 (header-only, stack-based)
+    ├── Miner.hpp/.cpp       # Thread pool, VM management, mining loop
+    ├── Stats.hpp/.cpp       # Telemetri: rolling hashrate, sparkline, summary, dashboard
+    ├── Dashboard.hpp/.cpp   # TUI FTXUI full-screen (tab Overview/Threads/Shares)
+    ├── Log.hpp/.cpp         # Logger thread-safe (level, warna, JSON)
+    ├── Submitter.hpp/.cpp   # Async share submitter (bounded queue)
+    └── Sha3_512.hpp/.cpp    # SHA3-512 keccak satu-blok (hot path 40B)
 ```
 
 ---

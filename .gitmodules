@@ -1,3 +1,6 @@
 [submodule "external/RandomY"]
 	path = external/RandomY
 	url = https://github.com/core-coin/RandomY.git
+[submodule "external/FTXUI"]
+	path = external/FTXUI
+	url = https://github.com/ArthurSonzogni/FTXUI.git
