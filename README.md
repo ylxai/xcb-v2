@@ -97,6 +97,18 @@ hot-path (`len%72==71` dan kasus edge lain yang pernah salah di picosha3).
 ./miner-saya -o pool.lain.com:8008 -u wallet.worker   # override pool+wallet
 ```
 
+### Auto-setup hugepages: `./mine.sh`
+Cek CPU/RAM, set `vm.nr_hugepages` + `vm.max_map_count`, beri izin mlock (setcap), lalu jalankan miner — tanpa perlu hafal command sysctl:
+
+```bash
+./mine.sh                 # full dataset, threads = semua core
+./mine.sh --light         # hemat RAM (~256MB)
+./mine.sh --persist       # tulis /etc/sysctl.d agar hugepages tetap setelah reboot
+./mine.sh --benchmark 100000    # arg lain diteruskan ke miner
+```
+
+Idempotent: sysctl/setcap hanya dijalankan bila belum cukup. Butuh sudo sekali untuk sysctl & setcap.
+
 ### Konfigurasi `pool.cfg`
 File `pool.cfg` (cwd, `/miner/pool.cfg`, atau `~/xcb/pool.cfg` — dicek otomatis) mendukung multi-server failover:
 
@@ -244,7 +256,9 @@ Wallet disimpan sebagai **Secret** (tidak di-env image). **`THREADS` wajib = `li
 ## Optimasi untuk Mesin Sendiri
 
 ```bash
-# Huge pages (2MB)
+# Huge pages (2MB) — cukup pakai ./mine.sh (set sysctl + mlock otomatis):
+#   ./mine.sh --persist     # sekalian tahan reboot
+# Manual (kalau mau):
 sudo sysctl vm.nr_hugepages=1280
 
 # CPU performance governor
