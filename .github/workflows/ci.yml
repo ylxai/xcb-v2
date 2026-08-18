@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    name: Build + selftest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (termasuk submodule RandomY + FTXUI)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ libssl-dev
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Selftest (verifikasi SHA3-512)
+        run: ./build/miner-saya --selftest
+
+      - name: Benchmark smoke test
+        run: timeout 90 ./build/miner-saya --benchmark 1000

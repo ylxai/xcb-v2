@@ -1,5 +1,7 @@
 # miner-saya — Core Coin (XCB) RandomY Miner
 
+[![CI](https://github.com/ylxai/xcb-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/ylxai/xcb-v2/actions/workflows/ci.yml)
+
 Miner C++ pribadi untuk **Core Coin (XCB)** menggunakan algoritma **RandomY** (fork RandomX v1.2.1).
 Dibangun dari nol — **zero dev fee**, dependensi eksternal hanya RandomY + FTXUI.
 
@@ -325,5 +327,6 @@ xcb/
 
 ## Lisensi
 
-Kode sendiri — bebas digunakan untuk keperluan pribadi.
-RandomY library © RandomX contributors — BSD 3-Clause.
+Kode ini dilisensikan di bawah **MIT License** — lihat [LICENSE](LICENSE).
+RandomY library © RandomX contributors — [BSD 3-Clause](external/RandomY/LICENSE).
+FTXUI © ArthurSonzogni — [MIT](external/FTXUI/LICENSE).
