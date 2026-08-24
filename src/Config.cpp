@@ -1,5 +1,7 @@
 #include "Config.hpp"
 #include <algorithm>
+#include <cerrno>
+#include <climits>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -12,6 +14,26 @@ static std::string expandHome(const std::string& path) {
     const char* home = getenv("HOME");
     if (!home) home = getpwuid(getuid())->pw_dir;
     return std::string(home) + path.substr(1);
+}
+
+static bool parseUnsigned(const char* text, uint64_t& out) {
+    if (!text || !*text || *text == '-' || *text == '+') return false;
+    errno = 0;
+    char* end = nullptr;
+    unsigned long long value = std::strtoull(text, &end, 10);
+    if (errno == ERANGE || end == text || *end != '\0') return false;
+    out = static_cast<uint64_t>(value);
+    return true;
+}
+
+static bool parseInt(const char* text, int& out) {
+    if (!text || !*text) return false;
+    errno = 0;
+    char* end = nullptr;
+    long value = std::strtol(text, &end, 10);
+    if (errno == ERANGE || end == text || *end != '\0' || value < INT_MIN || value > INT_MAX) return false;
+    out = static_cast<int>(value);
+    return true;
 }
 
 MinerConfig Config::loadFile(const std::string& path) {
@@ -70,9 +92,11 @@ MinerConfig Config::loadFile(const std::string& path) {
             }
             pool.host = val;
         } else if (key.compare(0, 4, "port") == 0 && key.back() == ']') {
-            pool.port = static_cast<uint16_t>(std::stoul(val));
+            uint64_t parsed = 0;
+            if (parseUnsigned(val.c_str(), parsed) && parsed > 0 && parsed <= UINT16_MAX)
+                pool.port = static_cast<uint16_t>(parsed);
         } else if (key == "threads") {
-            cfg.threads = std::stoi(val);
+            int parsed = 0; if (parseInt(val.c_str(), parsed) && parsed > 0) cfg.threads = parsed;
         } else if (key == "no_jit") {
             cfg.useJIT = (val != "true" && val != "1" && val != "yes");
         } else if (key == "light") {
@@ -118,8 +142,8 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             std::string rh = envReportHr;
             cfg.reportHashrate = (rh != "0" && rh != "false" && rh != "no");
         }
-        if (envPollMs && envPollMs[0] != '\0') cfg.pollMs = std::max(200, std::stoi(envPollMs));
-        if (envBench && envBench[0] != '\0') cfg.benchmarkNonces = std::stoull(envBench);
+        int poll = 0; if (envPollMs && parseInt(envPollMs, poll)) cfg.pollMs = std::max(200, poll);
+        uint64_t bench = 0; if (envBench && parseUnsigned(envBench, bench)) cfg.benchmarkNonces = bench;
     };
 
     if (envWallet && envPool) {
@@ -128,7 +152,9 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         auto colon = poolStr.find(':');
         if (colon != std::string::npos) {
             p.host = poolStr.substr(0, colon);
-            p.port = static_cast<uint16_t>(std::stoul(poolStr.substr(colon + 1)));
+            uint64_t parsedPort = 0;
+            if (parseUnsigned(poolStr.substr(colon + 1).c_str(), parsedPort) && parsedPort > 0 && parsedPort <= UINT16_MAX)
+                p.port = static_cast<uint16_t>(parsedPort);
         } else {
             p.host = poolStr;
             p.port = 8008;
@@ -136,7 +162,8 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         p.wallet = envWallet;
         p.worker = envWorker ? envWorker : "worker";
         cfg.pools.push_back(p);
-        if (envThreads && envThreads[0] != '\0') cfg.threads = std::stoul(envThreads);
+        int parsedThreads = 0;
+        if (envThreads && parseInt(envThreads, parsedThreads) && parsedThreads > 0) cfg.threads = parsedThreads;
         // Default threads = CPU cores (same as file/CLI path)
         if (cfg.threads <= 0)
             cfg.threads = std::max(1, static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN)));
@@ -190,7 +217,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             for (auto& p : cfg.pools) p.password = argv[++i];
             
         } else if (arg == "-t" && i + 1 < argc) {
-            cfg.threads = std::stoi(argv[++i]);
+            int parsed = 0; if (parseInt(argv[++i], parsed) && parsed > 0) cfg.threads = parsed;
             
         } else if (arg == "--light") {
             cfg.fullMem = false;
@@ -205,7 +232,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             cfg.selftest = true;
             
         } else if (arg == "--benchmark" && i + 1 < argc) {
-            cfg.benchmarkNonces = std::stoull(argv[++i]);
+            uint64_t parsed = 0; if (parseUnsigned(argv[++i], parsed)) cfg.benchmarkNonces = parsed;
             
         } else if (arg.compare(0, 5, "--ui=") == 0) {
             cfg.ui = arg.substr(5);

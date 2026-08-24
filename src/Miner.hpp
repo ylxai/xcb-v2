@@ -34,7 +34,7 @@ private:
     // Display backends.
     enum class UiMode { Auto, Ftxui, Ansi, Log };
 
-    void initDataset();
+    bool initDataset();
     void workerLoop(Worker* w);
     void statsLoop();
     void runFtxuiLoop();
