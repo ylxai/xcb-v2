@@ -12,6 +12,7 @@
 #include <endian.h>
 #include <iostream>
 #include <pthread.h>
+#include <sched.h>
 #include <sstream>
 #include <sys/resource.h>
 #include <unistd.h>
@@ -105,7 +106,11 @@ void Miner::start(const MinerConfig& cfg) {
                            " LARGE_PAGES=" +
                            std::to_string((m_flags & RANDOMX_FLAG_LARGE_PAGES) != 0));
 
-    initDataset();
+    if (!initDataset()) {
+        lg::error("miner", "Dataset initialization failed; refusing to start workers");
+        stop();
+        return;
+    }
 
     // --- Build workers (VMs + statsIdx ready, threads NOT started yet) ---
     int statsIdx = 0;
@@ -237,7 +242,7 @@ std::shared_ptr<const Job> Miner::loadJob() {
     return m_job;  // shared_ptr copy: refcount keeps the snapshot alive
 }
 
-void Miner::initDataset() {
+bool Miner::initDataset() {
     // RandomY Core Coin fixed key: {'5','6','7','8','9'}
     const char key[] = {'5', '6', '7', '8', '9'};
     auto t1 = std::chrono::steady_clock::now();
@@ -246,14 +251,16 @@ void Miner::initDataset() {
         m_cache = randomx_alloc_cache(m_flags);
         if (!m_cache) {
             lg::error("miner", "Cache alloc failed (LARGE_PAGES unavailable? set LARGE_PAGES=0)");
-            return;
+            return false;
         }
         randomx_init_cache(m_cache, key, sizeof(key));
 
         m_dataset = randomx_alloc_dataset(m_flags);
         if (!m_dataset) {
             lg::error("miner", "Dataset alloc failed");
-            return;
+            randomx_release_cache(m_cache);
+            m_cache = nullptr;
+            return false;
         }
         uint32_t datasetItems = randomx_dataset_item_count();
         lg::info("miner", "Dataset items: " + std::to_string(datasetItems));
@@ -278,7 +285,7 @@ void Miner::initDataset() {
         m_cache = randomx_alloc_cache(m_flags);
         if (!m_cache) {
             lg::error("miner", "Cache alloc failed (LARGE_PAGES unavailable? set LARGE_PAGES=0)");
-            return;
+            return false;
         }
         randomx_init_cache(m_cache, key, sizeof(key));
         lg::info("miner", "Light mode — using cache (no full dataset)");
@@ -287,6 +294,7 @@ void Miner::initDataset() {
     auto t2 = std::chrono::steady_clock::now();
     auto initMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
     lg::info("miner", "Dataset ready in " + std::to_string(initMs / 1000.0) + "s");
+    return true;
 }
 
 void Miner::onNewJob(const Job& job) {
@@ -437,16 +445,30 @@ void Miner::workerLoop(Worker* w) {
     const int idx = w->statsIdx;
     constexpr int BLOCKSIZE = 32;
 
-    // Pin to a specific CPU core.
+    // Pin within the CPUs granted to this process/container, not the host CPU count.
     {
-        cpu_set_t cpuset;
-        CPU_ZERO(&cpuset);
-        int ncpus = std::max(1, static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN)));
-        CPU_SET(idx % ncpus, &cpuset);
-        pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+        cpu_set_t allowed;
+        CPU_ZERO(&allowed);
+        if (sched_getaffinity(0, sizeof(allowed), &allowed) == 0) {
+            int count = CPU_COUNT(&allowed);
+            int ordinal = 0;
+            int selected = -1;
+            for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+                if (CPU_ISSET(cpu, &allowed) && ordinal++ == idx % std::max(1, count)) {
+                    selected = cpu;
+                    break;
+                }
+            }
+            if (selected >= 0) {
+                cpu_set_t one;
+                CPU_ZERO(&one);
+                CPU_SET(selected, &one);
+                (void)pthread_setaffinity_np(pthread_self(), sizeof(one), &one);
+            }
+        }
     }
-    // Higher scheduling priority (best effort).
-    setpriority(PRIO_PROCESS, 0, -10);
+    // Higher scheduling priority is best effort; containers commonly deny it.
+    (void)setpriority(PRIO_PROCESS, 0, -10);
 
     // Stack buffers — zero heap allocation in the hot path.
     uint8_t blob[40];    // header(32) + nonce LE(8)

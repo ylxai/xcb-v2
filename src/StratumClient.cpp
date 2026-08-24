@@ -418,11 +418,17 @@ bool StratumClient::doEthGetWork() {
     job.jobId = header.substr(0, 16);
     job.header.clear();
     job.header.reserve(32);
-    for (size_t i = 0; i + 1 < header.length(); i += 2)
-        job.header.push_back(static_cast<uint8_t>(std::stoul(header.substr(i, 2), nullptr, 16)));
+    try {
+        if (header.size() != 64 || target.size() < 16) return false;
+        for (size_t i = 0; i + 1 < header.length(); i += 2)
+            job.header.push_back(static_cast<uint8_t>(std::stoul(header.substr(i, 2), nullptr, 16)));
+        job.targetInt = std::stoull(target.substr(0, 16), nullptr, 16);
+    } catch (const std::exception& e) {
+        lg::warn("stratum", std::string("Malformed eth_getWork response: ") + e.what());
+        return false;
+    }
     job.seedHex = seed;
     job.targetHex = target;
-    if (target.length() >= 16) job.targetInt = std::stoull(target.substr(0, 16), nullptr, 16);
 
     lg::debug("stratum", "New job " + job.jobId + " target " + target.substr(0, 8) + "...");
 
