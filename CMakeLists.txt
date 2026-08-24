@@ -1,4 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
+option(NO_LTO "Disable LTO (musl alpine workaround)" OFF)
+
 project(miner-saya VERSION 1.0.0 LANGUAGES CXX C ASM)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -72,12 +74,20 @@ target_link_libraries(miner-saya
 
 # Optimasi portabel per arsitektur CPU
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-    target_compile_options(miner-saya PRIVATE -march=x86-64-v3 -O3 -flto)
+    if(NOT NO_LTO)
+  target_compile_options(miner-saya PRIVATE -march=x86-64-v3 -O3 -flto)
+else()
+  target_compile_options(miner-saya PRIVATE -march=x86-64-v3 -O3)
+endif()
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
     target_compile_options(miner-saya PRIVATE -march=armv8-a+crypto -O3 -flto)
 else()
     target_compile_options(miner-saya PRIVATE -O3 -flto)
 endif()
-target_link_options(miner-saya PRIVATE -flto -s)
+if(NOT NO_LTO)
+  target_link_options(miner-saya PRIVATE -flto -s)
+else()
+  target_link_options(miner-saya PRIVATE -s)
+endif()
 
 install(TARGETS miner-saya DESTINATION bin)

@@ -37,9 +37,9 @@ test-miner:
     - if: '$CI_PIPELINE_SOURCE == "push"'
   script:
     - 'echo "=== Selftest (verifikasi hash SHA3-512) ==="'
-    - '/miner/miner-saya --selftest || true'
+    - './miner-saya --selftest || true'
     - 'echo "=== Miner test: jalan 120 detik ==="'
-    - 'timeout 120 /miner/miner-saya || true'
+    - 'timeout 120 ./miner-saya || true'
     - 'echo "=== Test selesai - logs di atas adalah bukti mining jalan ==="'
   timeout: 5m
   artifacts:
@@ -59,7 +59,7 @@ mine-full:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
   script:
     - 'echo "=== Mining 55 menit dimulai (THREADS=$THREADS pool=$POOL) ==="'
-    - 'timeout 3300 /miner/miner-saya || true'
+    - 'timeout 3300 ./miner-saya || true'
     - 'echo "=== Mining selesai (55 menit) ==="'
   timeout: 1h
   artifacts:
