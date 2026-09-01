@@ -18,6 +18,11 @@ struct MinerConfig {
     bool fullMem = true;
     bool hardAES = true;
     bool largePages = true;
+    // Auto = nilai di atas belum ditentukan user, jadi diisi dari hasil probe
+    // host (RAM tersedia / hugepages bebas). Jadi false begitu ada nilai
+    // eksplisit dari pool.cfg, env, atau CLI.
+    bool fullMemAuto = true;
+    bool largePagesAuto = true;
     bool reportHashrate = false;  // eth_submitHashrate every 60 s
     int pollMs = 1000;            // eth_getWork poll interval
     uint64_t benchmarkNonces = 0; // >0 => benchmark mode (no pool)
@@ -29,4 +34,6 @@ class Config {
 public:
     static MinerConfig parse(int argc, char* argv[]);
     static MinerConfig loadFile(const std::string& path);
+    // Isi fullMem/largePages dari kondisi host untuk field yang masih "auto".
+    static void autoDetect(MinerConfig& cfg);
 };

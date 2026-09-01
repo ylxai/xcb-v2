@@ -25,7 +25,9 @@ class Miner {
 public:
     Miner();
     ~Miner();
-    void start(const MinerConfig& cfg);
+    // false => the miner never got running (dataset/VM alloc failed). The
+    // caller must exit non-zero instead of reporting a successful no-op run.
+    bool start(const MinerConfig& cfg);
     void stop();
     bool isRunning() const { return m_running.load(); }
     std::string finalSummary() const;
@@ -34,7 +36,8 @@ private:
     // Display backends.
     enum class UiMode { Auto, Ftxui, Ansi, Log };
 
-    void initDataset();
+    // false => cache/dataset allocation failed and no VM can be created.
+    bool initDataset();
     void workerLoop(Worker* w);
     void statsLoop();
     void runFtxuiLoop();

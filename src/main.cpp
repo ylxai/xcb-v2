@@ -165,7 +165,13 @@ int main(int argc, char* argv[]) {
 
     Miner miner;
     g_miner.store(&miner);
-    miner.start(cfg);
+    if (!miner.start(cfg)) {
+        // Dataset/VM allocation failed: no worker ever ran. Exiting 0 here
+        // would let a CI smoke test pass on a miner that hashed nothing.
+        g_miner.store(nullptr);
+        lg::error("main", "Miner failed to start");
+        return 1;
+    }
 
     while (g_running.load() && miner.isRunning())
         std::this_thread::sleep_for(std::chrono::milliseconds(200));

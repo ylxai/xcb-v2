@@ -77,6 +77,7 @@ MinerConfig Config::loadFile(const std::string& path) {
             cfg.useJIT = (val != "true" && val != "1" && val != "yes");
         } else if (key == "light") {
             cfg.fullMem = (val == "false" || val == "0" || val == "no");
+            cfg.fullMemAuto = false;
         } else if (key == "no_aes") {
             cfg.hardAES = (val != "true" && val != "1" && val != "yes");
         }
@@ -109,10 +110,12 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         if (envFullMem && envFullMem[0] != '\0') {
             std::string fm = envFullMem;
             cfg.fullMem = (fm != "0" && fm != "false" && fm != "no");
+            cfg.fullMemAuto = false;
         }
         if (envLargePages && envLargePages[0] != '\0') {
             std::string lp = envLargePages;
             cfg.largePages = (lp != "0" && lp != "false" && lp != "no");
+            cfg.largePagesAuto = false;
         }
         if (envReportHr && envReportHr[0] != '\0') {
             std::string rh = envReportHr;
@@ -194,7 +197,20 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             
         } else if (arg == "--light") {
             cfg.fullMem = false;
-            
+            cfg.fullMemAuto = false;
+
+        } else if (arg == "--full-mem") {
+            cfg.fullMem = true;
+            cfg.fullMemAuto = false;
+
+        } else if (arg == "--large-pages") {
+            cfg.largePages = true;
+            cfg.largePagesAuto = false;
+
+        } else if (arg == "--no-large-pages") {
+            cfg.largePages = false;
+            cfg.largePagesAuto = false;
+
         } else if (arg == "--no-jit") {
             cfg.useJIT = false;
             
@@ -223,8 +239,13 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  --benchmark N         Benchmark N nonces (no pool)\n"
                       << "  --selftest            Verify SHA3-512 implementation, then exit\n"
                       << "  --ui=MODE             Display: auto|ftxui|ansi|log (default auto)\n"
-                      << "  --light               Use light dataset (no full mem)\n"
+                      << "  --light               Force light dataset (~256MB)\n"
+                      << "  --full-mem            Force full dataset (~2.6GB)\n"
+                      << "  --large-pages         Force hugepages on\n"
+                      << "  --no-large-pages      Force hugepages off\n"
                       << "  --no-jit              Disable JIT\n"
+                      << "  Tanpa flag di atas, FULL_MEM & LARGE_PAGES dipilih otomatis\n"
+                      << "  dari RAM tersedia / cgroup limit / hugepages bebas.\n"
                       << "  Config file: pool.cfg\n"
                       << "  Env: WALLET POOL WORKER THREADS FULL_MEM LARGE_PAGES LOG_LEVEL\n"
                       << "       LOG_FORMAT REPORT_HASHRATE POLL_MS BENCHMARK\n";
@@ -235,21 +256,125 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     // Apply wallet from file if CLI didn't override
     // (already done in loadFile)
     
-    // Validate
-    if (cfg.pools.empty()) {
+    // Validate — but only for modes that actually talk to a pool.
+    // --selftest and --benchmark never open a stratum connection, so requiring
+    // pool.cfg there breaks `miner-saya --selftest` from any directory (CI
+    // gate, docker image, k8s probe) for no reason.
+    const bool needsPool = !cfg.selftest && cfg.benchmarkNonces == 0;
+    if (needsPool) {
+        if (cfg.pools.empty()) {
             std::cerr << "[Config] No pool configured! Use -o or set in pool.cfg" << std::endl;
-        exit(1);
-    }
-    for (auto& p : cfg.pools) {
-        if (p.wallet.empty()) {
-            std::cerr << "[Config] No wallet configured! Use -u or set in pool.cfg" << std::endl;
             exit(1);
+        }
+        for (auto& p : cfg.pools) {
+            if (p.wallet.empty()) {
+                std::cerr << "[Config] No wallet configured! Use -u or set in pool.cfg" << std::endl;
+                exit(1);
+            }
         }
     }
     
     // Default threads = CPU cores
     if (cfg.threads <= 0)
         cfg.threads = std::max(1, static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN)));
-    
+
+    // 5. Isi fullMem/largePages dari kondisi host untuk yang belum di-set user.
+    autoDetect(cfg);
+
     return cfg;
+}
+
+// ============================================================
+// Auto-detect: pilih fullMem & largePages dari kondisi host
+// ============================================================
+
+// Baca satu field angka dari /proc/meminfo (satuan kB, atau jumlah halaman
+// untuk field HugePages_*). -1 kalau field tidak ada.
+// Parsing per-baris, bukan `f >> key >> val >> unit`: baris HugePages_* tidak
+// punya kolom satuan, jadi stream extraction akan menyerap key baris berikutnya.
+static long readMeminfoKb(const std::string& field) {
+    std::ifstream f("/proc/meminfo");
+    if (!f.is_open()) return -1;
+    std::string line;
+    while (std::getline(f, line)) {
+        auto colon = line.find(':');
+        if (colon == std::string::npos) continue;
+        if (line.compare(0, colon, field) != 0) continue;
+        std::istringstream iss(line.substr(colon + 1));
+        long val = 0;
+        if (iss >> val) return val;
+        return -1;
+    }
+    return -1;
+}
+
+// Baca satu integer dari file /proc atau /sys, -1 kalau gagal.
+static long readLong(const char* path) {
+    std::ifstream f(path);
+    if (!f.is_open()) return -1;
+    long v = 0;
+    if (!(f >> v)) return -1;
+    return v;
+}
+
+// Cgroup memory limit (v2 lalu v1). -1 = unlimited / tidak diketahui.
+static long cgroupLimitMb() {
+    std::ifstream v2("/sys/fs/cgroup/memory.max");
+    if (v2.is_open()) {
+        std::string s;
+        v2 >> s;
+        if (s == "max") return -1;
+        try {
+            long long bytes = std::stoll(s);
+            if (bytes > 0) return static_cast<long>(bytes / (1024 * 1024));
+        } catch (...) {
+        }
+    }
+    long v1 = readLong("/sys/fs/cgroup/memory/memory.limit_in_bytes");
+    // Nilai "unlimited" di cgroup v1 adalah angka raksasa (~2^63 dibulatkan).
+    if (v1 > 0 && v1 < (1LL << 53)) return static_cast<long>(v1 / (1024 * 1024));
+    return -1;
+}
+
+void Config::autoDetect(MinerConfig& cfg) {
+    // Selftest tidak mengalokasi dataset sama sekali — jangan buang waktu probe.
+    if (cfg.selftest) {
+        if (cfg.fullMemAuto) cfg.fullMem = false;
+        if (cfg.largePagesAuto) cfg.largePages = false;
+        return;
+    }
+
+    // --- Memori yang benar-benar bisa dipakai ---
+    long availMb = readMeminfoKb("MemAvailable");
+    availMb = (availMb > 0) ? availMb / 1024 : -1;
+    long limitMb = cgroupLimitMb();
+    // Di container, cgroup limit lebih jujur daripada MemAvailable host.
+    long usableMb = availMb;
+    if (limitMb > 0 && (usableMb < 0 || limitMb < usableMb)) usableMb = limitMb;
+
+    // --- Hugepages bebas ---
+    long hpFree = readMeminfoKb("HugePages_Free");
+    long hpSizeKb = readMeminfoKb("Hugepagesize");
+    if (hpSizeKb <= 0) hpSizeKb = 2048;
+
+    if (cfg.fullMemAuto) {
+        // Mode full butuh dataset 2080MB + cache 256MB + overhead; pakai 3072MB
+        // sebagai ambang aman supaya tidak kena OOM-kill di tengah init.
+        const long kFullMemNeedMb = 3072;
+        cfg.fullMem = (usableMb < 0) ? false : (usableMb >= kFullMemNeedMb);
+        std::cout << "[Config] auto FULL_MEM=" << (cfg.fullMem ? 1 : 0) << " (usable "
+                  << (usableMb < 0 ? std::string("unknown") : std::to_string(usableMb) + "MB")
+                  << ", butuh " << kFullMemNeedMb << "MB untuk mode full)" << std::endl;
+    }
+
+    if (cfg.largePagesAuto) {
+        // Butuh hugepages yang sudah dialokasikan host DAN cukup untuk mode yang
+        // dipilih. Kalau nol (default hampir semua distro, container, CI runner),
+        // langsung matikan supaya tidak ada alloc gagal + fallback.
+        const long needMb = cfg.fullMem ? 2560 + 256 : 256;
+        const long freeMb = (hpFree > 0) ? (hpFree * hpSizeKb) / 1024 : 0;
+        cfg.largePages = (freeMb >= needMb);
+        std::cout << "[Config] auto LARGE_PAGES=" << (cfg.largePages ? 1 : 0) << " (hugepages free "
+                  << freeMb << "MB, butuh " << needMb << "MB)" << std::endl;
+    }
 }

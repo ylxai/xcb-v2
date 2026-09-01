@@ -46,8 +46,8 @@ static std::string nowTime() {
 Miner::Miner() = default;
 Miner::~Miner() { stop(); }
 
-void Miner::start(const MinerConfig& cfg) {
-    if (m_running.load()) return;
+bool Miner::start(const MinerConfig& cfg) {
+    if (m_running.load()) return true;
 
     m_numThreads = cfg.threads;
     m_benchmark = cfg.benchmarkNonces > 0;
@@ -105,7 +105,12 @@ void Miner::start(const MinerConfig& cfg) {
                            " LARGE_PAGES=" +
                            std::to_string((m_flags & RANDOMX_FLAG_LARGE_PAGES) != 0));
 
-    initDataset();
+    if (!initDataset()) {
+        // Nothing was allocated: skip the VM loop that would only log N
+        // identical failures, and let the caller exit non-zero.
+        m_running.store(false);
+        return false;
+    }
 
     // --- Build workers (VMs + statsIdx ready, threads NOT started yet) ---
     int statsIdx = 0;
@@ -123,7 +128,7 @@ void Miner::start(const MinerConfig& cfg) {
     if (m_workers.empty()) {
         lg::error("miner", "No workers created, aborting");
         m_running.store(false);
-        return;
+        return false;
     }
     m_stats.setWorkers(statsIdx);
     for (auto& w : m_workers) m_stats.worker(w->statsIdx).running = true;
@@ -176,6 +181,7 @@ void Miner::start(const MinerConfig& cfg) {
 
     // --- Stats printer thread (joinable: stop()/~Miner() join it) ---
     m_statsThread = std::thread([this]() { statsLoop(); });
+    return true;
 }
 
 void Miner::stop() {
@@ -237,23 +243,44 @@ std::shared_ptr<const Job> Miner::loadJob() {
     return m_job;  // shared_ptr copy: refcount keeps the snapshot alive
 }
 
-void Miner::initDataset() {
+bool Miner::initDataset() {
     // RandomY Core Coin fixed key: {'5','6','7','8','9'}
     const char key[] = {'5', '6', '7', '8', '9'};
     auto t1 = std::chrono::steady_clock::now();
 
+    // Large pages need both hugepages configured AND mlock privileges. Most
+    // containers, CI runners and managed k8s nodes have neither, and the
+    // default is largePages=true — so the alloc used to fail, every VM then
+    // failed to build, and the process still exited 0 without hashing a single
+    // nonce. Drop the flag and retry once instead (same approach as xmrig).
+    auto allocCache = [this]() -> randomx_cache* {
+        randomx_cache* c = randomx_alloc_cache(m_flags);
+        if (!c && (m_flags & RANDOMX_FLAG_LARGE_PAGES)) {
+            lg::warn("miner", "Cache alloc failed with large pages — retrying without them "
+                              "(hugepages/mlock unavailable)");
+            m_flags = static_cast<randomx_flags>(m_flags & ~RANDOMX_FLAG_LARGE_PAGES);
+            c = randomx_alloc_cache(m_flags);
+        }
+        return c;
+    };
+
     if (m_flags & RANDOMX_FLAG_FULL_MEM) {
-        m_cache = randomx_alloc_cache(m_flags);
+        m_cache = allocCache();
         if (!m_cache) {
-            lg::error("miner", "Cache alloc failed (LARGE_PAGES unavailable? set LARGE_PAGES=0)");
-            return;
+            lg::error("miner", "Cache alloc failed (out of memory?)");
+            return false;
         }
         randomx_init_cache(m_cache, key, sizeof(key));
 
         m_dataset = randomx_alloc_dataset(m_flags);
+        if (!m_dataset && (m_flags & RANDOMX_FLAG_LARGE_PAGES)) {
+            lg::warn("miner", "Dataset alloc failed with large pages — retrying without them");
+            m_flags = static_cast<randomx_flags>(m_flags & ~RANDOMX_FLAG_LARGE_PAGES);
+            m_dataset = randomx_alloc_dataset(m_flags);
+        }
         if (!m_dataset) {
-            lg::error("miner", "Dataset alloc failed");
-            return;
+            lg::error("miner", "Dataset alloc failed (~2.5GiB needed — try FULL_MEM=0)");
+            return false;
         }
         uint32_t datasetItems = randomx_dataset_item_count();
         lg::info("miner", "Dataset items: " + std::to_string(datasetItems));
@@ -275,10 +302,10 @@ void Miner::initDataset() {
         randomx_release_cache(m_cache);
         m_cache = nullptr;
     } else {
-        m_cache = randomx_alloc_cache(m_flags);
+        m_cache = allocCache();
         if (!m_cache) {
-            lg::error("miner", "Cache alloc failed (LARGE_PAGES unavailable? set LARGE_PAGES=0)");
-            return;
+            lg::error("miner", "Cache alloc failed (out of memory?)");
+            return false;
         }
         randomx_init_cache(m_cache, key, sizeof(key));
         lg::info("miner", "Light mode — using cache (no full dataset)");
@@ -287,6 +314,7 @@ void Miner::initDataset() {
     auto t2 = std::chrono::steady_clock::now();
     auto initMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
     lg::info("miner", "Dataset ready in " + std::to_string(initMs / 1000.0) + "s");
+    return true;
 }
 
 void Miner::onNewJob(const Job& job) {
