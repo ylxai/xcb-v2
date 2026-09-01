@@ -53,6 +53,14 @@ bool Miner::start(const MinerConfig& cfg) {
     m_benchmark = cfg.benchmarkNonces > 0;
     m_benchmarkNonces = cfg.benchmarkNonces;
 
+    // CPU yang boleh dipakai, dipakai untuk pinning worker. Diambil sekali di
+    // sini supaya semua worker melihat daftar yang sama.
+    m_usableCpus = Config::usableCpus();
+    if (!m_usableCpus.empty() && m_numThreads > static_cast<int>(m_usableCpus.size()))
+        lg::warn("miner", "threads=" + std::to_string(m_numThreads) + " > CPU tersedia " +
+                              std::to_string(m_usableCpus.size()) +
+                              " — beberapa worker berbagi core, hashrate per worker turun");
+
     // Verbose share logging? LOG_SHARES=1 => print every share at info level.
     const char* envLog = getenv("LOG_SHARES");
     m_verboseShares =
@@ -113,16 +121,18 @@ bool Miner::start(const MinerConfig& cfg) {
     }
 
     // --- Build workers (VMs + statsIdx ready, threads NOT started yet) ---
-    int statsIdx = 0;
+    // statsIdx selalu padat (0..N-1) dan satu-satunya indeks yang dipakai:
+    // dulu ada `index` logis terpisah yang bolong kalau sebuah VM gagal, dan
+    // pelaporan benchmark memakai indeks itu untuk mengakses array stats yang
+    // sudah di-size pakai statsIdx -> std::out_of_range.
     for (int i = 0; i < m_numThreads; i++) {
         auto w = std::make_unique<Worker>();
-        w->index = i;
         w->vm = randomx_create_vm(m_flags, m_cache, m_dataset);
         if (!w->vm) {
             lg::error("miner", "VM creation failed for worker " + std::to_string(i));
             continue;
         }
-        w->statsIdx = statsIdx++;
+        w->statsIdx = static_cast<int>(m_workers.size());
         m_workers.push_back(std::move(w));
     }
     if (m_workers.empty()) {
@@ -130,7 +140,7 @@ bool Miner::start(const MinerConfig& cfg) {
         m_running.store(false);
         return false;
     }
-    m_stats.setWorkers(statsIdx);
+    m_stats.setWorkers(m_workers.size());
     for (auto& w : m_workers) m_stats.worker(w->statsIdx).running = true;
 
     // Workers must only start once setWorkers() has populated the stats array
@@ -335,6 +345,10 @@ void Miner::onNewJob(const Job& job) {
     lg::info("miner", "New job " + job.jobId);
     logEvent("new job " + job.jobId + " (diff " +
              std::to_string(m_stats.farm().difficulty) + ")");
+    // Key RandomY di-init sekali dari key tetap; seed baru dari pool berarti
+    // hash kita tidak lagi cocok dengan yang divalidasi pool.
+    if (job.seedChanged)
+        logEvent("PERINGATAN: seed hash pool berubah — restart miner bila share mulai ditolak");
 }
 
 void Miner::onShareResult(bool ok, const std::string& reason, int delayMs, int workerIdx) {
@@ -410,8 +424,8 @@ void Miner::reportBenchmark() {
     std::ostringstream os;
     os << "Done " << m_benchmarkNonces << " nonces in " << elapsed << "s\n";
     for (auto& w : m_workers)
-        os << "  W" << w->index << ": "
-           << Stats::formatRate((double)m_stats.worker(w->index)
+        os << "  W" << w->statsIdx << ": "
+           << Stats::formatRate((double)m_stats.worker(w->statsIdx)
                                     .totalHashes.load(std::memory_order_relaxed) /
                                 elapsed)
            << "\n";
@@ -465,13 +479,22 @@ void Miner::workerLoop(Worker* w) {
     const int idx = w->statsIdx;
     constexpr int BLOCKSIZE = 32;
 
-    // Pin to a specific CPU core.
+    // Pin ke CPU ke-idx dari daftar CPU yang benar-benar diizinkan.
+    // `idx % jumlah_CPU_online` salah di bawah cpuset: CPU 0/1 mungkin
+    // terlarang, pthread_setaffinity_np menolak dengan EINVAL, dan worker itu
+    // berakhir tanpa pin sambil berebut core dengan worker lain.
     {
-        cpu_set_t cpuset;
-        CPU_ZERO(&cpuset);
-        int ncpus = std::max(1, static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN)));
-        CPU_SET(idx % ncpus, &cpuset);
-        pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+        const std::vector<int>& cpus = m_usableCpus;
+        if (!cpus.empty()) {
+            cpu_set_t cpuset;
+            CPU_ZERO(&cpuset);
+            const int cpu = cpus[static_cast<size_t>(idx) % cpus.size()];
+            CPU_SET(cpu, &cpuset);
+            int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+            if (rc != 0)
+                lg::warn("miner", "W" + std::to_string(idx) + ": gagal pin ke CPU " +
+                                      std::to_string(cpu) + " (" + std::strerror(rc) + ")");
+        }
     }
     // Higher scheduling priority (best effort).
     setpriority(PRIO_PROCESS, 0, -10);
@@ -492,6 +515,7 @@ void Miner::workerLoop(Worker* w) {
 
     // Take a snapshot of the current job (may be null until first job).
     auto current = loadJob();
+    bool headerOk = current && current->header.size() == 32;
     int idleSpins = 0;
 
     while (m_running.load(std::memory_order_relaxed)) {
@@ -508,7 +532,22 @@ void Miner::workerLoop(Worker* w) {
         idleSpins = 0;
 
         // New job? Re-snapshot (header buffer stays alive via shared_ptr).
-        if (job.get() != current.get()) current = std::move(job);
+        if (job.get() != current.get()) {
+            current = std::move(job);
+            // Invarian: header persis 32 byte. doEthGetWork() sudah menolak yang
+            // lain, tapi memcpy di bawah membaca 32 byte tanpa syarat — jadi
+            // periksa juga di sisi konsumen, bukan percaya pemanggil.
+            headerOk = (current->header.size() == 32);
+            if (!headerOk)
+                lg::error("miner", "Job " + current->jobId + " header " +
+                                       std::to_string(current->header.size()) +
+                                       " byte (butuh 32) — dilewati");
+        }
+        if (!headerOk) {
+            // Tunggu job berikutnya, jangan hash dari buffer yang salah ukuran.
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
 
         const uint8_t* headerPtr = current->header.data();
         const uint64_t targetInt = current->targetInt;

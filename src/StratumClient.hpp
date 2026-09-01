@@ -15,11 +15,15 @@
 
 struct Job {
     std::string jobId;
-    std::vector<uint8_t> header;  // 32 bytes binary
+    std::vector<uint8_t> header;  // 32 bytes binary — dijamin oleh doEthGetWork()
     std::string seedHex;
     std::string targetHex;         // hex target
     uint64_t targetInt = 0x00ffffffffffffffULL;
     bool clean = true;
+    // Pool mengirim seed hash lain dari job sebelumnya. Cache/dataset RandomY
+    // dibangun dari key tetap, jadi ini berarti hasil hash tidak lagi cocok
+    // dengan yang divalidasi pool.
+    bool seedChanged = false;
 };
 
 // ETHPROXY stratum client with:

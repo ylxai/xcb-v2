@@ -147,6 +147,45 @@ static std::string strip_0x(const std::string& s) {
 }
 
 // ------------------------------------------------------------
+// Hex decoding yang tidak boleh mematikan proses.
+// Semua angka di bawah datang dari pool. std::stoul/std::stoull melempar
+// std::invalid_argument untuk input non-hex, dan tidak ada satu pun try/catch
+// di jalur ini — satu respons sampah dari pool dulu berujung std::terminate.
+// ------------------------------------------------------------
+static int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool hex_is_valid(const std::string& hex) {
+    if (hex.empty()) return false;
+    for (char c : hex)
+        if (hex_nibble(c) < 0) return false;
+    return true;
+}
+
+// hex -> byte. false untuk panjang ganjil atau karakter non-hex.
+static bool hex_to_bytes(const std::string& hex, std::vector<uint8_t>& out) {
+    if (!hex_is_valid(hex) || (hex.size() % 2) != 0) return false;
+    out.clear();
+    out.reserve(hex.size() / 2);
+    for (size_t i = 0; i < hex.size(); i += 2)
+        out.push_back(static_cast<uint8_t>((hex_nibble(hex[i]) << 4) | hex_nibble(hex[i + 1])));
+    return true;
+}
+
+// hex (maksimal 16 char) -> uint64.
+static bool hex_to_u64(const std::string& hex, uint64_t& out) {
+    if (!hex_is_valid(hex) || hex.size() > 16) return false;
+    uint64_t v = 0;
+    for (char c : hex) v = (v << 4) | static_cast<uint64_t>(hex_nibble(c));
+    out = v;
+    return true;
+}
+
+// ------------------------------------------------------------
 StratumClient::StratumClient(std::vector<PoolConfig> pools) : m_pools(std::move(pools)) {
     if (m_pools.empty()) {
         PoolConfig fallback;
@@ -409,20 +448,52 @@ bool StratumClient::doEthGetWork() {
     if (header == m_currentHeader && seed == m_currentSeed && target == m_currentTarget)
         return true;  // same job, skip
 
+    // --- Validasi sebelum apa pun disimpan ---
+    // Miner selalu mem-baca 32 byte header (memcpy di workerLoop), jadi header
+    // yang lebih pendek dari itu adalah out-of-bounds read, bukan cuma job aneh.
+    std::vector<uint8_t> headerBytes;
+    if (header.size() != 64 || !hex_to_bytes(header, headerBytes)) {
+        lg::warn("stratum", "Job ditolak: header harus 64 hex char, dapat " +
+                                std::to_string(header.size()) + " ('" + header.substr(0, 24) +
+                                (header.size() > 24 ? "..." : "") + "')");
+        return true;  // koneksi masih sehat — tunggu poll berikutnya
+    }
+    // Target < 16 hex char dulu diam-diam memakai default 0x00ffffff...ff,
+    // yang jauh lebih mudah dari target sebenarnya => banjir share invalid.
+    uint64_t targetInt = 0;
+    std::string targetHead = target.substr(0, 16);
+    if (targetHead.size() != 16 || !hex_to_u64(targetHead, targetInt)) {
+        lg::warn("stratum", "Job ditolak: target tidak valid ('" + target.substr(0, 24) + "')");
+        return true;
+    }
+    if (!seed.empty() && !hex_is_valid(seed)) {
+        lg::warn("stratum", "Job ditolak: seed hash bukan hex ('" + seed.substr(0, 24) + "')");
+        return true;
+    }
+
+    // --- Perubahan seed = key RandomY berubah ---
+    // Cache/dataset dibangun sekali dari key tetap. Kalau pool mulai mengirim
+    // seed lain, seluruh share akan ditolak tanpa gejala lain, jadi ini harus
+    // terlihat di log.
+    const bool seedChanged = !m_currentSeed.empty() && seed != m_currentSeed;
+    if (seedChanged)
+        lg::warn("stratum", "SEED HASH BERUBAH: " + m_currentSeed.substr(0, 16) + "... -> " +
+                                seed.substr(0, 16) +
+                                "... — cache RandomY dibangun dari key tetap, share bisa "
+                                "ditolak semua sampai miner di-restart");
+
     m_currentHeader = header;
     m_currentSeed = seed;
     m_currentTarget = target;
     m_currentJobId = header.substr(0, 16);
 
     Job job;
-    job.jobId = header.substr(0, 16);
-    job.header.clear();
-    job.header.reserve(32);
-    for (size_t i = 0; i + 1 < header.length(); i += 2)
-        job.header.push_back(static_cast<uint8_t>(std::stoul(header.substr(i, 2), nullptr, 16)));
+    job.jobId = m_currentJobId;
+    job.header = std::move(headerBytes);
     job.seedHex = seed;
     job.targetHex = target;
-    if (target.length() >= 16) job.targetInt = std::stoull(target.substr(0, 16), nullptr, 16);
+    job.targetInt = targetInt;
+    job.seedChanged = seedChanged;
 
     lg::debug("stratum", "New job " + job.jobId + " target " + target.substr(0, 8) + "...");
 

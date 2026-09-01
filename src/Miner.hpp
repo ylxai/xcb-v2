@@ -15,8 +15,10 @@
 #include <vector>
 
 struct Worker {
-    int index = 0;     // logical index (may have gaps if a VM failed)
-    int statsIdx = 0;  // dense index into Stats::workers
+    // Dense index into Stats::workers. Worker N selalu ada di slot N, tanpa
+    // lubang, walaupun sebagian VM gagal dibuat — jadi tidak ada dua indeks
+    // berbeda yang bisa tertukar (dulu bikin Stats::worker() out_of_range).
+    int statsIdx = 0;
     std::thread thread;
     randomx_vm* vm = nullptr;
 };
@@ -58,6 +60,10 @@ private:
 
     std::vector<std::unique_ptr<Worker>> m_workers;
     int m_numThreads = 1;
+    // CPU yang boleh dipakai proses ini, diambil sekali di start(). Worker
+    // di-pin ke cpus[statsIdx % size] supaya tidak pernah menunjuk CPU di luar
+    // cpuset.
+    std::vector<int> m_usableCpus;
 
     // Current job. Workers hold their own shared_ptr snapshot: the header
     // buffer they hash is immutable and can never be freed underneath them.

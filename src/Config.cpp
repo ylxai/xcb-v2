@@ -4,14 +4,73 @@
 #include <fstream>
 #include <iostream>
 #include <pwd.h>
+#include <sched.h>
 #include <sstream>
 #include <unistd.h>
+
+// CPU yang boleh dipakai proses ini. sched_getaffinity menghormati cpuset
+// (docker --cpuset-cpus, k8s cpu manager, taskset), sementara
+// _SC_NPROCESSORS_ONLN tidak — memakai yang kedua berarti membuat thread untuk
+// CPU yang tidak boleh disentuh dan pin-nya gagal EINVAL.
+std::vector<int> Config::usableCpus() {
+    std::vector<int> cpus;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(0, sizeof(set), &set) == 0) {
+        for (int i = 0; i < CPU_SETSIZE; i++)
+            if (CPU_ISSET(i, &set)) cpus.push_back(i);
+    }
+    if (cpus.empty()) {
+        // Fallback: kernel tanpa sched_getaffinity yang bisa dibaca.
+        long n = sysconf(_SC_NPROCESSORS_ONLN);
+        if (n < 1) n = 1;
+        for (long i = 0; i < n; i++) cpus.push_back(static_cast<int>(i));
+    }
+    return cpus;
+}
 
 static std::string expandHome(const std::string& path) {
     if (path.empty() || path[0] != '~') return path;
     const char* home = getenv("HOME");
     if (!home) home = getpwuid(getuid())->pw_dir;
     return std::string(home) + path.substr(1);
+}
+
+// ------------------------------------------------------------
+// Parsing angka yang tidak boleh mematikan proses.
+// std::stoi/std::stoul/std::stoull melempar std::invalid_argument untuk input
+// bukan angka dan std::out_of_range untuk yang kelewat besar. Nilai-nilai ini
+// datang dari env & argv (THREADS=abc, -t x, POLL_MS=…), jadi input salah harus
+// jadi peringatan + nilai default, bukan std::terminate.
+// ------------------------------------------------------------
+static bool parseLong(const std::string& s, long long& out) {
+    if (s.empty()) return false;
+    try {
+        size_t pos = 0;
+        long long v = std::stoll(s, &pos);
+        if (pos != s.size()) return false;  // ada sisa karakter: "12abc"
+        out = v;
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+// Angka wajar (thread, port, poll interval). Di luar [min,max] -> fallback.
+static long long numOr(const std::string& s, long long fallback, long long min, long long max,
+                       const char* what) {
+    long long v = 0;
+    if (!parseLong(s, v)) {
+        std::cerr << "[Config] " << what << " bukan angka ('" << s << "'), pakai " << fallback
+                  << std::endl;
+        return fallback;
+    }
+    if (v < min || v > max) {
+        std::cerr << "[Config] " << what << "=" << v << " di luar rentang [" << min << ".." << max
+                  << "], pakai " << fallback << std::endl;
+        return fallback;
+    }
+    return v;
 }
 
 MinerConfig Config::loadFile(const std::string& path) {
@@ -70,9 +129,9 @@ MinerConfig Config::loadFile(const std::string& path) {
             }
             pool.host = val;
         } else if (key.compare(0, 4, "port") == 0 && key.back() == ']') {
-            pool.port = static_cast<uint16_t>(std::stoul(val));
+            pool.port = static_cast<uint16_t>(numOr(val, 8008, 1, 65535, "port"));
         } else if (key == "threads") {
-            cfg.threads = std::stoi(val);
+            cfg.threads = static_cast<int>(numOr(val, 0, 0, 4096, "threads"));
         } else if (key == "no_jit") {
             cfg.useJIT = (val != "true" && val != "1" && val != "yes");
         } else if (key == "light") {
@@ -121,8 +180,11 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             std::string rh = envReportHr;
             cfg.reportHashrate = (rh != "0" && rh != "false" && rh != "no");
         }
-        if (envPollMs && envPollMs[0] != '\0') cfg.pollMs = std::max(200, std::stoi(envPollMs));
-        if (envBench && envBench[0] != '\0') cfg.benchmarkNonces = std::stoull(envBench);
+        if (envPollMs && envPollMs[0] != '\0')
+            cfg.pollMs = static_cast<int>(numOr(envPollMs, 1000, 200, 600000, "POLL_MS"));
+        if (envBench && envBench[0] != '\0')
+            cfg.benchmarkNonces =
+                static_cast<uint64_t>(numOr(envBench, 0, 0, 1000000000LL, "BENCHMARK"));
     };
 
     if (envWallet && envPool) {
@@ -131,7 +193,8 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         auto colon = poolStr.find(':');
         if (colon != std::string::npos) {
             p.host = poolStr.substr(0, colon);
-            p.port = static_cast<uint16_t>(std::stoul(poolStr.substr(colon + 1)));
+            p.port = static_cast<uint16_t>(
+                numOr(poolStr.substr(colon + 1), 8008, 1, 65535, "POOL port"));
         } else {
             p.host = poolStr;
             p.port = 8008;
@@ -139,10 +202,11 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         p.wallet = envWallet;
         p.worker = envWorker ? envWorker : "worker";
         cfg.pools.push_back(p);
-        if (envThreads && envThreads[0] != '\0') cfg.threads = std::stoul(envThreads);
-        // Default threads = CPU cores (same as file/CLI path)
+        if (envThreads && envThreads[0] != '\0')
+            cfg.threads = static_cast<int>(numOr(envThreads, 0, 0, 4096, "THREADS"));
+        // Default threads = CPU yang boleh dipakai (sama seperti jalur file/CLI)
         if (cfg.threads <= 0)
-            cfg.threads = std::max(1, static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN)));
+            cfg.threads = std::max(1, static_cast<int>(usableCpus().size()));
         applyEnvFlags();
         std::cout << "[Config] Using env: POOL=" << envPool << " WALLET=" << envWallet
                   << std::endl;
@@ -169,7 +233,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             auto colon = s.find(':');
             if (colon != std::string::npos) {
                 p.host = s.substr(0, colon);
-                p.port = static_cast<uint16_t>(std::stoul(s.substr(colon + 1)));
+                p.port = static_cast<uint16_t>(numOr(s.substr(colon + 1), 8008, 1, 65535, "-o port"));
             } else {
                 p.host = s;
                 p.port = 8008;
@@ -193,7 +257,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             for (auto& p : cfg.pools) p.password = argv[++i];
             
         } else if (arg == "-t" && i + 1 < argc) {
-            cfg.threads = std::stoi(argv[++i]);
+            cfg.threads = static_cast<int>(numOr(argv[++i], 0, 0, 4096, "-t"));
             
         } else if (arg == "--light") {
             cfg.fullMem = false;
@@ -221,7 +285,8 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             cfg.selftest = true;
             
         } else if (arg == "--benchmark" && i + 1 < argc) {
-            cfg.benchmarkNonces = std::stoull(argv[++i]);
+            cfg.benchmarkNonces =
+                static_cast<uint64_t>(numOr(argv[++i], 0, 0, 1000000000LL, "--benchmark"));
             
         } else if (arg.compare(0, 5, "--ui=") == 0) {
             cfg.ui = arg.substr(5);
@@ -274,9 +339,18 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         }
     }
     
-    // Default threads = CPU cores
-    if (cfg.threads <= 0)
-        cfg.threads = std::max(1, static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN)));
+    // Default threads = jumlah CPU yang boleh dipakai proses ini.
+    // Di cpuset (docker --cpuset-cpus=2,3 / k8s cpu pinning) jumlah CPU online
+    // lebih besar dari yang diizinkan, jadi memakai _SC_NPROCESSORS_ONLN
+    // membuat thread berlebih yang berebut core yang sama.
+    if (cfg.threads <= 0) {
+        const size_t usable = usableCpus().size();
+        cfg.threads = std::max(1, static_cast<int>(usable));
+        const long online = sysconf(_SC_NPROCESSORS_ONLN);
+        if (online > 0 && usable > 0 && static_cast<size_t>(online) != usable)
+            std::cout << "[Config] threads=" << cfg.threads << " (CPU boleh dipakai " << usable
+                      << " dari " << online << " online — cpuset aktif)" << std::endl;
+    }
 
     // 5. Isi fullMem/largePages dari kondisi host untuk yang belum di-set user.
     autoDetect(cfg);
