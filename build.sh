@@ -70,6 +70,6 @@ ok "Build complete: build/miner-saya"
 # Selftest
 if [ "$RUN_TEST" -eq 1 ]; then
   info "Running selftest..."
-  LARGE_PAGES=0 ./build/miner-saya --selftest
+  ./build/miner-saya --selftest
   ok "Selftest passed ✅"
 fi

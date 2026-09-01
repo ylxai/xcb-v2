@@ -31,9 +31,9 @@ spec:
           image: ylxai/xcb:latest   # Docker Hub multi-arch (linux/amd64, linux/arm64)
           imagePullPolicy: IfNotPresent
           env:
-            # WAJIB: light mode (full mem crash di container tanpa hugepages)
-            - name: FULL_MEM
-              value: "0"
+            # FULL_MEM sengaja tidak di-set: miner membaca cgroup memory limit
+            # pod dan memilih light/full sendiri. Set eksplisit hanya kalau mau
+            # memaksa full di node dengan RAM besar (naikkan juga limits.memory).
             # WAJIB: thread count harus match limits.cpu
             - name: THREADS
               value: "2"

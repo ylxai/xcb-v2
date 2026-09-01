@@ -65,13 +65,15 @@ if [ "$RUN" -eq 1 ]; then
   docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 
   info "Starting container: $CONTAINER_NAME"
+  # FULL_MEM/LARGE_PAGES tidak di-set: miner memilih sendiri dari RAM & hugepages
+  # yang tersedia di container. Override manual: FULL_MEM=1 ./docker-build.sh --run
   docker run --name "$CONTAINER_NAME" --rm \
     -e WALLET="${WALLET:-cb23d6d8557e776f5ff9ab6a7fb7f59a3d385245fa7a}" \
     -e POOL="${POOL:-sg.catchthatrabbit.com:8008}" \
     -e WORKER="${WORKER:-docker}" \
     -e THREADS="${THREADS:-}" \
-    -e FULL_MEM="${FULL_MEM:-0}" \
-    -e LARGE_PAGES=0 \
+    -e FULL_MEM="${FULL_MEM:-}" \
+    -e LARGE_PAGES="${LARGE_PAGES:-}" \
     "$IMAGE"
 fi
 

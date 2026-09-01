@@ -5,9 +5,18 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege: the workflow only reads the repo.
+permissions:
+  contents: read
+
+# A new push supersedes an in-flight run on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-test:
-    name: Build + selftest
+    name: Build + selftest (glibc)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (termasuk submodule RandomY + FTXUI)
@@ -24,8 +33,113 @@ jobs:
       - name: Build
         run: cmake --build build -j"$(nproc)"
 
+      - name: Verify flag build (LTO + baseline arch aktif)
+        run: |
+          flags=$(grep -h CXX_FLAGS build/CMakeFiles/miner-saya.dir/flags.make)
+          echo "$flags"
+          if ! echo "$flags" | grep -q -- '-flto'; then
+            echo "::error::LTO tidak aktif di Release glibc"; exit 1
+          fi
+          if ! echo "$flags" | grep -q -- '-march=x86-64-v3'; then
+            echo "::error::baseline -march hilang"; exit 1
+          fi
+
       - name: Selftest (verifikasi SHA3-512)
         run: ./build/miner-saya --selftest
 
+      - name: Selftest dari direktori tanpa pool.cfg
+        # --selftest tidak bicara ke pool. Kalau step ini gagal, gate selftest
+        # di Dockerfile dan probe k8s ikut rusak begitu cwd berubah.
+        run: cd "$(mktemp -d)" && "$GITHUB_WORKSPACE/build/miner-saya" --selftest
+
       - name: Benchmark smoke test
-        run: timeout 90 ./build/miner-saya --benchmark 1000
+        # Runner tidak punya hugepages. Auto-detect harus mematikan LARGE_PAGES
+        # sebelum alokasi, bukan gagal bikin VM lalu exit 0 tanpa menghitung
+        # satu hash pun.
+        run: |
+          set -o pipefail
+          timeout 120 ./build/miner-saya --benchmark 2000 2>&1 | tee bench.log
+          if grep -q 'No workers created' bench.log; then
+            echo "::error::miner gagal membuat VM di runner"; exit 1
+          fi
+          if ! grep -q 'auto LARGE_PAGES=0' bench.log; then
+            echo "::error::auto-detect tidak mematikan LARGE_PAGES di runner tanpa hugepages"; exit 1
+          fi
+          if grep -q 'retrying without them' bench.log; then
+            echo "::error::auto-detect terlambat — masih mengandalkan fallback alokasi"; exit 1
+          fi
+          hashes=$(grep -oE 'Total [0-9]+ hashes' bench.log | grep -oE '[0-9]+' | tail -1)
+          echo "hashed=${hashes:-0}"
+          if [ "${hashes:-0}" -lt 2000 ]; then
+            echo "::error::benchmark hanya ${hashes:-0} hash"; exit 1
+          fi
+
+      - name: Auto-detect memilih light saat RAM dibatasi
+        # Runner punya ~16GB jadi auto memilih full. Di bawah cgroup 512MB
+        # pilihannya harus berubah ke light — tanpa env var apa pun.
+        run: |
+          set -o pipefail
+          docker run --rm --network none --memory 512m \
+            -v "$PWD/build:/b:ro" -w /b ubuntu:24.04 \
+            ./miner-saya --benchmark 300 2>&1 | tee cg.log
+          if ! grep -q 'auto FULL_MEM=0' cg.log; then
+            echo "::error::auto-detect tidak membaca cgroup limit (harus pilih light di 512MB)"; exit 1
+          fi
+          grep -q 'Light mode' cg.log || { echo "::error::light mode tidak aktif"; exit 1; }
+
+  musl:
+    name: Build + selftest (Alpine/musl)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (termasuk submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Build di container Alpine, bukan container job: actions/checkout butuh
+      # node glibc, jadi checkout dilakukan di runner lalu source di-copy masuk.
+      - name: Build + selftest di Alpine/musl
+        run: |
+          docker run --rm -i -v "$PWD":/src:ro alpine:3.20 sh -s <<'EOF'
+          set -e
+          apk add --no-cache build-base cmake git openssl-dev linux-headers >/dev/null
+          cp -r /src /work && cd /work && rm -rf build
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          flags=$(grep -h CXX_FLAGS build/CMakeFiles/miner-saya.dir/flags.make)
+          echo "$flags"
+          # musl + LTO gagal saat link (fortify/stdio.h, vsnprintf always_inline).
+          # Deteksi musl ada di CMakeLists; step ini yang menjaganya tidak mati diam-diam.
+          if echo "$flags" | grep -q -- '-flto'; then
+            echo "ERROR: LTO masih aktif di musl"; exit 1
+          fi
+          cmake --build build -j"$(nproc)"
+          ./build/miner-saya --selftest
+          file build/miner-saya
+          EOF
+
+  docker:
+    name: Docker image + selftest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (termasuk submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build image (selftest jalan di builder stage)
+        run: docker build -t xcb:ci .
+
+      - name: Selftest di runtime image
+        # Binary ada di WORKDIR /miner, bukan di cwd pemanggil.
+        run: docker run --rm --entrypoint sh -w /tmp xcb:ci -c 'cd /miner && ./miner-saya --selftest'
+
+      - name: Benchmark di container (tanpa hugepages, tanpa network)
+        run: |
+          set -o pipefail
+          docker run --rm --network none -e THREADS=2 xcb:ci --benchmark 1000 2>&1 | tee dbench.log
+          if grep -q 'No workers created' dbench.log; then
+            echo "::error::VM gagal dibuat di container"; exit 1
+          fi
+          # Image tidak lagi menyetel FULL_MEM/LARGE_PAGES: auto-detect yang memutuskan.
+          grep -q 'auto FULL_MEM=' dbench.log || { echo "::error::auto-detect FULL_MEM tidak jalan di image"; exit 1; }
+          grep -q 'auto LARGE_PAGES=0' dbench.log || { echo "::error::auto-detect LARGE_PAGES tidak jalan di image"; exit 1; }

@@ -30,13 +30,15 @@ docker run --rm -d --name xcb \
   -e POOL=sg.catchthatrabbit.com:8008 \
   -e WORKER=myworker \
   -e THREADS=4 \
-  -e FULL_MEM=0 \
-  -e LARGE_PAGES=0 \
   ylxai/xcb:v1
 ```
 
-> **⚠️ Wajib di container:** `LARGE_PAGES=0` (container tanpa hugepages/mlock gagal alloc cache).
-> **Disarankan:** `FULL_MEM=0` (light, 256MB) — full mode butuh ~2.6GB RAM.
+> **Memori & huge pages: otomatis.** Miner membaca RAM tersedia (termasuk cgroup
+> limit container) dan jumlah huge page bebas, lalu memilih sendiri: `FULL_MEM=1`
+> kalau ada ≥3GB, `FULL_MEM=0` (light, ~256MB) kalau tidak; `LARGE_PAGES` hanya
+> menyala kalau huge page-nya memang cukup. Pilihannya dicetak saat start:
+> `[Config] auto FULL_MEM=0 (usable 512MB, ...)`.
+> Set `-e FULL_MEM=1` atau `-e LARGE_PAGES=1` hanya kalau mau memaksa.
 
 ---
 
@@ -50,8 +52,8 @@ Semua env vars dibaca langsung (precedence ≥ config file & CLI):
 | `POOL` | `sg.catchthatrabbit.com:8008` | Host pool `host:port` |
 | `WORKER` | `pool` | Nama worker (ditampilkan pool sebagai `wallet.worker`) |
 | `THREADS` | *(kosong)* | Jumlah thread. **Kosong = auto (jumlah CPU cores)** |
-| `FULL_MEM` | *(true)* | `1` = dataset full 2.6GB, `0`/`false` = light 256MB |
-| `LARGE_PAGES` | *(true)* | `1` = huge pages, **`0`/`false` wajib di container** |
+| `FULL_MEM` | *(auto)* | `1` = dataset full 2.6GB, `0`/`false` = light 256MB. Kosong = pilih otomatis dari RAM tersedia / cgroup limit |
+| `LARGE_PAGES` | *(auto)* | `1` = huge pages, `0`/`false` = memori biasa. Kosong = menyala hanya kalau huge page cukup |
 | `LOG_SHARES` | *(false)* | `1` = print setiap share found/accepted (default quiet — pool difficulty rendah sangat noisy) |
 
 ---
@@ -197,8 +199,8 @@ services:
       - POOL=sg.catchthatrabbit.com:8008
       - WORKER=akash
       - THREADS=16        # harus ≤ cpu.units
-      - FULL_MEM=0
-      - LARGE_PAGES=0
+      # FULL_MEM / LARGE_PAGES tidak perlu di-set: miner membaca memori
+      # yang dialokasikan provider dan memilih light/full sendiri.
     expose:
       - port: 80
         as: 80
@@ -286,10 +288,10 @@ sudo chrt -rr 1 ./miner-saya
 
 | Gejala | Penyebab | Solusi |
 |--------|----------|--------|
-| `cache alloc failed` | Huge pages tidak tersedia di container | Set `LARGE_PAGES=0` |
+| `cache alloc failed` | Huge pages / RAM tidak cukup **dan** `LARGE_PAGES`/`FULL_MEM` dipaksa via env | Lepas env-nya — auto-detect memilih light + tanpa huge pages sendiri |
 | Crash `stoul` / `Config` gagal | Env var kosong (`-e THREADS=`) | Biarkan env kosong atau isi nilai valid — versi v1 sudah menangani string kosong |
 | Cuma 1 thread padahal banyak core | Default kode lama `threads=1` | Set `THREADS=<n>` atau gunakan v1 (auto = semua cores) |
-| Hashrate ~50% dari harapan | Mode light (FULL_MEM=0) | `FULL_MEM=1` + RAM cukup |
+| Hashrate ~50% dari harapan | Auto-detect memilih light karena RAM < 3GB (lihat `[Config] auto FULL_MEM=0`) | Tambah RAM/limit, atau paksa `FULL_MEM=1` kalau yakin cukup |
 | Worker stuck (0.0x H/s) | Core sibuk/di luar cpuset provider (CPU affinity) | Cek `lscpu`/`Cpus_allowed_list`; jalankan berkali atau kurangi THREADS |
 | Build gagal `RandomY` tidak ditemukan | Submodule belum di-init | `git submodule update --init --recursive` |
 | Log kapah (ribuan share/detik) | Pool difficulty rendah + log per-share | Default v1 quiet; aktifkan verbose hanya untuk debug (`LOG_SHARES=1`) |
@@ -302,7 +304,7 @@ sudo chrt -rr 1 ./miner-saya
 xcb/
 ├── CMakeLists.txt           # Build system (-march=x86-64-v3 / armv8-a+crypto, -O3, LTO, stripped)
 ├── Dockerfile               # Multi-stage: builder → runtime ~32MB, user non-root
-├── .gitlab-ci.yml           # CI Puzl RunMyJob (test 2m saat push, mine 55m/jam saat schedule)
+├── .github/workflows/ci.yml # CI GitHub Actions (glibc + Alpine/musl + docker image)
 ├── docs/
 │   └── screenshots/         # Screenshot dashboard (README)
 ├── k8s/

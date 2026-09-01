@@ -39,6 +39,9 @@ done
 if [ "$LIGHT" = 1 ]; then
   NEED_PAGES=$(( (256 + 512) * 1024 / PAGESZ_KB ))   # dataset light ~256MB + buffer
   echo "[setup] Mode: LIGHT (dataset ~256MB)"
+  # --light harus ikut ke miner. Tanpa ini skrip cuma menyetel hugepages untuk
+  # light lalu menjalankan miner dalam mode full — kebalikan dari yang diminta.
+  EXTRA+=(--light)
 else
   NEED_PAGES=$(( (2560 + 640) * 1024 / PAGESZ_KB ))  # dataset full ~2.2GiB + cache 256MB + buffer
   echo "[setup] Mode: FULL (dataset ~2.5GiB)"
@@ -88,12 +91,23 @@ MLOCK_OK=0
 if [ "$(id -u)" = "0" ]; then
   ulimit -l unlimited 2>/dev/null
   MLOCK_OK=1
-  # setcap supaya run berikutnya (non-root) tetap bisa mlock
-  setcap cap_ipc_lock=+ep "$BIN" 2>/dev/null && echo "[setup] setcap cap_ipc_lock=+ep $BIN OK"
+  # setcap supaya run berikutnya (non-root) tetap bisa mlock.
+  # Hanya kalau CAP_IPC_LOCK ada di bounding set: di container/sandbox yang
+  # men-drop cap itu, binary bercap justru gagal exec dengan EPERM (exit 126).
+  if capsh --has-p=cap_ipc_lock 2>/dev/null; then
+    setcap cap_ipc_lock=+ep "$BIN" 2>/dev/null && echo "[setup] setcap cap_ipc_lock=+ep $BIN OK"
+  else
+    echo "[setup] CAP_IPC_LOCK tidak ada di bounding set — setcap dilewati"
+    echo "        (binary bercap tidak bisa di-exec di sini; miner tetap jalan tanpa hugepages)"
+  fi
 elif [ -n "$SUDO" ]; then
   # coba pasang cap sekali via sudo (butuh password 1x)
   if ! getcap "$BIN" 2>/dev/null | grep -q cap_ipc_lock; then
-    $SUDO setcap cap_ipc_lock=+ep "$BIN" 2>/dev/null
+    if capsh --has-p=cap_ipc_lock 2>/dev/null; then
+      $SUDO setcap cap_ipc_lock=+ep "$BIN" 2>/dev/null
+    else
+      echo "[setup] CAP_IPC_LOCK tidak tersedia di lingkungan ini — setcap dilewati"
+    fi
   fi
 fi
 
@@ -103,6 +117,9 @@ if getcap "$BIN" 2>/dev/null | grep -q cap_ipc_lock || [ "${ULIMIT_KB:-0}" = "un
 fi
 
 # ---------- 6. Putuskan LARGE_PAGES ----------
+# Miner sudah bisa auto-detect sendiri (baca HugePages_Free), tapi di sini kita
+# set eksplisit karena skrip ini punya info yang tidak bisa dilihat miner:
+# hasil sysctl yang baru saja dijalankan + status izin mlock.
 export LARGE_PAGES=0
 if [ "$HP_TOTAL" -ge "$NEED_PAGES" ] && [ "$MLOCK_OK" = 1 ]; then
   export LARGE_PAGES=1

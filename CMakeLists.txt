@@ -5,7 +5,36 @@ project(miner-saya VERSION 1.0.0 LANGUAGES CXX C ASM)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_BUILD_TYPE Release)
+
+# Release hanya sebagai default — jangan menimpa -DCMAKE_BUILD_TYPE dari CLI,
+# kalau ditimpa maka ./setup.sh --debug dan ./build.sh --debug tidak berefek.
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+# ============================================================
+# LTO: satu keputusan, dipakai konsisten compile + link
+# ============================================================
+# musl (Alpine) gagal build dengan -flto + _FORTIFY_SOURCE bawaan:
+#   "inlining failed in call to 'always_inline' 'vsnprintf'" -> lto-wrapper fatal.
+# Deteksi di sini, bukan di setup.sh, supaya build via Dockerfile atau cmake
+# manual ikut terlindungi.
+execute_process(
+    COMMAND ${CMAKE_CXX_COMPILER} -dumpmachine
+    OUTPUT_VARIABLE MINER_TARGET_TRIPLE
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(MINER_TARGET_TRIPLE MATCHES "musl")
+    message(STATUS "Target musl (${MINER_TARGET_TRIPLE}): LTO dimatikan")
+    set(NO_LTO ON)
+endif()
+
+if(NO_LTO)
+    set(MINER_LTO_FLAGS "")
+else()
+    set(MINER_LTO_FLAGS -flto)
+endif()
 
 # ============================================================
 # RandomY library (dari submodule)
@@ -29,6 +58,9 @@ add_subdirectory(external/FTXUI)
 # ============================================================
 # Cari dependency
 # ============================================================
+# Prefer -pthread over -lpthread: pada glibc >= 2.34 pthread sudah di libc dan
+# CMAKE_THREAD_LIBS_INIT kosong, tapi musl/toolchain lain masih butuh flagnya.
+set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
 
@@ -67,27 +99,39 @@ target_link_libraries(miner-saya
     PRIVATE
         randomx               # RandomY library
         ftxui::ftxui          # FTXUI dashboard (TUI)
-        pthread
+        Threads::Threads      # find_package(Threads) di atas — bukan -lpthread literal
         OpenSSL::SSL
         OpenSSL::Crypto
 )
 
 # Optimasi portabel per arsitektur CPU
+# PORTABLE=ON menurunkan baseline x86 ke x86-64-v2 (tanpa AVX2) untuk image yang
+# didistribusikan ke host CPU tak diketahui (runner CI, node Akash pre-Haswell).
+option(PORTABLE "Turunkan baseline x86 ke x86-64-v2 (tanpa AVX2)" OFF)
+
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-    if(NOT NO_LTO)
-  target_compile_options(miner-saya PRIVATE -march=x86-64-v3 -O3 -flto)
-else()
-  target_compile_options(miner-saya PRIVATE -march=x86-64-v3 -O3)
-endif()
+    if(PORTABLE)
+        set(MINER_ARCH_FLAGS -march=x86-64-v2)
+    else()
+        set(MINER_ARCH_FLAGS -march=x86-64-v3)
+    endif()
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-    target_compile_options(miner-saya PRIVATE -march=armv8-a+crypto -O3 -flto)
+    set(MINER_ARCH_FLAGS -march=armv8-a+crypto)
 else()
-    target_compile_options(miner-saya PRIVATE -O3 -flto)
+    set(MINER_ARCH_FLAGS "")
 endif()
-if(NOT NO_LTO)
-  target_link_options(miner-saya PRIVATE -flto -s)
-else()
-  target_link_options(miner-saya PRIVATE -s)
-endif()
+
+# -O3 dan LTO hanya untuk build non-Debug — kalau tidak, --debug tetap
+# menghasilkan binary teroptimasi penuh yang sulit di-debug.
+target_compile_options(miner-saya PRIVATE
+    ${MINER_ARCH_FLAGS}
+    $<$<NOT:$<CONFIG:Debug>>:-O3>
+    $<$<NOT:$<CONFIG:Debug>>:${MINER_LTO_FLAGS}>
+)
+# -s (strip) juga hanya non-Debug, supaya simbol debug tidak dibuang.
+target_link_options(miner-saya PRIVATE
+    $<$<NOT:$<CONFIG:Debug>>:${MINER_LTO_FLAGS}>
+    $<$<NOT:$<CONFIG:Debug>>:-s>
+)
 
 install(TARGETS miner-saya DESTINATION bin)

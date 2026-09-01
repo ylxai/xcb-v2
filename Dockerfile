@@ -20,7 +20,7 @@ RUN git submodule update --init --recursive
 RUN mkdir -p build && cd build && \
     cmake .. -DCMAKE_BUILD_TYPE=Release && \
     make -j$(nproc) && \
-    cd .. && LARGE_PAGES=0 ./build/miner-saya --selftest
+    cd .. && ./build/miner-saya --selftest
 
 # ============================================================
 # Stage 2: Minimal runtime image
@@ -52,7 +52,8 @@ ENV WALLET=cb23d6d8557e776f5ff9ab6a7fb7f59a3d385245fa7a
 ENV POOL=sg.catchthatrabbit.com:8008
 ENV WORKER=pool
 ENV THREADS=
-ENV FULL_MEM=1
-ENV LARGE_PAGES=0
+# FULL_MEM & LARGE_PAGES sengaja TIDAK di-set: miner memilih sendiri dari RAM
+# yang tersedia (cgroup limit dihitung), dan mematikan hugepages kalau host
+# tidak punya. Override manual tetap bisa: `-e FULL_MEM=1 -e LARGE_PAGES=1`.
 
 ENTRYPOINT ["./miner-saya"]
