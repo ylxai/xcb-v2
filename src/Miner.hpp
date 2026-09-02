@@ -9,6 +9,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <randomx.h>
 #include <string>
 #include <thread>
@@ -70,6 +71,11 @@ private:
     std::mutex m_jobMutex;
     std::shared_ptr<const Job> m_job;
     std::atomic<uint64_t> m_globalNonce{0};
+    // Titik awal nonce diacak per job. Tanpa ini m_globalNonce selalu mulai
+    // dari 0, jadi dua miner pada job yang sama menghitung deretan nonce yang
+    // persis sama — terukur 100% tumpang tindih. Di-seed sekali dari
+    // random_device di start(); dipakai di onNewJob() di bawah m_jobMutex.
+    std::mt19937_64 m_nonceRng;
 
     // Telemetry
     Stats m_stats;

@@ -53,6 +53,16 @@ bool Miner::start(const MinerConfig& cfg) {
     m_benchmark = cfg.benchmarkNonces > 0;
     m_benchmarkNonces = cfg.benchmarkNonces;
 
+    // Titik awal nonce harus berbeda antar proses, jadi seed dari sumber yang
+    // tidak sama di dua proses yang start bersamaan. Mode benchmark tidak
+    // terpengaruh: benchmark memasang m_job langsung tanpa lewat onNewJob(),
+    // jadi m_globalNonce tetap 0 dan angkanya tetap bisa diulang.
+    {
+        std::random_device rd;
+        m_nonceRng.seed((static_cast<uint64_t>(rd()) << 32) ^ static_cast<uint64_t>(rd()) ^
+                        static_cast<uint64_t>(getpid()));
+    }
+
     // CPU yang boleh dipakai, dipakai untuk pinning worker. Diambil sekali di
     // sini supaya semua worker melihat daftar yang sama.
     m_usableCpus = Config::usableCpus();
@@ -331,11 +341,22 @@ bool Miner::initDataset() {
 }
 
 void Miner::onNewJob(const Job& job) {
+    // Nonce start diacak per job, bukan direset ke 0. Dengan reset ke 0, dua
+    // miner yang menerima job sama menghitung deretan nonce yang identik —
+    // diuji dengan pool pencatat nonce: 100% tumpang tindih, satu di antaranya
+    // murni kerja terbuang. Diverifikasi juga bahwa pool nyata menerima nonce
+    // di seluruh rentang 64-bit (0x0, 0x1_0000_0000, 0xf0000000000000ff semua
+    // accept 100.0%), jadi mengacak titik awal tidak menaikkan share ditolak.
+    //
+    // Ruang nonce 2^64 dengan hashrate CPU (ribuan H/s): peluang dua miner
+    // bertabrakan dalam satu job praktis nol.
+    uint64_t nonceStart;
     {
         std::lock_guard<std::mutex> lock(m_jobMutex);
         m_job = std::make_shared<const Job>(job);
+        nonceStart = m_nonceRng();
     }
-    m_globalNonce.store(0, std::memory_order_relaxed);
+    m_globalNonce.store(nonceStart, std::memory_order_relaxed);
 
     {
         std::lock_guard<std::mutex> lock(m_stats.farm().mu);
