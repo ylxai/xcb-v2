@@ -7,7 +7,7 @@ Dibangun dari nol — **zero dev fee**, dependensi eksternal hanya RandomY + FTX
 
 - **Zero dev fee** — semua hash 100% ke wallet yang dikonfigurasi, tidak ada switch wallet
 - **ETHPROXY protocol** (`eth_submitLogin` / `eth_getWork` / `eth_submitWork`) untuk pool catchthatrabbit
-- **Light mode** (256MB cache) atau **full mode** (~2.6GB dataset), JIT compiler, huge pages auto-detect
+- **Light mode** (256MB cache) atau **full mode** (264MB dataset), JIT compiler, huge pages auto-detect
 - **CPU affinity + nice priority** — thread di-pin per core
 - **Multi-pool config file** (`pool.cfg`) — failover otomatis antar server
 - **Dashboard TUI (FTXUI)** — live stats interaktif, keyboard-driven (1/2/3 pindah tab, q quit)
@@ -52,7 +52,7 @@ Semua env vars dibaca langsung (precedence ≥ config file & CLI):
 | `POOL` | `sg.catchthatrabbit.com:8008` | Host pool `host:port` |
 | `WORKER` | `pool` | Nama worker (ditampilkan pool sebagai `wallet.worker`) |
 | `THREADS` | *(kosong)* | Jumlah thread. **Kosong = auto (jumlah CPU cores)** |
-| `FULL_MEM` | *(auto)* | `1` = dataset full 2.6GB, `0`/`false` = light 256MB. Kosong = pilih otomatis dari RAM tersedia / cgroup limit |
+| `FULL_MEM` | *(auto)* | `1` = dataset full 264MB, `0`/`false` = light 256MB. Kosong = pilih otomatis dari RAM tersedia / cgroup limit (ambang 776MB) |
 | `LARGE_PAGES` | *(auto)* | `1` = huge pages, `0`/`false` = memori biasa. Kosong = menyala hanya kalau huge page cukup |
 | `LOG_SHARES` | *(false)* | `1` = print setiap share found/accepted (default quiet — pool difficulty rendah sangat noisy) |
 
@@ -251,9 +251,16 @@ Wallet disimpan sebagai **Secret** (tidak di-env image). **`THREADS` wajib = `li
 | 2 | Light | ~122 H/s | ~256MB |
 | 4 | Light | **~291 H/s** | ~256MB |
 | 16 | Light | ~1.26 KH/s | ~256MB |
-| 16 | **Full** | **~7.9 KH/s** | ~2.6GB |
+| 16 | **Full** | **~7.9 KH/s** | ~264MB |
 
-> Full mode ±6x hashrate light mode (diverifikasi di VPS 16 core, 8GB RAM).
+>  Full mode ±6x hashrate light mode (diverifikasi di VPS 16 core, 8GB RAM).
+>
+>  RandomY bukan RandomX: `DATASET_BASE_SIZE` 256MiB + extra 8MiB, jadi dataset
+>  penuh hanya 264MB — bukan 2.6GB seperti RandomX. Puncak pemakaian ada saat
+>  init (dataset 264MB + cache 256MB hidup bersamaan, lalu cache dilepas):
+>  terukur RSS 524MB, dan mode full masih jalan di cgroup 536MB. Setelah init
+>  turun ke ~266MB. Jumlah thread tidak menambah RAM — scratchpad RandomY hanya
+>  128KiB per VM.
 
 ---
 

@@ -8,6 +8,13 @@
 #include <sstream>
 #include <unistd.h>
 
+// Ambang memori auto-detect harus ikut parameter RandomY yang sebenarnya
+// dikompilasi, bukan angka yang disalin dari RandomX. randomx.h memberi
+// RANDOMX_DATASET_ITEM_SIZE + randomx_dataset_item_count(), configuration.h
+// memberi RANDOMX_ARGON_MEMORY (ukuran cache, dalam KiB).
+#include <configuration.h>
+#include <randomx.h>
+
 // CPU yang boleh dipakai proses ini. sched_getaffinity menghormati cpuset
 // (docker --cpuset-cpus, k8s cpu manager, taskset), sementara
 // _SC_NPROCESSORS_ONLN tidak — memakai yang kedua berarti membuat thread untuk
@@ -305,7 +312,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  --selftest            Verify SHA3-512 implementation, then exit\n"
                       << "  --ui=MODE             Display: auto|ftxui|ansi|log (default auto)\n"
                       << "  --light               Force light dataset (~256MB)\n"
-                      << "  --full-mem            Force full dataset (~2.6GB)\n"
+                      << "  --full-mem            Force full dataset (~264MB)\n"
                       << "  --large-pages         Force hugepages on\n"
                       << "  --no-large-pages      Force hugepages off\n"
                       << "  --no-jit              Disable JIT\n"
@@ -432,20 +439,42 @@ void Config::autoDetect(MinerConfig& cfg) {
     if (hpSizeKb <= 0) hpSizeKb = 2048;
 
     if (cfg.fullMemAuto) {
-        // Mode full butuh dataset 2080MB + cache 256MB + overhead; pakai 3072MB
-        // sebagai ambang aman supaya tidak kena OOM-kill di tengah init.
-        const long kFullMemNeedMb = 3072;
+        // Ambang harus diturunkan dari parameter RandomY yang SEDANG dipakai,
+        // bukan angka RandomX. Fork core-coin memakai DATASET_BASE_SIZE
+        // 256MiB + EXTRA 8MiB (RandomX: 2GiB + 32MiB), jadi dataset di sini
+        // 264MB — delapan kali lebih kecil. Ambang lama 3072MB adalah angka
+        // RandomX dan memaksa light mode di mesin 576MB-2GB yang sebenarnya
+        // sanggup full mode; terukur 400 H/s vs 1.20 kH/s, kehilangan 3x.
+        //
+        // Cache dan dataset hidup bersamaan selama init (cache baru dilepas
+        // setelah randomx_init_dataset selesai), jadi puncaknya jumlah keduanya.
+        // Diukur di devbox: RSS puncak 524MB rata dari 1 sampai 8 thread —
+        // scratchpad RandomY hanya 128KiB per VM, jadi thread tidak menambah.
+        // Lantai OOM dengan swap dimatikan ada di antara 512MB dan 576MB.
+        const long datasetMb =
+            (long)((randomx_dataset_item_count() * RANDOMX_DATASET_ITEM_SIZE) / (1024 * 1024));
+        const long cacheMb = RANDOMX_ARGON_MEMORY / 1024;
+        // Sisa untuk biner, stack, kode hasil JIT, buffer stratum, dan
+        // optimisme MemAvailable/proses lain di mesin yang sama.
+        const long kInitOverheadMb = 256;
+        const long kFullMemNeedMb = datasetMb + cacheMb + kInitOverheadMb;
         cfg.fullMem = (usableMb < 0) ? false : (usableMb >= kFullMemNeedMb);
         std::cout << "[Config] auto FULL_MEM=" << (cfg.fullMem ? 1 : 0) << " (usable "
                   << (usableMb < 0 ? std::string("unknown") : std::to_string(usableMb) + "MB")
-                  << ", butuh " << kFullMemNeedMb << "MB untuk mode full)" << std::endl;
+                  << ", butuh " << kFullMemNeedMb << "MB untuk mode full: dataset " << datasetMb
+                  << "MB + cache " << cacheMb << "MB + overhead " << kInitOverheadMb << "MB)"
+                  << std::endl;
     }
 
     if (cfg.largePagesAuto) {
         // Butuh hugepages yang sudah dialokasikan host DAN cukup untuk mode yang
         // dipilih. Kalau nol (default hampir semua distro, container, CI runner),
         // langsung matikan supaya tidak ada alloc gagal + fallback.
-        const long needMb = cfg.fullMem ? 2560 + 256 : 256;
+        // Angkanya juga diturunkan dari parameter nyata, bukan 2560MB RandomX.
+        const long datasetMb =
+            (long)((randomx_dataset_item_count() * RANDOMX_DATASET_ITEM_SIZE) / (1024 * 1024));
+        const long cacheMb = RANDOMX_ARGON_MEMORY / 1024;
+        const long needMb = cfg.fullMem ? datasetMb + cacheMb : cacheMb;
         const long freeMb = (hpFree > 0) ? (hpFree * hpSizeKb) / 1024 : 0;
         cfg.largePages = (freeMb >= needMb);
         std::cout << "[Config] auto LARGE_PAGES=" << (cfg.largePages ? 1 : 0) << " (hugepages free "

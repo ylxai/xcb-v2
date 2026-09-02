@@ -289,7 +289,10 @@ bool Miner::initDataset() {
             m_dataset = randomx_alloc_dataset(m_flags);
         }
         if (!m_dataset) {
-            lg::error("miner", "Dataset alloc failed (~2.5GiB needed — try FULL_MEM=0)");
+            unsigned long needMb =
+                (randomx_dataset_item_count() * RANDOMX_DATASET_ITEM_SIZE) / (1024 * 1024);
+            lg::error("miner", "Dataset alloc failed (~" + std::to_string(needMb) +
+                                   "MB needed — try FULL_MEM=0)");
             return false;
         }
         uint32_t datasetItems = randomx_dataset_item_count();
