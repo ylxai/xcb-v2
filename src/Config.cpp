@@ -36,6 +36,35 @@ std::vector<int> Config::usableCpus() {
     return cpus;
 }
 
+// Nama worker dari hostname. Pool ETHPROXY memakai worker sebagai label bebas,
+// tapi ia ikut dalam string login "wallet.worker" — karakter aneh (titik,
+// spasi, kutip) bisa merusak pemisahan itu atau JSON-nya, jadi dibersihkan
+// ketat: huruf/angka/'-'/'_' dipertahankan, sisanya jadi '-'.
+std::string Config::hostWorkerName() {
+    char buf[256];
+    if (gethostname(buf, sizeof(buf)) != 0) return "worker";
+    buf[sizeof(buf) - 1] = '\0';
+
+    std::string h(buf);
+    // Hanya bagian pertama FQDN: "mesin.domain.tld" -> "mesin". Titik juga
+    // pemisah wallet.worker, jadi tidak boleh ikut.
+    auto dot = h.find('.');
+    if (dot != std::string::npos) h = h.substr(0, dot);
+
+    std::string out;
+    for (char c : h) {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+            c == '-' || c == '_')
+            out += c;
+        else if (!out.empty() && out.back() != '-')
+            out += '-';
+        if (out.size() >= 32) break;  // pool umumnya membatasi panjang worker
+    }
+    while (!out.empty() && out.back() == '-') out.pop_back();
+
+    return out.empty() ? "worker" : out;
+}
+
 static std::string expandHome(const std::string& path) {
     if (path.empty() || path[0] != '~') return path;
     const char* home = getenv("HOME");
@@ -304,7 +333,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: miner-saya [options]\n"
                       << "  -o host:port          Pool address\n"
-                      << "  -u wallet[.worker]    Wallet address\n"
+                      << "  -u wallet[.worker]    Wallet address (worker 'auto' = hostname)\n"
                       << "  -p password           Pool password\n"
                       << "  -t N                  Thread count\n"
                       << "  -R, --report-hashrate Submit hashrate to pool every 60s\n"
@@ -327,7 +356,24 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     
     // Apply wallet from file if CLI didn't override
     // (already done in loadFile)
-    
+
+    // worker=auto -> nama hostname mesin. Berguna saat satu pool.cfg dipakai di
+    // beberapa mesin (devbox, VPS, laptop): tiap mesin muncul dengan namanya
+    // sendiri di dashboard pool tanpa perlu file berbeda per mesin. Wallet
+    // tidak tersentuh. Berlaku untuk nilai dari pool.cfg, env WORKER, maupun
+    // -u wallet.auto.
+    {
+        std::string hostName;
+        for (auto& p : cfg.pools) {
+            if (p.worker != "auto") continue;
+            if (hostName.empty()) hostName = hostWorkerName();
+            p.worker = hostName;
+        }
+        if (!hostName.empty())
+            std::cout << "[Config] worker=auto -> \"" << hostName << "\" (hostname mesin)"
+                      << std::endl;
+    }
+
     // Validate — but only for modes that actually talk to a pool.
     // --selftest and --benchmark never open a stratum connection, so requiring
     // pool.cfg there breaks `miner-saya --selftest` from any directory (CI

@@ -41,4 +41,10 @@ public:
     // _SC_NPROCESSORS_ONLN ikut menghitung CPU yang terlarang, sehingga
     // thread dibuat berlebih dan pinning-nya gagal dengan EINVAL.
     static std::vector<int> usableCpus();
+    // Nama worker dari hostname mesin, dibersihkan agar aman dikirim ke pool
+    // (huruf/angka/'-'/'_' saja, maks 32 char). Dipakai saat worker=auto,
+    // supaya tiap devbox/VPS muncul dengan namanya sendiri di dashboard pool
+    // tanpa perlu mengubah pool.cfg per mesin. Kembalikan "worker" bila
+    // hostname tidak bisa dibaca atau tidak menyisakan karakter yang sah.
+    static std::string hostWorkerName();
 };

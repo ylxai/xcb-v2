@@ -50,7 +50,7 @@ Semua env vars dibaca langsung (precedence ≥ config file & CLI):
 |----------|---------|-----------|
 | `WALLET` | *(dari image)* | Alamat wallet Core Coin (XCB) |
 | `POOL` | `sg.catchthatrabbit.com:8008` | Host pool `host:port` |
-| `WORKER` | `pool` | Nama worker (ditampilkan pool sebagai `wallet.worker`) |
+| `WORKER` | `pool` | Nama worker (ditampilkan pool sebagai `wallet.worker`). `auto` = hostname mesin |
 | `THREADS` | *(kosong)* | Jumlah thread. **Kosong = auto (jumlah CPU cores)** |
 | `FULL_MEM` | *(auto)* | `1` = dataset full 264MB, `0`/`false` = light 256MB. Kosong = pilih otomatis dari RAM tersedia / cgroup limit (ambang 776MB) |
 | `LARGE_PAGES` | *(auto)* | `1` = huge pages, `0`/`false` = memori biasa. Kosong = menyala hanya kalau huge page cukup |
@@ -118,7 +118,7 @@ File `pool.cfg` (cwd, `/miner/pool.cfg`, atau `~/xcb/pool.cfg` — dicek otomati
 
 ```ini
 wallet=alamat_wallet_anda
-worker=pool
+worker=auto
 server[1]=sg.catchthatrabbit.com
 port[1]=8008
 server[2]=hk.catchthatrabbit.com
@@ -128,6 +128,14 @@ port[3]=8008
 threads=4
 light=true
 ```
+
+`worker=auto` memakai **hostname mesin** sebagai nama worker, jadi satu
+`pool.cfg` bisa dipakai di beberapa mesin (devbox, VPS, laptop) tanpa diubah dan
+tiap mesin tetap terlihat terpisah di dashboard pool. Wallet tidak terpengaruh.
+Hostname dibersihkan dulu — hanya huruf/angka/`-`/`_`, dipotong di titik pertama
+(`mesin.domain.tld` → `mesin`, karena titik adalah pemisah `wallet.worker`),
+maksimal 32 char, dan jatuh ke `worker` bila tidak ada karakter yang sah. Nilai
+`auto` juga berlaku lewat `WORKER=auto` maupun `-u wallet.auto`.
 
 > Precedence: **env vars > pool.cfg > CLI flags**. `WALLET`+`POOL` env aktif = pool.cfg diabaikan.
 > Commands flag: `-o host:port`, `-u wallet[.worker]`, `-p password`, `-t N`, `--light`, `--no-jit`, `--ui=MODE`, `-h`.
