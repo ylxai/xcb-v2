@@ -122,6 +122,45 @@ seg_fill:
     decq %r13
     jnz seg_loop
 
+    # --- auxv rewrite (seperti fix-up stack UPX) ---
+    # Kernel memberi auxv milik STUB (PIE). Payload glibc static membaca
+    # AT_PHDR/AT_PHENT/AT_PHNUM/AT_ENTRY untuk menemukan program headers
+    # sendiri (cari PT_TLS) -> arahkan ulang ke payload.
+    movq (%rsp), %rcx              # argc
+    leaq 8(%rsp,%rcx,8), %rsi      # &argv[argc] = NULL terminator
+    addq $8, %rsi                  # envp start
+1:  cmpq $0, (%rsi)                # cari NULL envp
+    je 2f
+    addq $8, %rsi
+    jmp 1b
+2:  addq $8, %rsi                  # auxv start
+3:  movq (%rsi), %rax              # a_type
+    testq %rax, %rax
+    je 6f                          # AT_NULL -> selesai
+    cmpq $3, %rax                  # AT_PHDR
+    jne 7f
+    leaq 0x40(%r15), %rdx          # base + e_phoff
+    movq %rdx, 8(%rsi)
+    jmp 5f
+7:  cmpq $4, %rax                  # AT_PHENT
+    jne 8f
+    movq phent(%rip), %rdx
+    movq %rdx, 8(%rsi)
+    jmp 5f
+8:  cmpq $5, %rax                  # AT_PHNUM
+    jne 9f
+    movq phnum(%rip), %rdx
+    movq %rdx, 8(%rsi)
+    jmp 5f
+9:  cmpq $9, %rax                  # AT_ENTRY
+    jne 5f
+    movq %r15, %rdx
+    addq entry_off(%rip), %rdx
+    movq %rdx, 8(%rsi)
+5:  addq $16, %rsi
+    jmp 3b
+6:
+
     # jmp entry (stack tetap utuh dari kernel: argc/argv/envp)
     movq %r15, %rax
     addq entry_off(%rip), %rax
@@ -133,6 +172,8 @@ range:      .quad @@RANGE@@
 mmap_flags: .quad @@FLAGS@@
 nsegs:      .quad @@NSEGS@@
 entry_off:  .quad @@ENTRY_OFF@@
+phent:      .quad @@PHENT@@
+phnum:      .quad @@PHNUM@@
 key:        .byte @@KEY@@
 segs:
 @@SEGS@@
@@ -226,7 +267,7 @@ def parse_elf(path):
         ))
     if not segs:
         sys.exit(f"{path}: tidak ada PT_LOAD")
-    return d, e_type, e_entry, segs
+    return d, e_type, e_entry, e_phentsize, e_phnum, segs
 
 
 def prot_convert(pf):
@@ -296,7 +337,7 @@ def blob_lines(b):
 # ============================================================
 # Builders
 # ============================================================
-def build_static(d, e_type, e_entry, segs, key, out_path):
+def build_static(d, e_type, e_entry, e_phentsize, e_phnum, segs, key, out_path):
     min_v = min(s[1] for s in segs)
     max_v = max(s[1] + s[3] for s in segs)
     total = max_v - min_v
@@ -329,6 +370,8 @@ def build_static(d, e_type, e_entry, segs, key, out_path):
         FLAGS=0x22 | (0x10 if e_type == 2 else 0),   # MAP_FIXED utk ET_EXEC
         NSEGS=len(segs),
         ENTRY_OFF=e_entry - min_v,
+        PHENT=e_phentsize,
+        PHNUM=e_phnum,
         KEY=key,
         SEGS="\n".join(seg_lines),
         BLOB=blob_lines(blob),
@@ -381,11 +424,12 @@ def main():
     ap.add_argument("-s", "--seed", type=int, default=None)
     args = ap.parse_args()
 
-    d, e_type, e_entry, segs = parse_elf(args.payload)
+    d, e_type, e_entry, e_phentsize, e_phnum, segs = parse_elf(args.payload)
     key = random.Random(args.seed).randrange(256)
 
     if args.mode == "static":
-        build_static(d, e_type, e_entry, segs, key, args.out)
+        build_static(d, e_type, e_entry, e_phentsize, e_phnum, segs, key,
+                     args.out)
         kind = "static in-memory loader"
     else:
         build_dynamic(d, key, args.out)
