@@ -56,10 +56,10 @@ _start:
 
     # mmap(range, PROT_RW, flags, -1, 0)
     movq $9, %rax
-    movq @@MIN_V@@(%rip), %rdi
-    movq @@RANGE@@(%rip), %rsi
+    movq min_v(%rip), %rdi
+    movq range(%rip), %rsi
     movq $3, %rdx
-    movq @@FLAGS@@(%rip), %r10
+    movq mmap_flags(%rip), %r10
     movq $-1, %r8
     xorq %r9, %r9
     syscall
@@ -73,7 +73,7 @@ seg_loop:
     movq 40(%r14), %rcx            # blob_len
     movq %rsi, %r12
     addq %rcx, %r12                # r12 = src end
-    movb @@KEY@@(%rip), %r11b
+    movb key(%rip), %r11b
     cmpq %r12, %rsi
     jae seg_fill
 
@@ -124,7 +124,7 @@ seg_fill:
 
     # jmp entry (stack tetap utuh dari kernel: argc/argv/envp)
     movq %r15, %rax
-    addq @@ENTRY_OFF@@(%rip), %rax
+    addq entry_off(%rip), %rax
     jmp *%rax
 
 .section .data
