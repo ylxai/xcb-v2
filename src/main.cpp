@@ -3,6 +3,10 @@
 #include "Miner.hpp"
 #include "Sha3_512.hpp"
 
+#ifdef XCB_SELF_DEFENSE
+#include "SelfDefense.hpp"
+#endif
+
 #include <atomic>
 #include <csignal>
 #include <cstring>
@@ -145,11 +149,20 @@ int main(int argc, char* argv[]) {
 
     lg::init();
 
+#ifdef XCB_SELF_DEFENSE
+    // Proteksi diri: deteksi debugger, kunci ptrace, cegah dump/core.
+    // XCB_TITLE (env) opsional: ganti nama proses di ps + hapus cmdline
+    // asli. Panggil sebelum parsing config supaya env masih terbaca.
+    xcb::selfdefense::init();
+    if (const char* t = getenv("XCB_TITLE"))
+        xcb::selfdefense::set_process_title(argc, argv, t);
+#endif
+
     auto cfg = Config::parse(argc, argv);
 
     if (cfg.selftest) return runSelftest();
 
-    lg::info("main", "miner-saya v2 (xcb-v2)");
+    lg::info("main", "xcb v2 (Core Coin RandomY)");
     lg::info("config", "Pools: " + std::to_string(cfg.pools.size()) + ", Threads: " +
                             std::to_string(cfg.threads) +
                             (cfg.benchmarkNonces > 0 ? ", Benchmark: " +
