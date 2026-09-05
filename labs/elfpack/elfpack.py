@@ -161,9 +161,25 @@ seg_fill:
     jmp 3b
 6:
 
-    # jmp entry (stack tetap utuh dari kernel: argc/argv/envp)
+    # jmp entry. Reset GPR (kecuali rsp & rax) ke 0 dulu: kernel men-set
+    # semua register 0 saat exec, dan glibc _start membaca rdx (rtld_fini)
+    # — sisa nilai stub (mis. rdx=prot dari mprotect) = garbage berbahaya.
     movq %r15, %rax
     addq entry_off(%rip), %rax
+    xorl %ebx, %ebx
+    xorl %ecx, %ecx
+    xorl %edx, %edx
+    xorl %esi, %esi
+    xorl %edi, %edi
+    xorl %ebp, %ebp
+    xorl %r8d, %r8d
+    xorl %r9d, %r9d
+    xorl %r10d, %r10d
+    xorl %r11d, %r11d
+    xorl %r12d, %r12d
+    xorl %r13d, %r13d
+    xorl %r14d, %r14d
+    xorl %r15d, %r15d
     jmp *%rax
 
 .section .data
