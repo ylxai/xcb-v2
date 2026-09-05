@@ -87,6 +87,44 @@ make -j$(nproc)
 ./build/xcb --benchmark 10000 # smoke test tanpa pool, lalu Ctrl+C
 ```
 
+### Proteksi Diri (Opsional, OFF default)
+
+Build dengan anti-debugging + penyamaran proses:
+
+```bash
+cmake .. -DCMAKE_BUILD_TYPE=Release -DENABLE_SELF_DEFENSE=ON
+make -j$(nproc)
+```
+
+Yang aktif di binary hasil build ini:
+
+- **Deteksi debugger** — `TracerPid != 0` (strace/gdb sudah menempel) → proses
+  keluar sebelum sempat membaca config/wallet dari memori.
+- **Anti-dump** — `PR_SET_DUMPABLE=0` + `RLIMIT_CORE=0`: `/proc/<pid>/mem`
+  dan `/proc/<pid>/environ` tidak bisa dibaca proses lain, tidak ada core file.
+- **Anti-ptrace** — `PTRACE_TRACEME` dikunci: `strace -p <pid>` dan
+  `gdb -p <pid>` ditolak kernel (`Operation not permitted`).
+- **Title spoof (opsional)** — env `XCB_TITLE=nama` mengganti nama proses di
+  `ps` (comm) dan menghapus cmdline asli (host/wallet/pool tidak terlihat):
+
+```bash
+XCB_TITLE=xd ./build/xcb -o pool:port -u wallet.worker
+ps aux | grep xd   # proses tampil sebagai "xd", tanpa argumen
+```
+
+Catatan: proteksi ini menargetkan pengintaian tingkat userland. Kernel tetap
+mengetahui prosesnya (root tetap bisa melihat/menghentikan). Build normal
+(tanpa flag) tetap bersih dan tidak mengandung kode ini.
+
+### Lab Studi Keamanan
+
+- `labs/syscall-hook/` — hooking syscall: ptrace interceptor, seccomp user
+  notification, LD_PRELOAD interposisi, kprobe tracefs (tanpa LKM).
+- `labs/process-hide/` — menyembunyikan `/proc/<pid>` dari `ps`/`pgrep`/`ls`
+  via LD_PRELOAD (interposisi `readdir`/`getdents64`). Batas tekniknya
+  didokumentasikan di `labs/process-hide/README.md` — ini userland hiding,
+  bukan stealth kernel.
+
 `--selftest` wajib lolos sebelum mining: ia memverifikasi implementasi keccak
 hot-path (`len%72==71` dan kasus edge lain yang pernah salah di picosha3).
 
