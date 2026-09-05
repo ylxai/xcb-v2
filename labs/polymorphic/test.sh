@@ -20,7 +20,7 @@ echo
 echo "== verifikasi 1: semua output SAMA =="
 fail=0
 for v in variant_*; do
-    out=$("$v" 2>&1)
+    out=$("./$v" 2>&1)
     if [ "$out" = "$EXPECT" ]; then
         echo "  OK   $v -> $out"
     else
