@@ -16,11 +16,11 @@ python3 elfpack.py -m dynamic -p hello_dyn -o packed_dyn || exit 1
 echo
 echo "== verifikasi STATIC: output + exit code identik =="
 exp_s=$(./hello_static); exp_c=$?
-got_s=$(./packed_static); got_c=$?
+got_s=$(bash -c 'exec -a ./hello_static ./packed_static'); got_c=$?
 echo "  asli : [$exp_s] rc=$exp_c"
 echo "  pack : [$got_s] rc=$got_c"
 if [ "$exp_s" = "$got_s" ] && [ "$exp_c" -eq "$got_c" ]; then
-    echo "  OK static (in-memory loader)"
+    echo "  OK static (in-memory loader, argv/envp utuh)"
 else
     echo "  GAGAL static"; exit 1
 fi
@@ -29,7 +29,7 @@ echo
 echo "== verifikasi DYNAMIC: output + exit code + temp bersih =="
 rm -f /tmp/.elx_*
 exp_d=$(./hello_dyn); exp_c=$?
-got_d=$(./packed_dyn); got_c=$?
+got_d=$(bash -c 'exec -a ./hello_dyn ./packed_dyn'); got_c=$?
 echo "  asli : [$exp_d] rc=$exp_c"
 echo "  pack : [$got_d] rc=$got_c"
 if [ "$exp_d" = "$got_d" ] && [ "$exp_c" -eq "$got_c" ]; then
