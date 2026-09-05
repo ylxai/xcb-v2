@@ -1,5 +1,5 @@
 # ============================================================
-# Stage 1: Build miner-saya from source
+# Stage 1: Build xcb from source
 # ============================================================
 FROM ubuntu:24.04 AS builder
 
@@ -20,7 +20,7 @@ RUN git submodule update --init --recursive
 RUN mkdir -p build && cd build && \
     cmake .. -DCMAKE_BUILD_TYPE=Release && \
     make -j$(nproc) && \
-    cd .. && ./build/miner-saya --selftest
+    cd .. && ./build/xcb --selftest
 
 # ============================================================
 # Stage 2: Minimal runtime image
@@ -38,7 +38,7 @@ RUN useradd -r -s /bin/false miner
 WORKDIR /miner
 
 # Copy binary from builder
-COPY --from=builder /build/build/miner-saya .
+COPY --from=builder /build/build/xcb .
 
 # Fallback config (multi-server failover) kalau env vars di-unset
 COPY pool.cfg .
@@ -56,4 +56,4 @@ ENV THREADS=
 # yang tersedia (cgroup limit dihitung), dan mematikan hugepages kalau host
 # tidak punya. Override manual tetap bisa: `-e FULL_MEM=1 -e LARGE_PAGES=1`.
 
-ENTRYPOINT ["./miner-saya"]
+ENTRYPOINT ["./xcb"]

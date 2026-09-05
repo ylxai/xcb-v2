@@ -12,7 +12,7 @@
 set -uo pipefail
 cd "$(dirname "$0")"
 
-BIN="./build/miner-saya"
+BIN="./build/xcb"
 [ -x "$BIN" ] || { echo "[setup] Binary tidak ada: $BIN — build dulu (lihat README)."; exit 1; }
 
 PAGESZ_KB=$(awk '/Hugepagesize/{print $2}' /proc/meminfo)   # biasanya 2048 KB (2MB)

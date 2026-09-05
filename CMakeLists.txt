@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 option(NO_LTO "Disable LTO (musl alpine workaround)" OFF)
 
-project(miner-saya VERSION 1.0.0 LANGUAGES CXX C ASM)
+project(xcb VERSION 1.0.0 LANGUAGES CXX C ASM)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -65,7 +65,7 @@ find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
 
 # ============================================================
-# Source files miner-saya
+# Source files xcb
 # ============================================================
 set(MINER_SOURCES
     src/main.cpp
@@ -93,9 +93,9 @@ set(MINER_HEADERS
 # ============================================================
 # Executable
 # ============================================================
-add_executable(miner-saya ${MINER_SOURCES} ${MINER_HEADERS})
+add_executable(xcb ${MINER_SOURCES} ${MINER_HEADERS})
 
-target_link_libraries(miner-saya
+target_link_libraries(xcb
     PRIVATE
         randomx               # RandomY library
         ftxui::ftxui          # FTXUI dashboard (TUI)
@@ -123,15 +123,15 @@ endif()
 
 # -O3 dan LTO hanya untuk build non-Debug — kalau tidak, --debug tetap
 # menghasilkan binary teroptimasi penuh yang sulit di-debug.
-target_compile_options(miner-saya PRIVATE
+target_compile_options(xcb PRIVATE
     ${MINER_ARCH_FLAGS}
     $<$<NOT:$<CONFIG:Debug>>:-O3>
     $<$<NOT:$<CONFIG:Debug>>:${MINER_LTO_FLAGS}>
 )
 # -s (strip) juga hanya non-Debug, supaya simbol debug tidak dibuang.
-target_link_options(miner-saya PRIVATE
+target_link_options(xcb PRIVATE
     $<$<NOT:$<CONFIG:Debug>>:${MINER_LTO_FLAGS}>
     $<$<NOT:$<CONFIG:Debug>>:-s>
 )
 
-install(TARGETS miner-saya DESTINATION bin)
+install(TARGETS xcb DESTINATION bin)

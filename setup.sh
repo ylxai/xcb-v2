@@ -150,23 +150,23 @@ fi
 
 # LTO/musl ditangani di CMakeLists.txt (deteksi via -dumpmachine), tidak lagi
 # lewat probe `ldd --version` yang exit non-zero di musl dan tertelan pipefail.
-info "Building miner-saya ($BUILD_TYPE)..."
+info "Building xcb ($BUILD_TYPE)..."
 mkdir -p build && cd build
 cmake .. -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)"
 cd ..
-ok "Build: build/miner-saya"
+ok "Build: build/xcb"
 
 # ============================================================
 # 5. Selftest
 # ============================================================
 info "Selftest..."
-./build/miner-saya --selftest
+./build/xcb --selftest
 ok "Selftest passed"
 
 echo
 echo -e "${GREEN}✅ Setup complete${NC}"
 echo "  ./mine.sh                    # auto-detect CPU/RAM, set hugepages"
-echo "  ./build/miner-saya -t 4      # jalankan langsung"
-echo "  ./build/miner-saya --selftest"
+echo "  ./build/xcb -t 4      # jalankan langsung"
+echo "  ./build/xcb --selftest"
 echo "  ./docker-build.sh            # build image docker"

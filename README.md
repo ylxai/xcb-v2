@@ -1,4 +1,4 @@
-# miner-saya — Core Coin (XCB) RandomY Miner
+# xcb — Core Coin (XCB) RandomY Miner
 
 [![CI](https://github.com/ylxai/xcb-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/ylxai/xcb-v2/actions/workflows/ci.yml)
 
@@ -75,7 +75,7 @@ git submodule update --init --recursive   # Wajib: tarik RandomY + FTXUI
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
-# Binary: build/miner-saya (stripped)
+# Binary: build/xcb (stripped)
 ```
 
 > Submodule **harus** di-init dulu sebelum `cmake ..` — kalau belum, CMake gagal
@@ -83,8 +83,8 @@ make -j$(nproc)
 
 ### Verifikasi Build
 ```bash
-./build/miner-saya --selftest        # cek hash SHA3-512 vs vektor NIST/OpenSSL (30 cek)
-./build/miner-saya --benchmark 10000 # smoke test tanpa pool, lalu Ctrl+C
+./build/xcb --selftest        # cek hash SHA3-512 vs vektor NIST/OpenSSL (30 cek)
+./build/xcb --benchmark 10000 # smoke test tanpa pool, lalu Ctrl+C
 ```
 
 `--selftest` wajib lolos sebelum mining: ia memverifikasi implementasi keccak
@@ -95,10 +95,10 @@ hot-path (`len%72==71` dan kasus edge lain yang pernah salah di picosha3).
 ## Cara Pakai (Local Binary)
 
 ```bash
-./miner-saya                        # auto threads, lihat pool.cfg / env
-./miner-saya -t 4                   # 4 thread
-./miner-saya --light -t 1           # 1 thread light mode
-./miner-saya -o pool.lain.com:8008 -u wallet.worker   # override pool+wallet
+./xcb                        # auto threads, lihat pool.cfg / env
+./xcb -t 4                   # 4 thread
+./xcb --light -t 1           # 1 thread light mode
+./xcb -o pool.lain.com:8008 -u wallet.worker   # override pool+wallet
 ```
 
 ### Auto-setup hugepages: `./mine.sh`
@@ -189,7 +189,7 @@ docker build -t ylxai/xcb:v1 .
 docker run --rm ylxai/xcb:v1
 ```
 
-Image docker **multi-stage** (builder → runtime ~32MB), jalan sebagai user non-root `miner`, entrypoint `./miner-saya`.
+Image docker **multi-stage** (builder → runtime ~32MB), jalan sebagai user non-root `miner`, entrypoint `./xcb`.
 `pool.cfg` ikut di-copy ke `/miner/pool.cfg` sebagai fallback.
 
 ---
@@ -284,7 +284,7 @@ sudo sysctl vm.nr_hugepages=1280
 echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
 
 # Realtime priority
-sudo chrt -rr 1 ./miner-saya
+sudo chrt -rr 1 ./xcb
 ```
 
 ---

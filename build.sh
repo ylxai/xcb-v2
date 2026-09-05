@@ -65,11 +65,11 @@ info "Building with $JOBS threads..."
 make -j"$JOBS" 2>&1
 
 cd ..
-ok "Build complete: build/miner-saya"
+ok "Build complete: build/xcb"
 
 # Selftest
 if [ "$RUN_TEST" -eq 1 ]; then
   info "Running selftest..."
-  ./build/miner-saya --selftest
+  ./build/xcb --selftest
   ok "Selftest passed ✅"
 fi
