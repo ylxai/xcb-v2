@@ -110,15 +110,15 @@ seg_fill:
     xorl %eax, %eax
     rep stosb
 
-    # mprotect(base+off, memsz, prot)
+    # mprotect(base + mprot_off, mprot_len, prot)  — range ter-align page
     movq $10, %rax
     movq %r15, %rdi
-    addq 0(%r14), %rdi
-    movq 16(%r14), %rsi
+    addq 56(%r14), %rdi
+    movq 64(%r14), %rsi
     movq 24(%r14), %rdx
     syscall
 
-    addq $56, %r14                 # 7 qwords per segmen
+    addq $72, %r14                 # 9 qwords per segmen
     decq %r13
     jnz seg_loop
 
@@ -268,6 +268,24 @@ def xorfy(blob, key):
     return bytes(c ^ key for c in blob)
 
 
+def rle_decode(data):
+    """Decode RLE — logika identik dengan decoder di stub assembly.
+    Dipakai self-test roundtrip supaya encoder & decoder selalu sinkron."""
+    out = bytearray()
+    i = 0
+    n = len(data)
+    while i < n:
+        c = data[i]
+        if c & 0x80:
+            cnt = (c & 0x7f) + 1
+            out += bytes([data[i + 1]]) * cnt
+            i += 2
+        else:
+            out.append(c)
+            i += 1
+    return bytes(out)
+
+
 def blob_lines(b):
     lines = []
     for i in range(0, len(b), 12):
@@ -281,18 +299,29 @@ def blob_lines(b):
 def build_static(d, e_type, e_entry, segs, key, out_path):
     min_v = min(s[1] for s in segs)
     max_v = max(s[1] + s[3] for s in segs)
+    total = max_v - min_v
     blob = b""
     seg_lines = []
     for (p_off, p_vaddr, p_filesz, p_memsz, p_flags) in segs:
         data = d[p_off:p_off + p_filesz]
         enc = xorfy(rle_encode(data), key)
-        seg_lines.append(f"    .quad {p_vaddr - min_v}      # off")
+        # range mprotect harus page-aligned dan di-clamp ke region mmap
+        start = p_vaddr - min_v
+        end = start + p_memsz
+        mp_off = start & ~0xFFF
+        mp_len = (end + 0xFFF) & ~0xFFF
+        if mp_len > total:
+            mp_len = total
+        mp_len -= mp_off
+        seg_lines.append(f"    .quad {start}      # off")
         seg_lines.append(f"    .quad {p_filesz}      # filesz")
         seg_lines.append(f"    .quad {p_memsz}      # memsz")
         seg_lines.append(f"    .quad {prot_convert(p_flags)}      # prot")
         seg_lines.append(f"    .quad {len(blob)}      # blob_off")
         seg_lines.append(f"    .quad {len(enc)}      # blob_len")
         seg_lines.append("    .quad 0")
+        seg_lines.append(f"    .quad {mp_off}      # mprot_off")
+        seg_lines.append(f"    .quad {mp_len}      # mprot_len")
         blob += enc
     stub = fill(STUB_STATIC, dict(
         MIN_V=min_v,
@@ -361,6 +390,12 @@ def main():
     else:
         build_dynamic(d, key, args.out)
         kind = "dynamic temp+execve loader"
+
+    # self-test: RLE roundtrip harus identik (encoder == decoder assembly)
+    for seg in segs:
+        data = d[seg[0]:seg[0] + seg[2]]
+        assert rle_decode(xorfy(xorfy(rle_encode(data), key), key)) == data, \
+            "RLE roundtrip gagal — encoder/decoder tidak sinkron"
 
     orig = hashlib.sha256(d).hexdigest()[:16]
     packed = hashlib.sha256(open(args.out, "rb").read()).hexdigest()[:16]
