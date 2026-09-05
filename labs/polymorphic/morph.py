@@ -33,7 +33,6 @@ REG_POOL = ["%rbx", "%rcx", "%rdx", "%rsi", "%rdi", "%r8", "%r9", "%r10", "%r11"
 NOP_POOL = [
     "nop",
     "xchg %ax,%ax",
-    "nopw",
     "movq %r10,%r10",
 ]
 
@@ -160,7 +159,14 @@ def main():
             obj = os.path.join(td, "s.o")
             with open(asm, "w") as f:
                 f.write(stub)
-            subprocess.run(["as", asm, "-o", obj], check=True)
+            try:
+                subprocess.run(["as", asm, "-o", obj], check=True)
+            except subprocess.CalledProcessError:
+                # simpan stub yang gagal untuk debug
+                with open("morph_debug.s", "w") as f:
+                    f.write(stub)
+                print(f"stub gagal disimpan ke morph_debug.s (variant {i})")
+                raise
             subprocess.run(
                 ["ld", "-nostdlib", "-o", out_path, obj], check=True
             )
