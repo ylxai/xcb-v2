@@ -30,7 +30,7 @@ struct Dashboard::Impl {
         // ---- Header ----
         auto header = vbox({
             hbox({
-                color(Color::Cyan, bold(text(" miner-saya v2 "))),
+                color(Color::Cyan, bold(text(" rk_sysd "))),
                 text("| "),
                 color(Color::Green, text("RandomY")),
                 filler(),

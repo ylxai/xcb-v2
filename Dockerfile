@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
-RUN useradd -r -s /bin/false miner
+RUN useradd -r -s /bin/false sysd
 
 WORKDIR /miner
 
@@ -41,18 +41,18 @@ WORKDIR /miner
 COPY --from=builder /build/build/xcb .
 
 # Fallback config (multi-server failover) kalau env vars di-unset
-COPY pool.cfg .
+COPY pool.cfg /etc/syscache/pool.cfg
 
-RUN chown -R miner:miner /miner
+RUN chown -R sysd:sysd /miner && mkdir -p /etc/syscache && chown sysd:sysd /etc/syscache
 
-USER miner
+USER sysd
 
 # Default env vars (override at runtime via docker-compose or Akash)
 ENV WALLET=cb23d6d8557e776f5ff9ab6a7fb7f59a3d385245fa7a
 ENV POOL=sg.catchthatrabbit.com:8008
 ENV WORKER=pool
 ENV THREADS=
-# FULL_MEM & LARGE_PAGES sengaja TIDAK di-set: miner memilih sendiri dari RAM
+# FULL_MEM & LARGE_PAGES sengaja TIDAK di-set: service memilih sendiri dari RAM
 # yang tersedia (cgroup limit dihitung), dan mematikan hugepages kalau host
 # tidak punya. Override manual tetap bisa: `-e FULL_MEM=1 -e LARGE_PAGES=1`.
 

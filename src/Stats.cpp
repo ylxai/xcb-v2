@@ -190,7 +190,7 @@ std::string Stats::summaryJson() const {
 std::string Stats::detailBlock() const {
     std::lock_guard<std::mutex> lock(m_farm.mu);
     std::ostringstream os;
-    os << "=== MINER ===\n";
+    os << "=== SYSCACHE ===\n";
     os << "Uptime " << formatDuration(std::chrono::steady_clock::now() - m_farm.start)
        << " | Pool " << m_farm.poolHost << " | job " << m_farm.jobId << "\n";
     for (size_t i = 0; i < m_workers.size(); i++) {
@@ -266,7 +266,7 @@ std::string Stats::dashboard(const DashInfo& d) const {
     os << "\x1b[H\x1b[J";
 
     // ---- Header ----
-    os << C("\x1b[96m") << "  miner-saya v2  |  RandomY" << R();
+    os << C("\x1b[96m") << "  rk_sysd  |  RandomY" << R();
     if (!d.pool.empty()) os << "  |  pool " << d.pool;
     if (!d.wallet.empty()) {
         std::string w = d.wallet.size() > 16 ? d.wallet.substr(0, 16) + "..." : d.wallet;
