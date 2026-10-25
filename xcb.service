@@ -1,0 +1,17 @@
+[Unit]
+Description=xcb RandomY miner (Core Coin)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/xcb-v2
+ExecStart=/home/ubuntu/xcb-v2/build/xcb --ui=log
+Restart=always
+RestartSec=5
+LimitMEMLOCK=infinity
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

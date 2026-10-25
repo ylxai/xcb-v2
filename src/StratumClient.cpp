@@ -480,7 +480,7 @@ bool StratumClient::doEthGetWork() {
         lg::warn("stratum", "SEED HASH BERUBAH: " + m_currentSeed.substr(0, 16) + "... -> " +
                                 seed.substr(0, 16) +
                                 "... — cache RandomY dibangun dari key tetap, share bisa "
-                                "ditolak semua sampai miner di-restart");
+                                "ditolak semua sampai service di-restart");
 
     m_currentHeader = header;
     m_currentSeed = seed;
@@ -543,6 +543,9 @@ bool StratumClient::submitShare(const std::string& headerHex, const std::string&
     uint64_t id = m_msgId.fetch_add(1);
     {
         std::lock_guard<std::mutex> lock(m_pendingMutex);
+        // Pool lambat / diff rendah = ratusan share in-flight. Batasi supaya
+        // map tidak tumbuh tanpa batas bila respons tidak pernah datang.
+        if (m_pending.size() >= 4096) m_pending.erase(m_pending.begin());
         m_pending[id] = {std::chrono::steady_clock::now(), workerIdx};
     }
 

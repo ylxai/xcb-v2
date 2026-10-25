@@ -37,16 +37,19 @@ for a in "$@"; do
 done
 
 if [ "$LIGHT" = 1 ]; then
-  NEED_PAGES=$(( (256 + 512) * 1024 / PAGESZ_KB ))   # dataset light ~256MB + buffer
-  echo "[setup] Mode: LIGHT (dataset ~256MB)"
+  # RandomY light: cache 256MB saja (tanpa dataset). +64MB buffer JIT/stack.
+  NEED_PAGES=$(( (256 + 64) * 1024 / PAGESZ_KB ))
+  echo "[setup] Mode: LIGHT (RandomY cache ~256MB)"
   # --light harus ikut ke miner. Tanpa ini skrip cuma menyetel hugepages untuk
   # light lalu menjalankan miner dalam mode full — kebalikan dari yang diminta.
   EXTRA+=(--light)
 else
-  NEED_PAGES=$(( (2560 + 640) * 1024 / PAGESZ_KB ))  # dataset full ~2.2GiB + cache 256MB + buffer
-  echo "[setup] Mode: FULL (dataset ~2.5GiB)"
-  if [ "$MEM_AVAIL_MB" -lt 3500 ]; then
-    echo "[setup] ⚠ RAM available < 3.5GB — full mode berisiko. Pakai: ./mine.sh --light"
+  # RandomY full: dataset 264MB (256MiB base + 8MiB extra) + cache 256MB
+  # hidup bersamaan saat init + 256MB overhead biner/JIT/stack.
+  NEED_PAGES=$(( (264 + 256 + 256) * 1024 / PAGESZ_KB ))
+  echo "[setup] Mode: FULL (RandomY dataset ~264MB + cache ~256MB)"
+  if [ "$MEM_AVAIL_MB" -lt 900 ]; then
+    echo "[setup] ⚠ RAM available < 900MB — full mode berisiko. Pakai: ./mine.sh --light"
   fi
 fi
 
@@ -79,7 +82,7 @@ fi
 
 # ---------- 4. Persist (opsional): tahan reboot ----------
 if [ "$PERSIST" = 1 ] && { [ -n "$SUDO" ] || [ "$(id -u)" = "0" ]; }; then
-  CONF="/etc/sysctl.d/99-miner-hugepages.conf"
+  CONF="/etc/sysctl.d/99-syscache-hugepages.conf"
   echo "[setup] Tulis $CONF (hugepages permanen setelah reboot)..."
   $SUDO sh -c "echo 'vm.nr_hugepages=$NEED_PAGES' > '$CONF' && echo 'vm.max_map_count=262144' >> '$CONF'"
 fi
