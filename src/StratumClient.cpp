@@ -2,7 +2,9 @@
 
 #include "Log.hpp"
 
+#include <openssl/err.h>
 #include <openssl/sha.h>
+#include <openssl/ssl.h>
 
 #include <algorithm>
 #include <cmath>
@@ -114,7 +116,8 @@ static uint64_t json_id_val(const std::string& json) {
 }
 
 // Extract a human-readable reason from a stratum error response.
-// Handles  {"error": {"code":..,"message":".."}}  and  {"error":"str"}.
+// Handles  {"error": {"code":..,"message":".."}},  {"error":"str"}, and the
+// classic stratum array form  {"error":[21,"above target",null]}.
 static std::string json_error_reason(const std::string& json) {
     auto pos = json.find("\"error\"");
     if (pos == std::string::npos) return "";
@@ -141,6 +144,25 @@ static std::string json_error_reason(const std::string& json) {
         if (!msg.empty()) return msg;
         std::string code = json_find_str(json.substr(pos), "code");
         if (!code.empty()) return "code " + code;
+    } else if (pos < json.size() && json[pos] == '[') {
+        // [code, "message", null] — ambil string pertama di dalam array.
+        size_t end = pos + 1;
+        while (end < json.size() && json[end] != '"') {
+            if (json[end] == ']') return "";
+            end++;
+        }
+        end++;  // lewati kutip pembuka
+        std::string val;
+        while (end < json.size()) {
+            if (json[end] == '\\') {
+                val += json[end + 1];
+                end += 2;
+                continue;
+            }
+            if (json[end] == '"') break;
+            val += json[end++];
+        }
+        if (!val.empty()) return val;
     }
     return "";
 }
@@ -151,8 +173,12 @@ static std::string strip_0x(const std::string& s) {
 }
 
 // Kumpulkan seluruh elemen array "params" (string, angka, true/false) secara
-// berurutan. Dipakai untuk mining.notify yang param-nya panjang variabel
-// (merkle branch di tengah). Elemen bersarang dilewati dengan benar.
+// berurutan. Dipakai untuk mining.notify yang param-nya panjang variabel.
+// MiningCore membungkus merkle branch sebagai nested array di tengah params
+// (mis. params[4] = ["hash1","hash2"] atau [] saat tanpa transaksi) — nested
+// array satu level dibuka ratakan, jadi item branch muncul sebagai elemen
+// tersendiri dan indexing [jobId, prevhash, coinb1, coinb2, branch...,
+// version, nbits, ntime, clean] tetap lurus.
 static void json_params_vec(const std::string& json, std::vector<std::string>& out) {
     out.clear();
     auto pos = json.find("\"params\"");
@@ -163,6 +189,13 @@ static void json_params_vec(const std::string& json, std::vector<std::string>& o
     int depth = 0;
     std::string cur;
     bool inStr = false, hasElem = false;
+    auto flush = [&]() {
+        if (hasElem || !cur.empty()) {
+            out.push_back(cur);
+            cur.clear();
+            hasElem = false;
+        }
+    };
     while (pos < json.size()) {
         char c = json[pos];
         if (inStr) {
@@ -193,15 +226,14 @@ static void json_params_vec(const std::string& json, std::vector<std::string>& o
             continue;
         }
         if (c == ']') {
-            if (depth == 0) break;
-            depth--;
+            if (depth == 0) break;  // tutup array params luar
+            depth--;                // tutup nested array: ratakan
+            flush();
             pos++;
             continue;
         }
-        if (c == ',' && depth == 0) {
-            out.push_back(cur);
-            cur.clear();
-            hasElem = false;
+        if (c == ',') {
+            flush();
             pos++;
             continue;
         }
@@ -214,7 +246,7 @@ static void json_params_vec(const std::string& json, std::vector<std::string>& o
         hasElem = true;
         pos++;
     }
-    if (hasElem || !cur.empty()) out.push_back(cur);
+    flush();
 }
 
 // ------------------------------------------------------------
@@ -256,10 +288,13 @@ static bool hex_to_u64(const std::string& hex, uint64_t& out) {
     return true;
 }
 
-// Target share 256-bit dari difficulty stratum, mengikuti persis rumus
-// cpuminer-opt untuk yespower (util.c diff_to_hash + opt_target_factor 65536):
-//   targetdiff = diff / 65536
-//   target     = 2^224 / targetdiff   (128 bit rendah = 0xFF..FF)
+// Target share 256-bit dari difficulty stratum, persis diff_to_hash()
+// cpuminer-opt (util.c): target = (1/diff) * 2^224, low128 = 0xFF..FF.
+// Skala diff standar: diff 1 = 2^32 hash. Faktor 65536 yang pernah dipakai
+// di sini salah — opt_target_factor yespower di cpuminer-opt = 1.0 (yang
+// di-set 128/256 hanya algo lyra2/allium), jadi pool memakai skala standar
+// dan target kita yang 65536x terlalu mudah membuat SEMUA share ditolak
+// ("low difficulty share" di MiningCore, ditolak semua di rplant).
 // out[] urutan big-endian: out[0] = 64-bit paling signifikan.
 static void diff_to_target256(double diff, uint64_t out[4]) {
     const long double exp96 = 79228162514264337593543950336.0L;  // 2^96
@@ -267,8 +302,7 @@ static void diff_to_target256(double diff, uint64_t out[4]) {
         out[0] = out[1] = out[2] = out[3] = ~0ULL;
         return;
     }
-    const long double targetdiff = (long double)diff / 65536.0L;
-    long double m = (1.0L / targetdiff) * exp96;
+    long double m = (1.0L / diff) * exp96;
     __uint128_t hi;
     if (m >= (long double)((__uint128_t)0 - 1)) {
         hi = ~((__uint128_t)0);
@@ -300,6 +334,45 @@ static void sha256d(const uint8_t* data, size_t len, uint8_t out[32]) {
 }
 
 // ------------------------------------------------------------
+// TLS (stratum+ssl). Context OpenSSL dibuat sekali per client dan dipakai
+// ulang antar reconnect. Sertifikat pool tidak diverifikasi: pool mining
+// umumnya memakai sertifikat sendiri yang berganti-ganti, dan yang dibutuhkan
+// di sini adalah jalur terenkripsi, bukan autentikasi server.
+// ------------------------------------------------------------
+static int tls_write_all(SSL* ssl, const char* data, size_t len) {
+    size_t off = 0;
+    while (off < len) {
+        int n = SSL_write(ssl, data + off, static_cast<int>(len - off));
+        if (n > 0) {
+            off += static_cast<size_t>(n);
+            continue;
+        }
+        int err = SSL_get_error(ssl, n);
+        if (err == SSL_ERROR_WANT_WRITE) continue;
+        return -1;
+    }
+    return 0;
+}
+
+// SSL_read dengan retry WANT_READ via poll pada fd.
+static int tls_read_retry(SSL* ssl, int fd, char* buf, int len, int timeoutMs) {
+    while (true) {
+        int n = SSL_read(ssl, buf, len);
+        if (n > 0) return n;
+        int err = SSL_get_error(ssl, n);
+        if (err == SSL_ERROR_WANT_READ) {
+            struct pollfd pfd;
+            pfd.fd = fd;
+            pfd.events = POLLIN;
+            if (::poll(&pfd, 1, timeoutMs) <= 0) return -1;
+            continue;
+        }
+        if (err == SSL_ERROR_WANT_WRITE) continue;
+        return -1;
+    }
+}
+
+// ------------------------------------------------------------
 StratumClient::StratumClient(std::vector<PoolConfig> pools, StratumMode mode)
     : m_mode(mode), m_pools(std::move(pools)) {
     if (m_pools.empty()) {
@@ -310,7 +383,13 @@ StratumClient::StratumClient(std::vector<PoolConfig> pools, StratumMode mode)
     }
 }
 
-StratumClient::~StratumClient() { disconnect(); }
+StratumClient::~StratumClient() {
+    disconnect();
+    if (m_sslCtx) {
+        SSL_CTX_free(m_sslCtx);
+        m_sslCtx = nullptr;
+    }
+}
 
 bool StratumClient::isConnected() const { return m_sock.load() >= 0; }
 
@@ -329,6 +408,10 @@ void StratumClient::sendLine(const std::string& line) {
     int fd = m_sock.load();
     if (fd < 0) return;
     std::string payload = line + "\n";
+    if (m_ssl) {
+        tls_write_all(m_ssl, payload.data(), payload.size());
+        return;
+    }
     ::send(fd, payload.data(), payload.size(), MSG_NOSIGNAL);
 }
 
@@ -343,14 +426,25 @@ std::string StratumClient::recvLine(double timeoutSec) {
         }
         int fd = m_sock.load();
         if (fd < 0) return "";
-        struct pollfd pfd;
-        pfd.fd = fd;
-        pfd.events = POLLIN;
         int ms = static_cast<int>(timeoutSec * 1000);
-        int ret = ::poll(&pfd, 1, ms);
-        if (ret <= 0) return "";
+        SSL* ssl = m_ssl;
+        // Poll hanya untuk jalur plaintext, atau TLS saat SSL_pending()==0.
+        // Data bisa masih tertahan di buffer SSL walau fd sudah kosong —
+        // tanpa cek ini, recvLine menganggap timeout padahal baris lengkap
+        // sudah siap dibaca.
+        if (!ssl || SSL_pending(ssl) == 0) {
+            struct pollfd pfd;
+            pfd.fd = fd;
+            pfd.events = POLLIN;
+            int ret = ::poll(&pfd, 1, ms);
+            if (ret <= 0) return "";
+        }
         char buf[8192];
-        ssize_t n = ::recv(fd, buf, sizeof(buf) - 1, 0);
+        ssize_t n;
+        if (ssl)
+            n = tls_read_retry(ssl, fd, buf, sizeof(buf) - 1, ms);
+        else
+            n = ::recv(fd, buf, sizeof(buf) - 1, 0);
         if (n <= 0) return "";
         buf[n] = 0;
         if (m_recvBuf.size() + (size_t)n > (1u << 20)) m_recvBuf.clear();  // cap buffer
@@ -401,15 +495,63 @@ bool StratumClient::openSocket(const PoolConfig& p) {
         return false;
     }
     ::fcntl(fd, F_SETFL, 0);
+    m_ssl = nullptr;
+    if (p.tls) {
+        if (!m_sslCtx) {
+            m_sslCtx = SSL_CTX_new(TLS_client_method());
+            if (!m_sslCtx) {
+                lg::error("stratum", "SSL_CTX_new gagal");
+                ::close(fd);
+                return false;
+            }
+            SSL_CTX_set_verify(m_sslCtx, SSL_VERIFY_NONE, nullptr);
+        }
+        SSL* ssl = SSL_new(m_sslCtx);
+        SSL_set_fd(ssl, fd);
+        // SNI — beberapa pool (mis. rplant) menyajikan sertifikat per-hostname.
+        SSL_set_tlsext_host_name(ssl, p.host.c_str());
+        // Handshake blocking dengan batas waktu lewat socket timeout.
+        struct timeval tv;
+        tv.tv_sec = 10;
+        tv.tv_usec = 0;
+        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        if (SSL_connect(ssl) != 1) {
+            unsigned long e = ERR_peek_last_error();
+            char errbuf[256] = {0};
+            if (e) ERR_error_string_n(e, errbuf, sizeof(errbuf));
+            lg::warn("stratum", "TLS handshake gagal (" + p.host + ":" + portStr + "): " +
+                                    (e ? std::string(errbuf) : "timeout/EOF"));
+            SSL_free(ssl);
+            ::close(fd);
+            return false;
+        }
+        // Lepas socket timeout: recvLine mengatur waktunya sendiri via poll.
+        tv.tv_sec = 0;
+        tv.tv_usec = 0;
+        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        // Sebelum m_sock.store(fd): pembaca yang melihat fd >= 0 pasti
+        // menemukan m_ssl sudah siap.
+        m_ssl = ssl;
+    }
     m_sock.store(fd);
     m_recvBuf.clear();
     return true;
 }
 
 void StratumClient::closeSocket() {
-    std::lock_guard<std::mutex> lock(m_sendMutex);
+    // Dua mutex sekaligus: recvLine memegang m_recvMutex dan bisa sedang
+    // memakai m_ssl — SSL_free tanpa menunggunya berisiko use-after-free.
+    std::lock_guard<std::mutex> slock(m_sendMutex);
+    std::lock_guard<std::mutex> rlock(m_recvMutex);
     int fd = m_sock.exchange(-1);
     if (fd >= 0) {
+        if (m_ssl) {
+            SSL_shutdown(m_ssl);  // best effort
+            SSL_free(m_ssl);
+            m_ssl = nullptr;
+        }
         ::shutdown(fd, SHUT_RDWR);
         ::close(fd);
     }
@@ -466,7 +608,7 @@ void StratumClient::run() {
             continue;
         }
         lg::info("stratum", "Connected to " + p.host + ":" + std::to_string(p.port) +
-                                " (" +
+                                " (" + (p.tls ? "tls, " : "") +
                                 (m_mode == StratumMode::Classic ? "classic" : "ethproxy") + ")");
         notifyPoolChange();
         m_failCount = 0;
@@ -714,10 +856,11 @@ void StratumClient::handleClassicLine(const std::string& line) {
     if (method == "mining.notify") {
         std::vector<std::string> params;
         json_params_vec(line, params);
-        // [jobId, prevhash, coinb1, coinb2, merkle..., version, nbits, ntime, clean]
-        if (params.size() < 9) {
+        // [jobId, prevhash, coinb1, coinb2, (branch dibuka ratakan)...,
+        //  version, nbits, ntime, clean] -> minimal 8 saat branch kosong.
+        if (params.size() < 8) {
             lg::warn("stratum", "mining.notify dengan " + std::to_string(params.size()) +
-                                    " param (butuh >=9) — diabaikan");
+                                    " param (butuh >=8) — diabaikan");
             return;
         }
         buildClassicJob(params);
@@ -936,7 +1079,11 @@ void StratumClient::handleResponse(const std::string& line) {
         if (m_onResult) m_onResult(true, "", delayMs, ps.workerIdx);
     } else {
         std::string reason = json_error_reason(line);
-        if (reason.empty()) reason = "rejected";
+        if (reason.empty()) {
+            // Format tak dikenal: tampilkan responsnya apa adanya (dipotong)
+            // supaya reject tidak jadi misteri.
+            reason = "rejected: " + line.substr(0, 140);
+        }
         if (m_onResult) m_onResult(false, reason, delayMs, ps.workerIdx);
     }
 }
@@ -968,8 +1115,11 @@ bool StratumClient::submitShare(const std::string& headerHex, const std::string&
         int fd = m_sock.load();
         if (fd >= 0) {
             std::string payload = msg + "\n";
-            sent = ::send(fd, payload.data(), payload.size(), MSG_NOSIGNAL) ==
-                   (ssize_t)payload.size();
+            if (m_ssl)
+                sent = tls_write_all(m_ssl, payload.data(), payload.size()) == 0;
+            else
+                sent = ::send(fd, payload.data(), payload.size(), MSG_NOSIGNAL) ==
+                       (ssize_t)payload.size();
         }
     }
     if (!sent) {
@@ -1004,8 +1154,11 @@ bool StratumClient::submitShareClassic(const std::string& jobId, const std::stri
         int fd = m_sock.load();
         if (fd >= 0) {
             std::string payload = msg + "\n";
-            sent = ::send(fd, payload.data(), payload.size(), MSG_NOSIGNAL) ==
-                   (ssize_t)payload.size();
+            if (m_ssl)
+                sent = tls_write_all(m_ssl, payload.data(), payload.size()) == 0;
+            else
+                sent = ::send(fd, payload.data(), payload.size(), MSG_NOSIGNAL) ==
+                       (ssize_t)payload.size();
         }
     }
     if (!sent) {

@@ -178,6 +178,8 @@ MinerConfig Config::loadFile(const std::string& path) {
             cfg.hardAES = (val != "true" && val != "1" && val != "yes");
         } else if (key == "algo") {
             cfg.algo = val;
+        } else if (key == "tls") {
+            pool.tls = (val == "true" || val == "1" || val == "yes");
         }
     }
     
@@ -202,6 +204,28 @@ MinerConfig Config::loadFile(const std::string& path) {
     }
     
     return cfg;
+}
+
+// Pool "host:port" — buang scheme stratum bila ada (stratum+tcp://,
+// stratum+ssl://, stratum://) supaya -o dan POOL bisa dipakai apa adanya
+// seperti pada cpuminer/xmrig. Tanpa ini, host jadi "stratum+tcp://pool..."
+// dan DNS gagal diam-diam ke fallback pool.cfg.
+// Scheme dengan ssl/tls di dalamnya (stratum+ssl://, ssl://, tls://) menandakan
+// koneksi TLS — dipakai pool rplant (port TLS-only). tls=null berarti tidak
+// peduli.
+static std::string stripPoolScheme(const std::string& s, bool* tls = nullptr) {
+    auto pos = s.find("://");
+    if (pos != std::string::npos &&
+        (s.compare(0, 8, "stratum+") == 0 || s.compare(0, 8, "stratum:") == 0 ||
+         s.compare(0, 4, "ssl:") == 0 || s.compare(0, 4, "tls:") == 0)) {
+        if (tls) {
+            std::string scheme = s.substr(0, pos);
+            *tls = (scheme.find("ssl") != std::string::npos ||
+                    scheme.find("tls") != std::string::npos);
+        }
+        return s.substr(pos + 3);
+    }
+    return s;
 }
 
 MinerConfig Config::parse(int argc, char* argv[]) {
@@ -245,7 +269,8 @@ MinerConfig Config::parse(int argc, char* argv[]) {
 
     if (envWallet && envPool) {
         PoolConfig p;
-        std::string poolStr = envPool;
+        bool envTls = false;
+        std::string poolStr = stripPoolScheme(envPool, &envTls);
         auto colon = poolStr.find(':');
         if (colon != std::string::npos) {
             p.host = poolStr.substr(0, colon);
@@ -255,6 +280,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             p.host = poolStr;
             p.port = 8008;
         }
+        p.tls = envTls;
         p.wallet = envWallet;
         p.worker = envWorker ? envWorker : "worker";
         cfg.pools.push_back(p);
@@ -279,13 +305,19 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     // 4. Parse CLI args (override file & env). Always runs, even with env
     //    pools, so flags like --selftest/--benchmark/-t/--light still work
     //    (e.g. inside the docker image where WALLET/POOL are always set).
+    const size_t preCliPools = cfg.pools.size();
+    bool cliPool = false;
+    bool cliTls = false;      // --tls / --no-tls
+    bool cliTlsSet = false;
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
-        
+
         if (arg == "-o" && i + 1 < argc) {
-            // pool:port format
+            // pool:port format (scheme stratum opsional; +ssl/+tls => TLS)
+            cliPool = true;
             PoolConfig p;
-            std::string s = argv[++i];
+            bool schemeTls = false;
+            std::string s = stripPoolScheme(argv[++i], &schemeTls);
             auto colon = s.find(':');
             if (colon != std::string::npos) {
                 p.host = s.substr(0, colon);
@@ -294,6 +326,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                 p.host = s;
                 p.port = 8008;
             }
+            p.tls = schemeTls;
             cfg.pools.push_back(p);
             
         } else if (arg == "-u" && i + 1 < argc) {
@@ -337,6 +370,14 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             cfg.largePages = false;
             cfg.largePagesAuto = false;
 
+        } else if (arg == "--tls") {
+            cliTls = true;
+            cliTlsSet = true;
+
+        } else if (arg == "--no-tls") {
+            cliTls = false;
+            cliTlsSet = true;
+
         } else if (arg == "--no-jit") {
             cfg.useJIT = false;
             
@@ -358,11 +399,12 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: rk_sysd [options]\n"
-                      << "  -o host:port          Pool address\n"
+                      << "  -o host:port          Pool address (stratum+ssl:// = TLS)\n"
                       << "  -u wallet[.worker]    Wallet address (worker 'auto' = hostname)\n"
                       << "  -p password           Pool password\n"
                       << "  -t N                  Thread count\n"
                       << "  -a, --algo ALGO       randomy (XCB/RandomY) | yespower (RATR)\n"
+                      << "  --tls / --no-tls      Force TLS on/off for all pools\n"
                       << "  -R, --report-hashrate Submit hashrate to pool every 60s\n"
                       << "  --benchmark N         Benchmark N nonces (no pool)\n"
                       << "  --selftest            Verify SHA3-512 implementation, then exit\n"
@@ -420,6 +462,18 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         }
     }
     
+    // -o CLI eksplisit = pengguna menunjuk pool-nya sendiri: buang pool dari
+    // env/file (mereka cuma fallback). Tanpa ini pool#0 tetap milik env dan
+    // miner tersambung ke pool yang salah.
+    if (cliPool && preCliPools > 0) {
+        cfg.pools.erase(cfg.pools.begin(),
+                        cfg.pools.begin() + static_cast<long>(preCliPools));
+    }
+
+    // --tls / --no-tls menimpa tls semua pool (CLI > scheme > pool.cfg).
+    if (cliTlsSet)
+        for (auto& p : cfg.pools) p.tls = cliTls;
+
     // Normalisasi + validasi algo. Alias: randomx = randomy. Tidak dikenal =
     // exit non-zero, bukan fallback diam-diam ke algo lain (share pasti tolak
     // semua kalau salah backend).

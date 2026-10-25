@@ -3,6 +3,8 @@
 
 #include "Config.hpp"
 
+#include <openssl/ssl.h>
+
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -27,9 +29,9 @@ struct Job {
     bool seedChanged = false;
 
     // --- Hanya untuk jalur Classic (stratum mining.notify) ---
-    // target256: target share 256-bit, urutan big-endian w0 = paling
-    // signifikan. Rumus mengikuti cpuminer-opt yespower:
-    //   target = 2^224 / (diff / 65536)   (low128 = 0xFFFF...)
+    // target share 256-bit, urutan big-endian w0 = paling
+    // signifikan. Rumus = diff_to_hash() cpuminer-opt:
+    //   target = 2^224 / diff   (low128 = 0xFFFF..., diff 1 = 2^32 hash)
     // mining.submit butuh extranonce2 & ntime persis seperti yang dipakai
     // saat merakit header ini.
     std::string extranonce2Hex;
@@ -110,6 +112,12 @@ private:
     std::string m_workerName;
 
     std::atomic<int> m_sock{-1};
+    // TLS (pool stratum+ssl, mis. rplant). m_sslCtx dibuat sekali dan dipakai
+    // ulang antar reconnect; m_ssl berlaku selagi m_sock >= 0. m_ssl hanya
+    // disentuh di bawah m_sendMutex/m_recvMutex (openSocket men-assign-nya
+    // sebelum m_sock.store(fd), jadi pembaca fd>=0 selalu melihat ssl siap).
+    SSL_CTX* m_sslCtx = nullptr;
+    SSL* m_ssl = nullptr;
     int m_pollMs = 1000;  // eth_getWork poll interval (ms)
     std::thread m_thread;
     std::atomic<bool> m_running{false};

@@ -9,6 +9,9 @@ struct PoolConfig {
     std::string wallet;
     std::string worker = "worker";
     std::string password = "x";
+    // Koneksi TLS (stratum+ssl:// / --tls / tls=true di pool.cfg). Pool rplant
+    // memakai port TLS-only (mis. asia.rplant.xyz:17122).
+    bool tls = false;
 };
 
 struct MinerConfig {
