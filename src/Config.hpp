@@ -28,6 +28,10 @@ struct MinerConfig {
     uint64_t benchmarkNonces = 0; // >0 => benchmark mode (no pool)
     bool selftest = false;        // run SHA3/keccak self test and exit
     std::string ui = "auto";      // auto | ftxui | ansi | log (display mode)
+    // Backend PoW: "randomy" (RandomX-family, Core Coin XCB) atau "yespower"
+    // (Ratatoskr/RATR). Menentukan jalur stratum juga: randomy = ETHPROXY,
+    // yespower = classic mining.subscribe/notify/submit.
+    std::string algo = "randomy";
 };
 
 class Config {

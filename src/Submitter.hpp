@@ -21,11 +21,18 @@
 
 struct Share {
     std::string headerHex;  // header that was hashed (hex, no 0x)
-    std::string nonceHex;   // 0x...
+    std::string nonceHex;   // 0x... (EthProxy) / 8 hex char LE bytes (Classic)
     std::string mixHex;     // 0x...
     std::string jobId;
     int workerIdx = 0;
     std::chrono::steady_clock::time_point foundAt;
+
+    // --- Jalur Classic (mining.submit) ---
+    // extranonce2 & ntime harus persis seperti yang dipakai saat merakit
+    // header job ini; pool memvalidasi share dengan menyusun ulang header.
+    bool classic = false;
+    std::string extranonce2Hex;
+    std::string ntimeHex;
 };
 
 class Submitter {

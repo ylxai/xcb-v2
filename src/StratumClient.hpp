@@ -15,7 +15,8 @@
 
 struct Job {
     std::string jobId;
-    std::vector<uint8_t> header;  // 32 bytes binary — dijamin oleh doEthGetWork()
+    std::vector<uint8_t> header;  // EthProxy: 32 bytes (dijamin doEthGetWork());
+                                  // Classic: 80 bytes header blok siap hash.
     std::string seedHex;
     std::string targetHex;         // hex target
     uint64_t targetInt = 0x00ffffffffffffffULL;
@@ -24,7 +25,24 @@ struct Job {
     // dibangun dari key tetap, jadi ini berarti hasil hash tidak lagi cocok
     // dengan yang divalidasi pool.
     bool seedChanged = false;
+
+    // --- Hanya untuk jalur Classic (stratum mining.notify) ---
+    // target256: target share 256-bit, urutan big-endian w0 = paling
+    // signifikan. Rumus mengikuti cpuminer-opt yespower:
+    //   target = 2^224 / (diff / 65536)   (low128 = 0xFFFF...)
+    // mining.submit butuh extranonce2 & ntime persis seperti yang dipakai
+    // saat merakit header ini.
+    std::string extranonce2Hex;
+    std::string ntimeHex;
+    uint64_t target256[4] = {0, 0, 0, 0};
 };
+
+// Protokol stratum yang dipakai pool:
+//  - EthProxy: eth_submitLogin / eth_getWork / eth_submitWork
+//    (catchthatrabbit, koin ETHPROXY)
+//  - Classic: mining.subscribe / mining.authorize / mining.notify /
+//    mining.submit (MiningCore — Ratatoskr/RATR dan koin Bitcoin-like lain)
+enum class StratumMode { EthProxy, Classic };
 
 // ETHPROXY stratum client with:
 //  - response/id correlation for share results (a failed getWork is never
@@ -34,7 +52,7 @@ struct Job {
 //  - atomic msg id / socket so worker threads can submit concurrently
 class StratumClient {
 public:
-    StratumClient(std::vector<PoolConfig> pools);
+    StratumClient(std::vector<PoolConfig> pools, StratumMode mode = StratumMode::EthProxy);
     ~StratumClient();
 
     void connect();
@@ -42,6 +60,13 @@ public:
     bool isConnected() const;
     bool submitShare(const std::string& headerHex, const std::string& nonceHex,
                      const std::string& mixHashHex, int workerIdx);
+    // Jalur Classic: params mining.submit = [user, jobId, extranonce2, ntime,
+    // nonce]. nonceHex = 8 hex char byte nonce LE (persis byte nonce di
+    // header 80-byte), ntimeHex = hex ntime dari pool, extranonce2Hex = hex
+    // extranonce2 yang dipakai saat merakit header.
+    bool submitShareClassic(const std::string& jobId, const std::string& extranonce2Hex,
+                            const std::string& ntimeHex, const std::string& nonceHex,
+                            int workerIdx);
     void submitHashrate(uint64_t rate);
 
     void setJobCallback(std::function<void(const Job&)> cb) { m_onJob = std::move(cb); }
@@ -69,9 +94,15 @@ private:
     void advancePool();
     bool doEthLogin();
     bool doEthGetWork();
+    // --- Jalur Classic (MiningCore) ---
+    bool doClassicSubscribe();    // mining.subscribe -> extranonce1 + size
+    bool doClassicAuthorize();    // mining.authorize
+    void handleClassicLine(const std::string& line);  // notify/set_difficulty/dll
+    bool buildClassicJob(const std::vector<std::string>& params);
     void handleResponse(const std::string& line);
     void notifyPoolChange();
 
+    StratumMode m_mode = StratumMode::EthProxy;
     std::vector<PoolConfig> m_pools;
     std::atomic<int> m_poolIdx{0};
     int m_failCount = 0;
@@ -90,6 +121,13 @@ private:
     std::string m_currentSeed;
     std::string m_currentTarget;
     std::string m_currentJobId;
+
+    // --- Classic state (MiningCore) ---
+    double m_diff = 0;              // dari mining.set_difficulty; 0 = belum ada
+    std::string m_extranonce1Hex;   // dari mining.subscribe
+    int m_extranonce2Size = 4;      // byte
+    uint32_t m_extranonce2Counter = 0;  // naik per job
+    std::string m_targetOverrideHex;    // dari mining.set_target (64 hex), kosong = pakai diff
 
     // Pending share submissions: request id -> (submit time, worker index).
     struct PendingShare {

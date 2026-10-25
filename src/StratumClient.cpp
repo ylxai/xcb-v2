@@ -2,8 +2,12 @@
 
 #include "Log.hpp"
 
+#include <openssl/sha.h>
+
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <cstdlib>
 #include <fcntl.h>
 #include <netdb.h>
 #include <poll.h>
@@ -146,6 +150,73 @@ static std::string strip_0x(const std::string& s) {
     return s;
 }
 
+// Kumpulkan seluruh elemen array "params" (string, angka, true/false) secara
+// berurutan. Dipakai untuk mining.notify yang param-nya panjang variabel
+// (merkle branch di tengah). Elemen bersarang dilewati dengan benar.
+static void json_params_vec(const std::string& json, std::vector<std::string>& out) {
+    out.clear();
+    auto pos = json.find("\"params\"");
+    if (pos == std::string::npos) return;
+    pos = json.find('[', pos);
+    if (pos == std::string::npos) return;
+    pos++;
+    int depth = 0;
+    std::string cur;
+    bool inStr = false, hasElem = false;
+    while (pos < json.size()) {
+        char c = json[pos];
+        if (inStr) {
+            if (c == '\\') {
+                cur += json[pos + 1];
+                pos += 2;
+                continue;
+            }
+            if (c == '"') {
+                inStr = false;
+                hasElem = true;
+                pos++;
+                continue;
+            }
+            cur += c;
+            pos++;
+            continue;
+        }
+        if (c == '"') {
+            inStr = true;
+            cur.clear();
+            pos++;
+            continue;
+        }
+        if (c == '[') {
+            depth++;
+            pos++;
+            continue;
+        }
+        if (c == ']') {
+            if (depth == 0) break;
+            depth--;
+            pos++;
+            continue;
+        }
+        if (c == ',' && depth == 0) {
+            out.push_back(cur);
+            cur.clear();
+            hasElem = false;
+            pos++;
+            continue;
+        }
+        if (c == ' ' || c == '\t') {
+            pos++;
+            continue;
+        }
+        // angka / true / false / null
+        cur += c;
+        hasElem = true;
+        pos++;
+    }
+    if (hasElem || !cur.empty()) out.push_back(cur);
+}
+
 // ------------------------------------------------------------
 // Hex decoding yang tidak boleh mematikan proses.
 // Semua angka di bawah datang dari pool. std::stoul/std::stoull melempar
@@ -185,8 +256,52 @@ static bool hex_to_u64(const std::string& hex, uint64_t& out) {
     return true;
 }
 
+// Target share 256-bit dari difficulty stratum, mengikuti persis rumus
+// cpuminer-opt untuk yespower (util.c diff_to_hash + opt_target_factor 65536):
+//   targetdiff = diff / 65536
+//   target     = 2^224 / targetdiff   (128 bit rendah = 0xFF..FF)
+// out[] urutan big-endian: out[0] = 64-bit paling signifikan.
+static void diff_to_target256(double diff, uint64_t out[4]) {
+    const long double exp96 = 79228162514264337593543950336.0L;  // 2^96
+    if (!(diff > 0)) {
+        out[0] = out[1] = out[2] = out[3] = ~0ULL;
+        return;
+    }
+    const long double targetdiff = (long double)diff / 65536.0L;
+    long double m = (1.0L / targetdiff) * exp96;
+    __uint128_t hi;
+    if (m >= (long double)((__uint128_t)0 - 1)) {
+        hi = ~((__uint128_t)0);
+    } else {
+        hi = (__uint128_t)m;
+    }
+    out[0] = static_cast<uint64_t>(hi >> 64);
+    out[1] = static_cast<uint64_t>(hi);
+    out[2] = ~0ULL;
+    out[3] = ~0ULL;
+}
+
+// Hex target 64-char (big-endian) -> 4 word BE.
+static bool hex_to_target256(const std::string& hex, uint64_t out[4]) {
+    if (hex.size() != 64 || !hex_is_valid(hex)) return false;
+    for (int w = 0; w < 4; w++) {
+        uint64_t v = 0;
+        for (int i = 0; i < 16; i++) v = (v << 4) | (uint64_t)hex_nibble(hex[w * 16 + i]);
+        out[w] = v;
+    }
+    return true;
+}
+
+// double SHA-256 (Bitcoin-style). out = 32 byte digest natural.
+static void sha256d(const uint8_t* data, size_t len, uint8_t out[32]) {
+    uint8_t mid[32];
+    SHA256(data, len, mid);
+    SHA256(mid, sizeof(mid), out);
+}
+
 // ------------------------------------------------------------
-StratumClient::StratumClient(std::vector<PoolConfig> pools) : m_pools(std::move(pools)) {
+StratumClient::StratumClient(std::vector<PoolConfig> pools, StratumMode mode)
+    : m_mode(mode), m_pools(std::move(pools)) {
     if (m_pools.empty()) {
         PoolConfig fallback;
         fallback.host = "localhost";
@@ -350,11 +465,52 @@ void StratumClient::run() {
             handleFail("connect failed");
             continue;
         }
-        lg::info("stratum", "Connected to " + p.host + ":" + std::to_string(p.port));
+        lg::info("stratum", "Connected to " + p.host + ":" + std::to_string(p.port) +
+                                " (" +
+                                (m_mode == StratumMode::Classic ? "classic" : "ethproxy") + ")");
         notifyPoolChange();
         m_failCount = 0;
         m_reconnectDelay = 2;
         m_msgId.store(1);
+        m_diff = 0;
+        m_extranonce1Hex.clear();
+        m_extranonce2Size = 4;
+        m_extranonce2Counter = 0;
+        m_targetOverrideHex.clear();
+
+        if (m_mode == StratumMode::Classic) {
+            // --- MiningCore / stratum klasik: subscribe -> authorize, lalu
+            // job di-push oleh pool (tidak ada polling). ---
+            if (!doClassicSubscribe()) {
+                closeSocket();
+                handleFail("subscribe failed");
+                continue;
+            }
+            if (!doClassicAuthorize()) {
+                closeSocket();
+                handleFail("authorize failed");
+                continue;
+            }
+            lg::info("stratum", "Authorized as " + m_workerName);
+
+            int idle = 0;  // recvLine kosong berturut-turut (10s masing-masing)
+            while (m_running.load()) {
+                std::string line = recvLine(10.0);
+                if (line.empty()) {
+                    if (m_sock.load() < 0) break;      // socket ditutup dari luar
+                    if (++idle >= 12) {                // ~2 menit tanpa data
+                        lg::warn("stratum", "Tidak ada data dari pool 2 menit — reconnect");
+                        break;
+                    }
+                    continue;
+                }
+                idle = 0;
+                handleResponse(line);
+            }
+            closeSocket();
+            if (m_running.load()) handleFail("disconnected");
+            continue;
+        }
 
         if (!doEthLogin()) {
             closeSocket();
@@ -501,11 +657,260 @@ bool StratumClient::doEthGetWork() {
     return true;
 }
 
+// ============================================================
+// Jalur Classic (MiningCore): mining.subscribe / authorize / notify / submit
+// ============================================================
+bool StratumClient::doClassicSubscribe() {
+    uint64_t id = m_msgId.fetch_add(1);
+    std::string msg = "{\"id\":" + std::to_string(id) +
+                      ",\"method\":\"mining.subscribe\",\"params\":[\"xcb/2.0\"]}";
+    sendLine(msg);
+
+    std::string resp = recvResponse(id, 15.0);
+    if (resp.empty()) return false;
+
+    // result: [[[...metode...]], "extranonce1", extranonce2_size]
+    std::string en1 = strip_0x(json_result_array(resp, 1));
+    std::string sz = json_result_array(resp, 2);
+    if (en1.empty() || !hex_is_valid(en1)) {
+        lg::error("stratum", "Subscribe: extranonce1 tidak valid ('" + en1.substr(0, 24) + "')");
+        return false;
+    }
+    int size = 4;
+    if (!sz.empty()) size = std::atoi(sz.c_str());
+    if (size < 1 || size > 16) size = 4;
+    m_extranonce1Hex = en1;
+    m_extranonce2Size = size;
+    lg::debug("stratum", "Subscribed: extranonce1=" + en1 +
+                             " extranonce2_size=" + std::to_string(size));
+    return true;
+}
+
+bool StratumClient::doClassicAuthorize() {
+    const PoolConfig& p = m_pools[m_poolIdx.load()];
+    m_workerName = p.wallet;
+    if (!p.worker.empty()) m_workerName += "." + p.worker;
+
+    uint64_t id = m_msgId.fetch_add(1);
+    std::string msg = "{\"id\":" + std::to_string(id) +
+                      ",\"method\":\"mining.authorize\",\"params\":[\"" +
+                      json_escape(m_workerName) + "\",\"" + json_escape(p.password) + "\"]}";
+    sendLine(msg);
+
+    std::string resp = recvResponse(id, 15.0);
+    if (resp.empty()) return false;
+    bool ok = json_is_true(resp);
+    if (!ok) {
+        std::string err = json_error_reason(resp);
+        lg::error("stratum", "Auth error: '" + (err.empty() ? std::string("unknown") : err) + "'");
+    }
+    return ok;
+}
+
+void StratumClient::handleClassicLine(const std::string& line) {
+    std::string method = json_find_str(line, "method");
+    if (method.empty()) return;
+
+    if (method == "mining.notify") {
+        std::vector<std::string> params;
+        json_params_vec(line, params);
+        // [jobId, prevhash, coinb1, coinb2, merkle..., version, nbits, ntime, clean]
+        if (params.size() < 9) {
+            lg::warn("stratum", "mining.notify dengan " + std::to_string(params.size()) +
+                                    " param (butuh >=9) — diabaikan");
+            return;
+        }
+        buildClassicJob(params);
+        return;
+    }
+
+    if (method == "mining.set_difficulty") {
+        std::vector<std::string> params;
+        json_params_vec(line, params);
+        double diff = params.empty() ? 0.0 : std::atof(params[0].c_str());
+        if (diff > 0) {
+            bool first = (m_diff == 0);
+            m_diff = diff;
+            if (first)
+                lg::info("stratum", "Difficulty: " + std::to_string(diff));
+            else
+                lg::debug("stratum", "Difficulty: " + std::to_string(diff));
+        }
+        return;
+    }
+
+    if (method == "mining.set_extranonce") {
+        std::vector<std::string> params;
+        json_params_vec(line, params);
+        if (params.size() >= 2) {
+            std::string en1 = strip_0x(params[0]);
+            int sz = std::atoi(params[1].c_str());
+            if (!en1.empty() && hex_is_valid(en1)) m_extranonce1Hex = en1;
+            if (sz >= 1 && sz <= 16) m_extranonce2Size = sz;
+            lg::info("stratum", "Extranonce berubah: " + m_extranonce1Hex.substr(0, 16) +
+                                    " size=" + std::to_string(m_extranonce2Size));
+        }
+        return;
+    }
+
+    if (method == "mining.set_target") {
+        std::vector<std::string> params;
+        json_params_vec(line, params);
+        if (!params.empty()) {
+            std::string t = strip_0x(params[0]);
+            if (t.size() == 64 && hex_is_valid(t)) {
+                m_targetOverrideHex = t;
+                lg::info("stratum", "Target dari pool: " + t.substr(0, 16) + "...");
+            }
+        }
+        return;
+    }
+
+    lg::debug("stratum", "Notification: " + method);
+}
+
+bool StratumClient::buildClassicJob(const std::vector<std::string>& params) {
+    const std::string& jobId = params[0];
+    const std::string& prevhashHex = params[1];
+    const std::string& coinb1Hex = params[2];
+    const std::string& coinb2Hex = params[3];
+    const size_t branchCount = params.size() - 8;
+    const std::string& versionHex = params[4 + branchCount];
+    const std::string& nbitsHex = params[5 + branchCount];
+    const std::string& ntimeHex = params[6 + branchCount];
+    const std::string& cleanStr = params[7 + branchCount];
+
+    // --- Validasi input pool sebelum apa pun dipakai ---
+    if (!hex_is_valid(prevhashHex) || prevhashHex.size() != 64) {
+        lg::warn("stratum", "Job ditolak: prevhash bukan 64 hex ('" +
+                                prevhashHex.substr(0, 24) + "')");
+        return false;
+    }
+    if (!hex_is_valid(coinb1Hex) || !hex_is_valid(coinb2Hex)) {
+        lg::warn("stratum", "Job ditolak: coinbase bukan hex");
+        return false;
+    }
+    if (!hex_is_valid(versionHex) || versionHex.size() != 8 || !hex_is_valid(nbitsHex) ||
+        nbitsHex.size() != 8 || !hex_is_valid(ntimeHex) || ntimeHex.size() != 8) {
+        lg::warn("stratum", "Job ditolak: version/nbits/ntime bukan 8 hex");
+        return false;
+    }
+    if (m_diff <= 0) {
+        // Tanpa difficulty, target share tak terdefinisi — jangan buat job
+        // (kalau target dibuat mudah, banjir share invalid; susah, share valid
+        // tak pernah terkirim).
+        lg::warn("stratum", "Job " + jobId + " diabaikan: set_difficulty belum diterima");
+        return false;
+    }
+
+    // --- Extranonce2 untuk job ini (counter naik per job, ala cpuminer) ---
+    std::vector<uint8_t> xn2(m_extranonce2Size, 0);
+    uint32_t c = m_extranonce2Counter++;
+    for (int i = 0; i < m_extranonce2Size && i < 4; i++) {
+        size_t idx = m_extranonce2Size - 1 - static_cast<size_t>(i);
+        xn2[idx] = static_cast<uint8_t>((c >> (8 * i)) & 0xff);
+    }
+
+    // --- Coinbase: coinb1 || extranonce1 || extranonce2 || coinb2 ---
+    std::vector<uint8_t> coinbase;
+    if (!hex_to_bytes(coinb1Hex, coinbase)) return false;
+    std::vector<uint8_t> xn1;
+    if (!hex_to_bytes(m_extranonce1Hex, xn1)) return false;
+    coinbase.insert(coinbase.end(), xn1.begin(), xn1.end());
+    coinbase.insert(coinbase.end(), xn2.begin(), xn2.end());
+    std::vector<uint8_t> cb2;
+    if (!hex_to_bytes(coinb2Hex, cb2)) return false;
+    coinbase.insert(coinbase.end(), cb2.begin(), cb2.end());
+
+    // --- Merkle root: dSHA256(coinbase), lalu dSHA256(root || branch) ---
+    uint8_t merkle[32];
+    sha256d(coinbase.data(), coinbase.size(), merkle);
+    std::vector<uint8_t> buf(64);
+    for (size_t i = 0; i < branchCount; i++) {
+        std::vector<uint8_t> br;
+        if (!hex_to_bytes(params[4 + i], br) || br.size() != 32) {
+            lg::warn("stratum", "Job ditolak: merkle branch tidak valid");
+            return false;
+        }
+        memcpy(buf.data(), merkle, 32);
+        memcpy(buf.data() + 32, br.data(), 32);
+        sha256d(buf.data(), buf.size(), merkle);
+    }
+
+    // --- Header 80 byte ---
+    // version/ntime/nbits: hex dari pool adalah tampilan big-endian -> nilai
+    // u32 ditulis little-endian ke header (urutan byte blok Bitcoin).
+    // prevhash: hex2bin langsung (pool mengirim dalam urutan byte header).
+    std::vector<uint8_t> header(80, 0);
+    uint64_t v = 0, nb = 0, nt = 0;
+    hex_to_u64(versionHex, v);
+    hex_to_u64(nbitsHex, nb);
+    hex_to_u64(ntimeHex, nt);
+    header[0] = (uint8_t)(v & 0xff);
+    header[1] = (uint8_t)((v >> 8) & 0xff);
+    header[2] = (uint8_t)((v >> 16) & 0xff);
+    header[3] = (uint8_t)((v >> 24) & 0xff);
+    std::vector<uint8_t> prev;
+    hex_to_bytes(prevhashHex, prev);
+    memcpy(header.data() + 4, prev.data(), 32);
+    memcpy(header.data() + 36, merkle, 32);
+    header[68] = (uint8_t)(nt & 0xff);
+    header[69] = (uint8_t)((nt >> 8) & 0xff);
+    header[70] = (uint8_t)((nt >> 16) & 0xff);
+    header[71] = (uint8_t)((nt >> 24) & 0xff);
+    header[72] = (uint8_t)(nb & 0xff);
+    header[73] = (uint8_t)((nb >> 8) & 0xff);
+    header[74] = (uint8_t)((nb >> 16) & 0xff);
+    header[75] = (uint8_t)((nb >> 24) & 0xff);
+    // header[76..79] = nonce, diisi worker.
+
+    // --- Target share: set_target dari pool kalau ada, kalau tidak dari diff ---
+    uint64_t target256[4] = {0, 0, 0, 0};
+    if (!m_targetOverrideHex.empty() && hex_to_target256(m_targetOverrideHex, target256)) {
+        // pakai override
+    } else {
+        diff_to_target256(m_diff, target256);
+    }
+
+    // --- Extranonce2 hex (untuk mining.submit) ---
+    static const char hx[] = "0123456789abcdef";
+    std::string xn2Hex;
+    xn2Hex.reserve(xn2.size() * 2);
+    for (uint8_t b : xn2) {
+        xn2Hex += hx[b >> 4];
+        xn2Hex += hx[b & 0xf];
+    }
+
+    Job job;
+    job.jobId = jobId;
+    job.header = std::move(header);
+    job.extranonce2Hex = xn2Hex;
+    job.ntimeHex = ntimeHex;
+    job.clean = (cleanStr == "true");
+    job.target256[0] = target256[0];
+    job.target256[1] = target256[1];
+    job.target256[2] = target256[2];
+    job.target256[3] = target256[3];
+    job.targetHex = m_targetOverrideHex;
+
+    m_currentJobId = jobId;
+    lg::debug("stratum", "New job " + jobId + " diff " + std::to_string(m_diff) + " clean=" +
+                             (job.clean ? "1" : "0"));
+
+    if (m_onJob) m_onJob(job);
+    return true;
+}
+
 void StratumClient::handleResponse(const std::string& line) {
     uint64_t id = json_id_val(line);
 
     if (id == 0) {
-        // Pool notification (rare in ETHPROXY mode).
+        // Pool notification. EthProxy: hanya log. Classic: job & parameter
+        // mining.* datang lewat sini.
+        if (m_mode == StratumMode::Classic) {
+            handleClassicLine(line);
+            return;
+        }
         std::string method = json_find_str(line, "method");
         if (!method.empty()) lg::debug("stratum", "Notification: " + method);
         return;
@@ -574,7 +979,46 @@ bool StratumClient::submitShare(const std::string& headerHex, const std::string&
     return sent;
 }
 
+bool StratumClient::submitShareClassic(const std::string& jobId, const std::string& extranonce2Hex,
+                                       const std::string& ntimeHex, const std::string& nonceHex,
+                                       int workerIdx) {
+    if (m_sock.load() < 0) return false;
+
+    uint64_t id = m_msgId.fetch_add(1);
+    {
+        std::lock_guard<std::mutex> lock(m_pendingMutex);
+        if (m_pending.size() >= 4096) m_pending.erase(m_pending.begin());
+        m_pending[id] = {std::chrono::steady_clock::now(), workerIdx};
+    }
+
+    // mining.submit params: [user, jobId, extranonce2, ntime, nonce]
+    // (urutan & byte-order persis seperti cpuminer std_le_build_stratum_request).
+    std::string msg = "{\"id\":" + std::to_string(id) +
+                      ",\"method\":\"mining.submit\",\"params\":[\"" +
+                      json_escape(m_workerName) + "\",\"" + json_escape(jobId) + "\",\"" +
+                      extranonce2Hex + "\",\"" + ntimeHex + "\",\"" + nonceHex + "\"]}";
+
+    bool sent = false;
+    {
+        std::lock_guard<std::mutex> lock(m_sendMutex);
+        int fd = m_sock.load();
+        if (fd >= 0) {
+            std::string payload = msg + "\n";
+            sent = ::send(fd, payload.data(), payload.size(), MSG_NOSIGNAL) ==
+                   (ssize_t)payload.size();
+        }
+    }
+    if (!sent) {
+        std::lock_guard<std::mutex> lock(m_pendingMutex);
+        m_pending.erase(id);
+    }
+    return sent;
+}
+
 void StratumClient::submitHashrate(uint64_t rate) {
+    // eth_submitHashrate hanya ada di protokol ETHPROXY. MiningCore klasik
+    // tidak memakainya — hening agar tidak memicu error "unknown method".
+    if (m_mode != StratumMode::EthProxy) return;
     if (m_sock.load() < 0) return;
 
     // eth_submitHashrate: params ["0x<32-byte BE rate>", "0x<worker-id>"]

@@ -52,6 +52,7 @@ bool Miner::start(const MinerConfig& cfg) {
     m_numThreads = cfg.threads;
     m_benchmark = cfg.benchmarkNonces > 0;
     m_benchmarkNonces = cfg.benchmarkNonces;
+    m_algo = (cfg.algo == "yespower") ? Algo::Yespower : Algo::RandomY;
 
     // Titik awal nonce harus berbeda antar proses, jadi seed dari sumber yang
     // tidak sama di dua proses yang start bersamaan. Mode benchmark tidak
@@ -103,6 +104,8 @@ bool Miner::start(const MinerConfig& cfg) {
     }
 
     // --- RandomY flags (respect config, but never force unsupported flags) ---
+    // Jalur yespower tidak memakai dataset/cache/VM RandomX sama sekali.
+    if (m_algo == Algo::RandomY) {
     m_flags = randomx_get_flags();
     if (cfg.fullMem)
         m_flags = static_cast<randomx_flags>(m_flags | RANDOMX_FLAG_FULL_MEM);
@@ -129,6 +132,10 @@ bool Miner::start(const MinerConfig& cfg) {
         m_running.store(false);
         return false;
     }
+    } else {
+        lg::info("sysd", "Algo yespower (RATR): N=2048 R=32, memori ~8MB/thread, "
+                         "tanpa dataset RandomX");
+    }
 
     // --- Build workers (VMs + statsIdx ready, threads NOT started yet) ---
     // statsIdx selalu padat (0..N-1) dan satu-satunya indeks yang dipakai:
@@ -137,10 +144,12 @@ bool Miner::start(const MinerConfig& cfg) {
     // sudah di-size pakai statsIdx -> std::out_of_range.
     for (int i = 0; i < m_numThreads; i++) {
         auto w = std::make_unique<Worker>();
-        w->vm = randomx_create_vm(m_flags, m_cache, m_dataset);
-        if (!w->vm) {
-            lg::error("sysd", "VM creation failed for worker " + std::to_string(i));
-            continue;
+        if (m_algo == Algo::RandomY) {
+            w->vm = randomx_create_vm(m_flags, m_cache, m_dataset);
+            if (!w->vm) {
+                lg::error("sysd", "VM creation failed for worker " + std::to_string(i));
+                continue;
+            }
         }
         w->statsIdx = static_cast<int>(m_workers.size());
         m_workers.push_back(std::move(w));
@@ -163,12 +172,21 @@ bool Miner::start(const MinerConfig& cfg) {
 
     if (m_benchmark) {
         // Fixed benchmark job: workers hash this header for N nonces.
-        std::vector<uint8_t> hdr(32);
-        for (int i = 0; i < 32; i++) hdr[i] = (uint8_t)i;
+        const size_t hdrLen = (m_algo == Algo::Yespower) ? 80 : 32;
+        std::vector<uint8_t> hdr(hdrLen);
+        for (size_t i = 0; i < hdrLen; i++) hdr[i] = (uint8_t)i;
         Job job;
         job.jobId = "benchmark";
         job.header = std::move(hdr);
         job.targetInt = 0x00ffffffffffffffULL;
+        if (m_algo == Algo::Yespower) {
+            // Target super mudah: benchmark hanya menghitung kecepatan, share
+            // tidak dikirim ke mana pun.
+            job.target256[0] = ~0ULL;
+            job.target256[1] = ~0ULL;
+            job.target256[2] = ~0ULL;
+            job.target256[3] = ~0ULL;
+        }
         {
             std::lock_guard<std::mutex> lock(m_jobMutex);
             m_job = std::make_shared<const Job>(job);
@@ -178,7 +196,9 @@ bool Miner::start(const MinerConfig& cfg) {
                                " nonces with " + std::to_string(m_workers.size()) + " threads");
     } else {
         // --- Stratum client + async submitter ---
-        m_client = std::make_unique<StratumClient>(cfg.pools);
+        StratumMode mode =
+            (m_algo == Algo::Yespower) ? StratumMode::Classic : StratumMode::EthProxy;
+        m_client = std::make_unique<StratumClient>(cfg.pools, mode);
         m_client->setPollMs(cfg.pollMs);
         m_client->setJobCallback([this](const Job& job) { onNewJob(job); });
         m_client->setResultCallback(
@@ -231,7 +251,7 @@ void Miner::stop() {
     // queue while the connection is still alive.
     for (auto& w : m_workers) {
         if (w->thread.joinable()) w->thread.join();
-        if (w->vm) randomx_destroy_vm(w->vm);
+        if (w->vm) randomx_destroy_vm(w->vm);  // yespower: vm == nullptr
     }
     m_submitter.stop();  // drain remaining queued shares
     m_workers.clear();
@@ -264,6 +284,9 @@ std::shared_ptr<const Job> Miner::loadJob() {
 }
 
 bool Miner::initDataset() {
+    // Jalur yespower tidak memakai dataset/cache RandomX.
+    if (m_algo == Algo::Yespower) return true;
+
     // RandomY Core Coin fixed key: {'5','6','7','8','9'}
     const char key[] = {'5', '6', '7', '8', '9'};
     auto t1 = std::chrono::steady_clock::now();
@@ -413,6 +436,14 @@ bool Miner::submitShareCallback(const Share& s) {
             return true;  // handled (counted as wasted)
         }
     }
+    if (s.classic) {
+        if (!m_client || !m_client->submitShareClassic(s.jobId, s.extranonce2Hex, s.ntimeHex,
+                                                       s.nonceHex, s.workerIdx)) {
+            m_stats.worker(s.workerIdx).wasted.fetch_add(1, std::memory_order_relaxed);
+            lg::debug("sysd", "Share dropped: no connection");
+        }
+        return true;
+    }
     if (!m_client || !m_client->submitShare(s.headerHex, s.nonceHex, s.mixHex, s.workerIdx)) {
         m_stats.worker(s.workerIdx).wasted.fetch_add(1, std::memory_order_relaxed);
         lg::debug("sysd", "Share dropped: no connection");
@@ -524,22 +555,40 @@ void Miner::workerLoop(Worker* w) {
     setpriority(PRIO_PROCESS, 0, -10);
 
     // Stack buffers — zero heap allocation in the hot path.
-    uint8_t blob[40];    // header(32) + nonce LE(8)
-    uint8_t seed[64];    // SHA3-512(blob) -> 64 bytes
-    uint8_t hashout[32]; // RandomY -> 32 bytes
+    uint8_t blob[80];    // RandomY: header(32)+nonce LE(8) | yespower: header(80)
+    uint8_t seed[64];    // SHA3-512(blob) -> 64 bytes (RandomY saja)
+    uint8_t hashout[32]; // RandomY/yespower -> 32 bytes
+    const size_t hdrLen = (m_algo == Algo::Yespower) ? 80 : 32;
 
     // Warmup: verify VM works before mining.
     {
-        uint8_t dummy_in[40] = {0};
-        uint8_t dummy_seed[64];
-        uint8_t dummy_out[32];
-        sha3::sha3_512_40(dummy_in, dummy_seed);
-        randomx_calculate_hash(w->vm, dummy_seed, 64, dummy_out);
+        if (m_algo == Algo::Yespower) {
+            uint8_t dummy[80] = {0};
+            uint8_t dummy_out[32];
+            if (!w->yp.init()) {
+                lg::error("sysd", "yespower init gagal untuk worker " + std::to_string(idx) +
+                                      " (memori ~8MB/thread)");
+                m_running.store(false);
+                return;
+            }
+            if (!w->yp.hash(dummy, sizeof(dummy), dummy_out)) {
+                lg::error("sysd", "yespower warmup hash gagal untuk worker " +
+                                      std::to_string(idx));
+                m_running.store(false);
+                return;
+            }
+        } else {
+            uint8_t dummy_in[40] = {0};
+            uint8_t dummy_seed[64];
+            uint8_t dummy_out[32];
+            sha3::sha3_512_40(dummy_in, dummy_seed);
+            randomx_calculate_hash(w->vm, dummy_seed, 64, dummy_out);
+        }
     }
 
     // Take a snapshot of the current job (may be null until first job).
     auto current = loadJob();
-    bool headerOk = current && current->header.size() == 32;
+    bool headerOk = current && current->header.size() == hdrLen;
     int idleSpins = 0;
 
     while (m_running.load(std::memory_order_relaxed)) {
@@ -558,14 +607,14 @@ void Miner::workerLoop(Worker* w) {
         // New job? Re-snapshot (header buffer stays alive via shared_ptr).
         if (job.get() != current.get()) {
             current = std::move(job);
-            // Invarian: header persis 32 byte. doEthGetWork() sudah menolak yang
-            // lain, tapi memcpy di bawah membaca 32 byte tanpa syarat — jadi
-            // periksa juga di sisi konsumen, bukan percaya pemanggil.
-            headerOk = (current->header.size() == 32);
+            // Invarian: header persis ukuran algo. doEthGetWork()/buildClassicJob()
+            // sudah menolak yang lain, tapi memcpy di bawah membaca byte tanpa
+            // syarat — jadi periksa juga di sisi konsumen, bukan percaya pemanggil.
+            headerOk = (current->header.size() == hdrLen);
             if (!headerOk)
                 lg::error("sysd", "Job " + current->jobId + " header " +
                                        std::to_string(current->header.size()) +
-                                       " byte (butuh 32) — dilewati");
+                                       " byte (butuh " + std::to_string(hdrLen) + ") — dilewati");
         }
         if (!headerOk) {
             // Tunggu job berikutnya, jangan hash dari buffer yang salah ukuran.
@@ -580,6 +629,75 @@ void Miner::workerLoop(Worker* w) {
         // Grab a batch of nonces.
         uint64_t nonceBase = m_globalNonce.fetch_add(BLOCKSIZE, std::memory_order_relaxed);
         uint64_t blockHashes = 0;
+
+        if (m_algo == Algo::Yespower) {
+            // --- Jalur yespower (RATR) ---
+            // Header 80 byte, nonce 4-byte LE di offset 76. Hash = yespower
+            // 1.0 (N=2048, r=32). Target share 256-bit, bandingkan BE.
+            const uint64_t t0 = current->target256[0];
+            const uint64_t t1 = current->target256[1];
+            const uint64_t t2 = current->target256[2];
+            const uint64_t t3 = current->target256[3];
+
+            for (int i = 0; i < BLOCKSIZE && m_running.load(std::memory_order_relaxed); i++) {
+                uint32_t nonce = static_cast<uint32_t>(nonceBase + i);
+
+                memcpy(blob, headerPtr, 80);
+                blob[76] = (uint8_t)(nonce & 0xff);
+                blob[77] = (uint8_t)((nonce >> 8) & 0xff);
+                blob[78] = (uint8_t)((nonce >> 16) & 0xff);
+                blob[79] = (uint8_t)((nonce >> 24) & 0xff);
+
+                if (!w->yp.hash(blob, 80, hashout)) {
+                    // Hash gagal = hasil sampah yang pasti ditolak pool. Lebih
+                    // baik berhenti daripada menghitung hashrate palsu.
+                    lg::error("sysd", "yespower hash gagal di worker " + std::to_string(idx) +
+                                          " — worker berhenti");
+                    m_running.store(false);
+                    return;
+                }
+
+                blockHashes++;
+
+                // 256-bit BE compare: hash < target.
+                uint64_t hw[4];
+                for (int wi = 0; wi < 4; wi++) {
+                    uint64_t v = 0;
+                    for (int b = 0; b < 8; b++) v = (v << 8) | hashout[wi * 8 + b];
+                    hw[wi] = v;
+                }
+                bool hit = hw[0] < t0 || (hw[0] == t0 && (hw[1] < t1 ||
+                           (hw[1] == t1 && (hw[2] < t2 ||
+                           (hw[2] == t2 && hw[3] < t3)))));
+
+                if (hit) {
+                    m_stats.worker(idx).sharesFound.fetch_add(1, std::memory_order_relaxed);
+                    if (m_benchmark) continue;  // no submission in benchmark
+
+                    Share s;
+                    s.classic = true;
+                    s.jobId = jobId;
+                    // mining.submit nonce = hex byte nonce LE (urutan byte di header).
+                    uint8_t nb[4] = {(uint8_t)(nonce & 0xff), (uint8_t)((nonce >> 8) & 0xff),
+                                     (uint8_t)((nonce >> 16) & 0xff), (uint8_t)((nonce >> 24) & 0xff)};
+                    s.nonceHex = bytes_to_hex(nb, 4);
+                    s.extranonce2Hex = current->extranonce2Hex;
+                    s.ntimeHex = current->ntimeHex;
+                    s.mixHex = "0x" + bytes_to_hex(hashout, 32);
+                    s.workerIdx = idx;
+                    s.foundAt = std::chrono::steady_clock::now();
+
+                    if (!m_submitter.push(std::move(s)))
+                        m_stats.worker(idx).wasted.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+
+            m_stats.worker(idx).totalHashes.fetch_add(blockHashes, std::memory_order_relaxed);
+            m_stats.worker(idx).windowHashes.fetch_add(blockHashes, std::memory_order_relaxed);
+            if (m_benchmark)
+                m_benchmarkDone.fetch_add(blockHashes, std::memory_order_relaxed);
+            continue;
+        }
 
         for (int i = 0; i < BLOCKSIZE && m_running.load(std::memory_order_relaxed); i++) {
             uint64_t nonce = nonceBase + i;

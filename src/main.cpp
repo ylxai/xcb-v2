@@ -1,4 +1,5 @@
 #include "Config.hpp"
+#include "Hashing/Yespower.hpp"
 #include "Log.hpp"
 #include "Miner.hpp"
 #include "Sha3_512.hpp"
@@ -139,6 +140,14 @@ static int runSelftest() {
                                  (pass ? "OK" : "FAIL"));
     }
 
+    // yespower upstream (RATR backend): vektor emas TESTS-OK openwall.
+    {
+        bool pass = ypw::selftest();
+        ok &= pass;
+        lg::info("selftest", std::string("yespower 1.0 N=2048 R=32 (upstream vector): ") +
+                                 (pass ? "OK" : "FAIL"));
+    }
+
     lg::info("selftest", std::string("RESULT: ") + (ok ? "PASS" : "FAIL"));
     return ok ? 0 : 1;
 }
@@ -170,9 +179,10 @@ int main(int argc, char* argv[]) {
 
     if (cfg.selftest) return runSelftest();
 
-    lg::info("main", "xcb v2 (Core Coin RandomY)");
-    lg::info("config", "Pools: " + std::to_string(cfg.pools.size()) + ", Threads: " +
-                            std::to_string(cfg.threads) +
+    lg::info("main", cfg.algo == "yespower" ? "xcb v2 (Ratatoskr yespower)"
+                                            : "xcb v2 (Core Coin RandomY)");
+    lg::info("config", "Algo: " + cfg.algo + ", Pools: " + std::to_string(cfg.pools.size()) +
+                            ", Threads: " + std::to_string(cfg.threads) +
                             (cfg.benchmarkNonces > 0 ? ", Benchmark: " +
                                                            std::to_string(cfg.benchmarkNonces)
                                                      : ""));

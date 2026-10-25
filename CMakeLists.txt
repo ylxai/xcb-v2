@@ -46,6 +46,13 @@ add_subdirectory(external/RandomY EXCLUDE_FROM_ALL)
 include_directories(external/RandomY/src)
 
 # ============================================================
+# yespower upstream (openwall, tag YESPOWER_1_0_0) — backend
+# Ratatoskr (RATR). Wrapper C++ di src/Hashing/Yespower.cpp.
+# ============================================================
+add_subdirectory(external/yespower EXCLUDE_FROM_ALL)
+include_directories(external/yespower)
+
+# ============================================================
 # FTXUI - terminal TUI library (dashboard, dari submodule)
 # ============================================================
 set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -77,6 +84,7 @@ set(MINER_SOURCES
     src/Stats.cpp
     src/Submitter.cpp
     src/Sha3_512.cpp
+    src/Hashing/Yespower.cpp
     src/Dashboard.cpp
 )
 
@@ -88,6 +96,7 @@ set(MINER_HEADERS
     src/Stats.hpp
     src/Submitter.hpp
     src/Sha3_512.hpp
+    src/Hashing/Yespower.hpp
     src/Dashboard.hpp
 )
 
@@ -108,6 +117,7 @@ add_executable(xcb ${MINER_SOURCES} ${MINER_HEADERS})
 target_link_libraries(xcb
     PRIVATE
         randomx               # RandomY library
+        yespower              # yespower upstream (backend RATR)
         ftxui::ftxui          # FTXUI dashboard (TUI)
         Threads::Threads      # find_package(Threads) di atas — bukan -lpthread literal
         OpenSSL::SSL

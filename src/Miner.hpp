@@ -1,6 +1,7 @@
 #pragma once
 #include "Config.hpp"
 #include "Dashboard.hpp"
+#include "Hashing/Yespower.hpp"
 #include "Stats.hpp"
 #include "StratumClient.hpp"
 #include "Submitter.hpp"
@@ -22,7 +23,15 @@ struct Worker {
     int statsIdx = 0;
     std::thread thread;
     randomx_vm* vm = nullptr;
+    // Backend yespower: memori thread-local (~8MB @ N=2048/r=32) dipakai
+    // ulang antar hash. Tidak dipakai pada jalur RandomY.
+    ypw::Hasher yp;
 };
+
+// Backend PoW yang dipakai proses ini.
+//  - RandomY  : RandomX-family (Core Coin XCB), stratum ETHPROXY
+//  - Yespower : Ratatoskr (RATR), yespower 1.0 N=2048 r=32, stratum klasik
+enum class Algo { RandomY, Yespower };
 
 class Miner {
 public:
@@ -58,6 +67,7 @@ private:
     randomx_dataset* m_dataset = nullptr;
     randomx_cache* m_cache = nullptr;
     randomx_flags m_flags;
+    Algo m_algo = Algo::RandomY;
 
     std::vector<std::unique_ptr<Worker>> m_workers;
     int m_numThreads = 1;

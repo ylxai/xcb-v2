@@ -1,5 +1,6 @@
 #include "Config.hpp"
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -175,6 +176,8 @@ MinerConfig Config::loadFile(const std::string& path) {
             cfg.fullMemAuto = false;
         } else if (key == "no_aes") {
             cfg.hardAES = (val != "true" && val != "1" && val != "yes");
+        } else if (key == "algo") {
+            cfg.algo = val;
         }
     }
     
@@ -214,6 +217,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     const char* envReportHr = getenv("REPORT_HASHRATE");
     const char* envPollMs = getenv("POLL_MS");
     const char* envBench = getenv("BENCHMARK");
+    const char* envAlgo = getenv("ALGO");
 
     // Env feature flags, applied in both the env-pool and file-pool paths.
     auto applyEnvFlags = [&]() {
@@ -236,6 +240,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         if (envBench && envBench[0] != '\0')
             cfg.benchmarkNonces =
                 static_cast<uint64_t>(numOr(envBench, 0, 0, 1000000000LL, "BENCHMARK"));
+        if (envAlgo && envAlgo[0] != '\0') cfg.algo = envAlgo;
     };
 
     if (envWallet && envPool) {
@@ -309,6 +314,12 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             
         } else if (arg == "-t" && i + 1 < argc) {
             cfg.threads = static_cast<int>(numOr(argv[++i], 0, 0, 4096, "-t"));
+
+        } else if ((arg == "-a" || arg == "--algo") && i + 1 < argc) {
+            cfg.algo = argv[++i];
+
+        } else if (arg.compare(0, 7, "--algo=") == 0) {
+            cfg.algo = arg.substr(7);
             
         } else if (arg == "--light") {
             cfg.fullMem = false;
@@ -351,6 +362,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  -u wallet[.worker]    Wallet address (worker 'auto' = hostname)\n"
                       << "  -p password           Pool password\n"
                       << "  -t N                  Thread count\n"
+                      << "  -a, --algo ALGO       randomy (XCB/RandomY) | yespower (RATR)\n"
                       << "  -R, --report-hashrate Submit hashrate to pool every 60s\n"
                       << "  --benchmark N         Benchmark N nonces (no pool)\n"
                       << "  --selftest            Verify SHA3-512 implementation, then exit\n"
@@ -365,7 +377,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  dari RAM tersedia / cgroup limit / hugepages bebas.\n"
                       << "  Config file: pool.cfg\n"
                       << "  Env: WALLET POOL WORKER THREADS FULL_MEM LARGE_PAGES LOG_LEVEL\n"
-                      << "       LOG_FORMAT REPORT_HASHRATE POLL_MS BENCHMARK\n";
+                      << "       LOG_FORMAT REPORT_HASHRATE POLL_MS BENCHMARK ALGO\n";
             exit(0);
         }
     }
@@ -408,6 +420,23 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         }
     }
     
+    // Normalisasi + validasi algo. Alias: randomx = randomy. Tidak dikenal =
+    // exit non-zero, bukan fallback diam-diam ke algo lain (share pasti tolak
+    // semua kalau salah backend).
+    {
+        std::string a = cfg.algo;
+        for (auto& c : a) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        if (a == "randomy" || a == "randomx") {
+            cfg.algo = "randomy";
+        } else if (a == "yespower") {
+            cfg.algo = "yespower";
+        } else {
+            std::cerr << "[Config] Algo tidak dikenal: '" << cfg.algo
+                      << "' (pilihan: randomy, yespower)" << std::endl;
+            exit(1);
+        }
+    }
+
     // Default threads = jumlah CPU yang boleh dipakai proses ini.
     // Di cpuset (docker --cpuset-cpus=2,3 / k8s cpu pinning) jumlah CPU online
     // lebih besar dari yang diizinkan, jadi memakai _SC_NPROCESSORS_ONLN
