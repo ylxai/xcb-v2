@@ -1,5 +1,6 @@
 #include "ConnMiner.hpp"
 
+#include "ConnPool.hpp"
 #include "ConnRpc.hpp"
 #include "Hashing/RandomXV2.hpp"
 #include "Log.hpp"
@@ -214,6 +215,10 @@ struct ConnMiner::Impl {
         std::string coinbaseHex;
         std::vector<std::string> txData;
         uint8_t targetLE[32]{};
+        // Mode pool (rplant rx/2b): target 64-bit LE + job untuk submit.
+        bool pool = false;
+        uint64_t target64 = 0;
+        ConnPoolJob poolJob;
         std::atomic<uint32_t> nonce{0};
         // True setelah blok untuk work ini dikirim: berhenti menghashing
         // template yang sama (kalau tidak, miner terus menemukan blok lain di
@@ -237,6 +242,10 @@ struct ConnMiner::Impl {
     std::atomic<bool> run{false};
     std::vector<std::thread> workers;
     std::thread templateThread;
+    // Mode pool (rplant).
+    std::unique_ptr<ConnPool> pool;
+    std::thread poolThread;
+    std::mutex poolSendMu;
 
     std::atomic<uint64_t> hashes{0};
     std::atomic<uint64_t> found{0};
@@ -451,12 +460,55 @@ struct ConnMiner::Impl {
         return true;
     }
 
-    void submit(const std::shared_ptr<Work>& w, const uint8_t header[80], uint32_t nonce) {
+    bool buildPoolWork(const ConnPoolJob& j) {
+        auto work = std::make_shared<Work>();
+        work->pool = true;
+        work->height = static_cast<int>(j.height);
+        work->target64 = j.target;
+        work->poolJob = j;
+        if (j.blob.size() != 80 && j.blob.size() != 76) {
+            lg::error("conn", "job pool blob bukan 76/80 byte");
+            return false;
+        }
+        memcpy(work->header, j.blob.data(), j.blob.size());
+        memset(work->header + 76, 0, 4);  // nonce diisi worker
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            work->gen = ++genCounter;
+            snap.work = work;
+            curHeight = static_cast<int>(j.height);
+        }
+        lg::info("conn", "New pool job " + j.id + " height " + std::to_string(j.height) +
+                             " target 0x" + toHex(reinterpret_cast<const uint8_t*>(&j.target),
+                                                  sizeof(j.target)).substr(0, 8) + "...");
+        return true;
+    }
+
+    // CryptoNote: target 64-bit dibandingkan dengan LIMB KE-4 hash (byte
+    // 24..31, little-endian), bukan limb pertama. Target 0x...0000 membuat
+    // hash valid selalu berakhir 00 00 — bukti urutan ini.
+    static bool leqTarget64(const uint8_t hash[32], uint64_t target) {
+        uint64_t v = 0;
+        for (int i = 0; i < 8; i++) v |= static_cast<uint64_t>(hash[24 + i]) << (8 * i);
+        return v < target;
+    }
+
+    void submit(const std::shared_ptr<Work>& w, const uint8_t header[80], uint32_t nonce,
+                const uint8_t* hash) {
         found.fetch_add(1);
-        // Satu blok per template. Kalau hasilnya invalid (bukan tip/duplikat),
-        // work tetap ditandai selesai lalu template baru ditarik — lebih baik
-        // daripada terus mengirim blok yang sama-sama salah.
+        // Satu blok/share per work.
         w->done.store(true, std::memory_order_relaxed);
+
+        if (w->pool) {
+            if (!hash) return;
+            std::lock_guard<std::mutex> lock(poolSendMu);
+            std::string err;
+            if (!pool || !pool->submit(w->poolJob, nonce, hash, err)) {
+                rejected.fetch_add(1);
+                lg::warn("conn", "submit pool gagal: " + err);
+            }
+            return;
+        }
         std::vector<uint8_t> block;
         block.insert(block.end(), header, header + 80);
         putVarint(block, 1 + w->txData.size());
@@ -536,7 +588,6 @@ struct ConnMiner::Impl {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 continue;
             }
-            uint64_t local = 0;
             for (int i = 0; i < 4096 && run.load(); i++) {
                 uint8_t header[80];
                 memcpy(header, work->header, sizeof(header));
@@ -544,9 +595,13 @@ struct ConnMiner::Impl {
                 for (int k = 0; k < 4; k++) header[76 + k] = static_cast<uint8_t>(nonce >> (8 * k));
                 uint8_t out[32];
                 vm->hash(header, sizeof(header), out);
-                local++;
-                if (leqTarget(out, work->targetLE)) {
-                    submit(work, header, nonce);
+                // Akuntansi per hash: batch 4096 membuat sampel 10 detik
+                // bergantian 0 / penuh (hashrate tampak putus-putus).
+                hashes.fetch_add(1, std::memory_order_relaxed);
+                const bool ok = work->pool ? leqTarget64(out, work->target64)
+                                           : leqTarget(out, work->targetLE);
+                if (ok) {
+                    submit(work, header, nonce, out);
                     // Template mungkin sudah berganti; keluar dari batch.
                     break;
                 }
@@ -559,7 +614,71 @@ struct ConnMiner::Impl {
                     if (g != seenGen) break;
                 }
             }
-            hashes.fetch_add(local);
+        }
+    }
+
+    void poolLoop() {
+        auto lastLog = std::chrono::steady_clock::now();
+        uint64_t lastHashes = 0;
+        int backoff = 2;
+        while (run.load()) {
+            if (!pool->alive()) {
+                ConnPoolJob first;
+                std::string err;
+                if (!pool->connectAndLogin(first, err)) {
+                    lg::warn("conn", "pool login gagal: " + err + " (retry " +
+                                         std::to_string(backoff) + "s)");
+                    std::this_thread::sleep_for(std::chrono::seconds(backoff));
+                    backoff = std::min(backoff * 2, 30);
+                    continue;
+                }
+                backoff = 2;
+                lg::info("conn", "Pool login OK (" + cfg.poolHost + ") sebagai " +
+                                     cfg.poolWorker);
+                if (first.seedHex != curKey && !buildEngine(first.seedHex)) {
+                    std::this_thread::sleep_for(std::chrono::seconds(5));
+                    continue;
+                }
+                buildPoolWork(first);
+            }
+
+            ConnPoolJob j;
+            std::string detail;
+            const ConnPool::Event ev = pool->poll(j, 1000, detail);
+            if (ev == ConnPool::Event::Job) {
+                if (j.seedHex != curKey && !buildEngine(j.seedHex)) continue;
+                buildPoolWork(j);
+            } else if (ev == ConnPool::Event::Accepted) {
+                accepted.fetch_add(1);
+                lg::good("conn", "Share ACCEPTED (total " + std::to_string(accepted.load()) + ")");
+            } else if (ev == ConnPool::Event::Rejected) {
+                rejected.fetch_add(1);
+                lg::warn("conn", "Share ditolak: " + detail);
+            } else if (ev == ConnPool::Event::Error) {
+                lg::warn("conn", "Koneksi pool terputus: " + detail);
+                pool->close();
+            }
+
+            const auto now = std::chrono::steady_clock::now();
+            const auto elapsed =
+                std::chrono::duration_cast<std::chrono::milliseconds>(now - lastLog).count();
+            if (elapsed >= 10000) {
+                const uint64_t h = hashes.load();
+                const double hr = static_cast<double>(h - lastHashes) * 1000.0 /
+                                  static_cast<double>(elapsed);
+                lastHashes = h;
+                lastLog = now;
+                int height = 0;
+                {
+                    std::lock_guard<std::mutex> lock(mu);
+                    height = curHeight;
+                }
+                lg::info("conn", "HR " + std::to_string(static_cast<uint64_t>(hr)) + " H/s | A " +
+                                     std::to_string(accepted.load()) + " R " +
+                                     std::to_string(rejected.load()) + " | pool height " +
+                                     std::to_string(height) + " | found " +
+                                     std::to_string(found.load()));
+            }
         }
     }
 
@@ -636,6 +755,31 @@ bool ConnMiner::start(const ConnMinerConfig& cfg) {
 
     m_impl = std::make_unique<Impl>();
     m_impl->cfg = cfg;
+
+    // --- Mode pool rplant (rx/2b): tanpa RPC node, tanpa scriptPubKey ---
+    if (!cfg.poolHost.empty()) {
+        m_impl->pool = std::make_unique<ConnPool>(cfg.poolHost, cfg.poolPort, cfg.address,
+                                                  cfg.poolWorker, cfg.poolTls);
+        ConnPoolJob first;
+        std::string err;
+        if (!m_impl->pool->connectAndLogin(first, err)) {
+            lg::error("conn", "pool login gagal: " + err);
+            return false;
+        }
+        lg::info("conn", "Pool login OK (" + cfg.poolHost + ":" +
+                             std::to_string(cfg.poolPort) + (cfg.poolTls ? ", tls)" : ", plain)"));
+        if (!m_impl->buildEngine(first.seedHex)) return false;
+        if (!m_impl->buildPoolWork(first)) return false;
+
+        m_running.store(true);
+        m_impl->run.store(true);
+        for (int i = 0; i < cfg.threads; i++)
+            m_impl->workers.emplace_back([this, i]() { m_impl->workerLoop(i); });
+        m_impl->poolThread = std::thread([this]() { m_impl->poolLoop(); });
+        lg::info("conn", "Mining pool CONN rx/2b dengan " + std::to_string(cfg.threads) +
+                             " thread");
+        return true;
+    }
 
     std::string user = cfg.rpcUser;
     std::string pass = cfg.rpcPass;
@@ -727,6 +871,7 @@ void ConnMiner::stop() {
         if (t.joinable()) t.join();
     m_impl->workers.clear();
     if (m_impl->templateThread.joinable()) m_impl->templateThread.join();
+    if (m_impl->poolThread.joinable()) m_impl->poolThread.join();
 }
 
 std::string ConnMiner::finalSummary() {

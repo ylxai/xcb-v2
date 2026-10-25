@@ -24,6 +24,14 @@ struct ConnMinerConfig {
     int threads = 1;
     bool fastMem = true;    // FAST dataset ~2 GiB (hash sama dengan LIGHT)
     bool largePages = true; // coba hugepages, fallback otomatis
+
+    // Jika poolHost diisi: mining lewat pool rplant (algo rx/2b) alih-alih
+    // solo RPC. Protokol pool: login/job/submit (xmrig-style), blob 76 byte +
+    // nonce, target 64-bit LE.
+    std::string poolHost;
+    int poolPort = 17194;
+    bool poolTls = true;
+    std::string poolWorker = "xcb";
 };
 
 class ConnMiner {

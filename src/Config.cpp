@@ -229,6 +229,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     const char* envConnPass = getenv("CONN_PASS");
     const char* envConnCookie = getenv("CONN_COOKIE");
     const char* envConnAddress = getenv("CONN_ADDRESS");
+    const char* envConnPool = getenv("CONN_POOL");
 
     // Env feature flags, applied in both the env-pool and file-pool paths.
     auto applyEnvFlags = [&]() {
@@ -257,6 +258,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         if (envConnPass && envConnPass[0] != '\0') cfg.connPass = envConnPass;
         if (envConnCookie && envConnCookie[0] != '\0') cfg.connCookie = envConnCookie;
         if (envConnAddress && envConnAddress[0] != '\0') cfg.connAddress = envConnAddress;
+        if (envConnPool && envConnPool[0] != '\0') cfg.connPoolHost = envConnPool;
     };
 
     if (envWallet && envPool) {
@@ -376,6 +378,22 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         } else if ((arg == "--address" || arg == "--conn-address") && i + 1 < argc) {
             cfg.connAddress = argv[++i];
 
+        } else if (arg == "--conn-pool" && i + 1 < argc) {
+            // HOST[:PORT]
+            std::string v = argv[++i];
+            auto colon = v.rfind(':');
+            if (colon != std::string::npos && colon + 1 < v.size() &&
+                v.find_first_not_of("0123456789", colon + 1) == std::string::npos) {
+                cfg.connPoolHost = v.substr(0, colon);
+                cfg.connPoolPort = static_cast<int>(
+                    numOr(v.substr(colon + 1), 17194, 1, 65535, "--conn-pool port"));
+            } else {
+                cfg.connPoolHost = v;
+            }
+
+        } else if (arg == "--conn-pool-plain") {
+            cfg.connPoolTls = false;
+
         } else if (arg == "-R" || arg == "--report-hashrate") {
             cfg.reportHashrate = true;
             
@@ -404,6 +422,8 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  --conn-pass PASS      RPC password\n"
                       << "  --conn-cookie PATH    Cookie RPC (default ~/.connectcoin/.cookie)\n"
                       << "  --address ADDR        Alamat reward CONN (atau pakai -u)\n"
+                      << "  --conn-pool HOST[:PORT] Mining pool rplant rx/2b (default port 17194)\n"
+                      << "  --conn-pool-plain     Pool tanpa TLS (default TLS)\n"
                       << "  -R, --report-hashrate Submit hashrate to pool every 60s\n"
                       << "  --benchmark N         Benchmark N nonces (no pool)\n"
                       << "  --selftest            Verify SHA3-512 implementation, then exit\n"

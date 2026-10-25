@@ -81,6 +81,7 @@ set(MINER_SOURCES
     src/StratumClient.cpp
     src/Miner.cpp
     src/ConnRpc.cpp
+    src/ConnPool.cpp
     src/ConnMiner.cpp
     src/Hashing/RandomXV2.cpp
     src/Config.cpp
@@ -95,6 +96,7 @@ set(MINER_HEADERS
     src/StratumClient.hpp
     src/Miner.hpp
     src/ConnRpc.hpp
+    src/ConnPool.hpp
     src/ConnMiner.hpp
     src/Hashing/RandomXV2.hpp
     src/Config.hpp

@@ -193,6 +193,9 @@ int main(int argc, char* argv[]) {
         mc.threads = cfg.threads;
         mc.fastMem = cfg.fullMem;
         mc.largePages = cfg.largePages;
+        mc.poolHost = cfg.connPoolHost;
+        mc.poolPort = cfg.connPoolPort;
+        mc.poolTls = cfg.connPoolTls;
 
         ConnMiner conn;
         if (!conn.start(mc)) {

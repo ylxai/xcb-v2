@@ -37,6 +37,10 @@ struct MinerConfig {
     std::string connPass;
     std::string connCookie = "~/.connectcoin/.cookie";
     std::string connAddress;  // alamat reward P2TR (5120<key>)
+    // Pool rplant (opsional): algo rx/2b. Isi host untuk mode pool.
+    std::string connPoolHost;
+    int connPoolPort = 17194;
+    bool connPoolTls = true;
 };
 
 class Config {
