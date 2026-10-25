@@ -11,7 +11,10 @@ Wants=syscached.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/opt/sysconf/rk-boot.sh
-ExecStop=/sbin/rmmod rootkit
+# Tanda "-" = kegagalan diabaikan. Modul tidak lagi memutasi module->list
+# (lihat rootkit.c), jadi rmmod selalu bisa menemukannya; bila modul memang
+# tidak termuat, stop service tidak boleh dianggap gagal.
+ExecStop=-/sbin/rmmod rootkit
 StandardOutput=null
 
 [Install]

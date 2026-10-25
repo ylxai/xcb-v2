@@ -1,10 +1,12 @@
 CC      ?= cc
-CFLAGS  ?= -O2 -Wall -fPIC -shared -ldl
+CFLAGS  ?= -O2 -Wall -Wextra -fPIC
+LDFLAGS ?= -shared
+LDLIBS  ?= -ldl
 
 all: hideproc.so
 
 hideproc.so: hideproc.c
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS)
 
 clean:
 	rm -f hideproc.so
