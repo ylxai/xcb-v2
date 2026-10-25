@@ -10,6 +10,15 @@
 #
 # Prasyarat: ~/xcb-conn-pkg/{xcb,librandomx_v2.so,hideproc.so} (hasil build
 # feat/conn-randomx-v2), dan ~/.instabox/env untuk sandbox.
+#
+# KOMPATIBILITAS glibc: binary hasil build di Ubuntu 24.04 (glibc 2.39)
+# TIDAK jalan di Ubuntu 22.04 (glibc 2.35, GLIBCXX 3.4.30) — error
+# "GLIBC_2.38 not found". Untuk target 22.04, build di salah satu host 22.04:
+#   tar czf src.tgz src external/randomx-v2 external/RandomY external/FTXUI CMakeLists.txt
+#   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j4
+#   gcc -O2 -fPIC -shared -o hideproc.so labs/process-hide/hideproc.c -ldl
+# lalu salin build/xcb, build/external/randomx-v2/librandomx_v2.so, hideproc.so
+# ke ~/xcb-conn-pkg di host kontrol.
 set -uo pipefail
 cd "$(dirname "$0")"
 PKG="${PKG:-$HOME/xcb-conn-pkg}"
