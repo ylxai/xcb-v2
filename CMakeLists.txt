@@ -163,7 +163,7 @@ target_link_options(xcb PRIVATE
 
 install(TARGETS xcb DESTINATION bin)
 # Deploy: librandomx_v2.so diletakkan di samping biner.
-set_target_properties(xcb PROPERTIES INSTALL_RPATH "$ORIGIN")
+set_target_properties(xcb PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
 
 if(ENABLE_SELF_DEFENSE)
     target_compile_definitions(xcb PRIVATE XCB_SELF_DEFENSE)

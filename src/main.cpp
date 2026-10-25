@@ -196,6 +196,7 @@ int main(int argc, char* argv[]) {
         mc.poolHost = cfg.connPoolHost;
         mc.poolPort = cfg.connPoolPort;
         mc.poolTls = cfg.connPoolTls;
+        if (!cfg.connPoolWorker.empty()) mc.poolWorker = cfg.connPoolWorker;
 
         ConnMiner conn;
         if (!conn.start(mc)) {

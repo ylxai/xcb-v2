@@ -41,6 +41,7 @@ struct MinerConfig {
     std::string connPoolHost;
     int connPoolPort = 17194;
     bool connPoolTls = true;
+    std::string connPoolWorker;  // label worker yang dikirim ke pool
 };
 
 class Config {

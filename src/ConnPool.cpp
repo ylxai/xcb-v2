@@ -140,9 +140,10 @@ bool ConnPool::connectAndLogin(ConnPoolJob& first, std::string& err) {
     m_fd = fd;
 
     // --- login ---
+    const std::string who = m_worker.empty() ? m_wallet : (m_wallet + "." + m_worker);
     const std::string login = "{\"id\":" + std::to_string(m_msgId++) +
                               ",\"jsonrpc\":\"2.0\",\"method\":\"login\",\"params\":{"
-                              "\"login\":\"" + m_wallet + "\",\"pass\":\"x\",\"agent\":"
+                              "\"login\":\"" + who + "\",\"pass\":\"x\",\"agent\":"
                               "\"xcb-v2/1.0\",\"algo\":[\"rx/2b\"]}}";
     if (!sendLine(login, err)) return false;
 

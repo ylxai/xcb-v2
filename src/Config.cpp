@@ -394,6 +394,9 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         } else if (arg == "--conn-pool-plain") {
             cfg.connPoolTls = false;
 
+        } else if (arg == "--worker" && i + 1 < argc) {
+            cfg.connPoolWorker = argv[++i];
+
         } else if (arg == "-R" || arg == "--report-hashrate") {
             cfg.reportHashrate = true;
             
