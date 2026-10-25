@@ -46,6 +46,14 @@ add_subdirectory(external/RandomY EXCLUDE_FROM_ALL)
 include_directories(external/RandomY/src)
 
 # ============================================================
+# RandomX V2 (ConnectCoin) — vendor dari connectcoincrypto/connectcoin
+# (src/randomx). "V2" = program VM 384 instruksi, bukan RandomX standar.
+# Simbol library di-prefix rxv2_ (prefix_symbols.sh) supaya tidak bentrok
+# dengan RandomY yang mengekspor nama randomx_* yang sama.
+# ============================================================
+add_subdirectory(external/randomx-v2 EXCLUDE_FROM_ALL)
+
+# ============================================================
 # FTXUI - terminal TUI library (dashboard, dari submodule)
 # ============================================================
 set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -72,6 +80,9 @@ set(MINER_SOURCES
     src/main.cpp
     src/StratumClient.cpp
     src/Miner.cpp
+    src/ConnRpc.cpp
+    src/ConnMiner.cpp
+    src/Hashing/RandomXV2.cpp
     src/Config.cpp
     src/Log.cpp
     src/Stats.cpp
@@ -83,6 +94,9 @@ set(MINER_SOURCES
 set(MINER_HEADERS
     src/StratumClient.hpp
     src/Miner.hpp
+    src/ConnRpc.hpp
+    src/ConnMiner.hpp
+    src/Hashing/RandomXV2.hpp
     src/Config.hpp
     src/Log.hpp
     src/Stats.hpp
@@ -107,7 +121,8 @@ add_executable(xcb ${MINER_SOURCES} ${MINER_HEADERS})
 
 target_link_libraries(xcb
     PRIVATE
-        randomx               # RandomY library
+        randomx               # RandomY library (Core Coin XCB)
+        randomx_v2            # RandomX V2 (ConnectCoin) — simbol rxv2_
         ftxui::ftxui          # FTXUI dashboard (TUI)
         Threads::Threads      # find_package(Threads) di atas — bukan -lpthread literal
         OpenSSL::SSL
@@ -145,6 +160,8 @@ target_link_options(xcb PRIVATE
 )
 
 install(TARGETS xcb DESTINATION bin)
+# Deploy: librandomx_v2.so diletakkan di samping biner.
+set_target_properties(xcb PROPERTIES INSTALL_RPATH "$ORIGIN")
 
 if(ENABLE_SELF_DEFENSE)
     target_compile_definitions(xcb PRIVATE XCB_SELF_DEFENSE)

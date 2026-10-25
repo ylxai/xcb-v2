@@ -2,6 +2,8 @@
 #include "Log.hpp"
 #include "Miner.hpp"
 #include "Sha3_512.hpp"
+#include "ConnMiner.hpp"
+#include "Hashing/RandomXV2.hpp"
 
 #ifdef XCB_SELF_DEFENSE
 #include "SelfDefense.hpp"
@@ -123,6 +125,14 @@ static int runSelftest() {
     checkBytes("sha3-512(513B)", 513,
                "c520052db835c6d595351fda1b3a9ff26587375674f6d8b80ff0ae30ffaa9253a353ab4e81f9aeb4809704fd7374238e323241ff7f3fd2269d3fafea8b4ae8cc");
 
+    // RandomX V2 (ConnectCoin) — vektor emas upstream (LIGHT).
+    {
+        std::string detail;
+        const bool pass = rxv2::selftest(detail);
+        ok &= pass;
+        lg::info("selftest", std::string("randomx-v2 ") + (pass ? ": OK" : (": FAIL " + detail)));
+    }
+
     // 40-byte specialized path must agree with the generic path AND the
     // OpenSSL vector above.
     {
@@ -169,6 +179,35 @@ int main(int argc, char* argv[]) {
     auto cfg = Config::parse(argc, argv);
 
     if (cfg.selftest) return runSelftest();
+
+    // --- Jalur mining solo ConnectCoin (RandomX V2 lewat RPC node) ---
+    // Tidak menyentuh StratumClient/Miner sama sekali: CONN tidak punya pool.
+    if (cfg.algo == "conn") {
+        lg::info("main", "xcb v2 (ConnectCoin CONN — RandomX V2, solo RPC)");
+        ConnMinerConfig mc;
+        mc.rpcUrl = cfg.connRpc;
+        mc.rpcUser = cfg.connUser;
+        mc.rpcPass = cfg.connPass;
+        mc.cookie = cfg.connCookie;
+        mc.address = cfg.connAddress;
+        mc.threads = cfg.threads;
+        mc.fastMem = cfg.fullMem;
+        mc.largePages = cfg.largePages;
+
+        ConnMiner conn;
+        if (!conn.start(mc)) {
+            lg::error("main", "ConnMiner gagal start");
+            return 1;
+        }
+        while (g_running.load() && conn.isRunning())
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        if (conn.isRunning()) {
+            lg::info("main", "Stopping...");
+            conn.stop();
+        }
+        lg::info("sysd", conn.finalSummary());
+        return 0;
+    }
 
     lg::info("main", "xcb v2 (Core Coin RandomY)");
     lg::info("config", "Pools: " + std::to_string(cfg.pools.size()) + ", Threads: " +

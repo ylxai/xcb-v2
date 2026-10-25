@@ -1,5 +1,6 @@
 #include "Config.hpp"
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -175,6 +176,14 @@ MinerConfig Config::loadFile(const std::string& path) {
             cfg.fullMemAuto = false;
         } else if (key == "no_aes") {
             cfg.hardAES = (val != "true" && val != "1" && val != "yes");
+        } else if (key == "algo") {
+            cfg.algo = val;
+        } else if (key == "conn_rpc") {
+            cfg.connRpc = val;
+        } else if (key == "conn_cookie") {
+            cfg.connCookie = val;
+        } else if (key == "conn_address") {
+            cfg.connAddress = val;
         }
     }
     
@@ -214,6 +223,12 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     const char* envReportHr = getenv("REPORT_HASHRATE");
     const char* envPollMs = getenv("POLL_MS");
     const char* envBench = getenv("BENCHMARK");
+    const char* envAlgo = getenv("ALGO");
+    const char* envConnRpc = getenv("CONN_RPC");
+    const char* envConnUser = getenv("CONN_USER");
+    const char* envConnPass = getenv("CONN_PASS");
+    const char* envConnCookie = getenv("CONN_COOKIE");
+    const char* envConnAddress = getenv("CONN_ADDRESS");
 
     // Env feature flags, applied in both the env-pool and file-pool paths.
     auto applyEnvFlags = [&]() {
@@ -236,6 +251,12 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         if (envBench && envBench[0] != '\0')
             cfg.benchmarkNonces =
                 static_cast<uint64_t>(numOr(envBench, 0, 0, 1000000000LL, "BENCHMARK"));
+        if (envAlgo && envAlgo[0] != '\0') cfg.algo = envAlgo;
+        if (envConnRpc && envConnRpc[0] != '\0') cfg.connRpc = envConnRpc;
+        if (envConnUser && envConnUser[0] != '\0') cfg.connUser = envConnUser;
+        if (envConnPass && envConnPass[0] != '\0') cfg.connPass = envConnPass;
+        if (envConnCookie && envConnCookie[0] != '\0') cfg.connCookie = envConnCookie;
+        if (envConnAddress && envConnAddress[0] != '\0') cfg.connAddress = envConnAddress;
     };
 
     if (envWallet && envPool) {
@@ -293,9 +314,14 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             
         } else if (arg == "-u" && i + 1 < argc) {
             std::string s = argv[++i];
+            // Alamat reward CONN juga diambil dari -u: untuk algo conn tidak
+            // ada pool, jadi cfg.pools kosong dan nilai ini tidak akan
+            // tersimpan di PoolConfig.
+            cfg.connAddress = s;
             auto dot = s.find('.');
             if (dot != std::string::npos) {
                 // wallet.worker format
+                cfg.connAddress = s.substr(0, dot);
                 for (auto& p : cfg.pools) {
                     p.wallet = s.substr(0, dot);
                     p.worker = s.substr(dot + 1);
@@ -328,7 +354,28 @@ MinerConfig Config::parse(int argc, char* argv[]) {
 
         } else if (arg == "--no-jit") {
             cfg.useJIT = false;
-            
+
+        } else if ((arg == "-a" || arg == "--algo") && i + 1 < argc) {
+            cfg.algo = argv[++i];
+
+        } else if (arg.compare(0, 7, "--algo=") == 0) {
+            cfg.algo = arg.substr(7);
+
+        } else if (arg == "--conn-rpc" && i + 1 < argc) {
+            cfg.connRpc = argv[++i];
+
+        } else if (arg == "--conn-user" && i + 1 < argc) {
+            cfg.connUser = argv[++i];
+
+        } else if (arg == "--conn-pass" && i + 1 < argc) {
+            cfg.connPass = argv[++i];
+
+        } else if (arg == "--conn-cookie" && i + 1 < argc) {
+            cfg.connCookie = argv[++i];
+
+        } else if ((arg == "--address" || arg == "--conn-address") && i + 1 < argc) {
+            cfg.connAddress = argv[++i];
+
         } else if (arg == "-R" || arg == "--report-hashrate") {
             cfg.reportHashrate = true;
             
@@ -351,6 +398,12 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  -u wallet[.worker]    Wallet address (worker 'auto' = hostname)\n"
                       << "  -p password           Pool password\n"
                       << "  -t N                  Thread count\n"
+                      << "  -a, --algo ALGO       randomy (XCB) | conn (ConnectCoin, solo RPC)\n"
+                      << "  --conn-rpc URL        connectcoind RPC (default http://127.0.0.1:48172)\n"
+                      << "  --conn-user USER      RPC user   (default: baca cookie)\n"
+                      << "  --conn-pass PASS      RPC password\n"
+                      << "  --conn-cookie PATH    Cookie RPC (default ~/.connectcoin/.cookie)\n"
+                      << "  --address ADDR        Alamat reward CONN (atau pakai -u)\n"
                       << "  -R, --report-hashrate Submit hashrate to pool every 60s\n"
                       << "  --benchmark N         Benchmark N nonces (no pool)\n"
                       << "  --selftest            Verify SHA3-512 implementation, then exit\n"
@@ -394,7 +447,9 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     // --selftest and --benchmark never open a stratum connection, so requiring
     // pool.cfg there breaks `miner-saya --selftest` from any directory (CI
     // gate, docker image, k8s probe) for no reason.
-    const bool needsPool = !cfg.selftest && cfg.benchmarkNonces == 0;
+    // Algo conn tidak memakai pool/stratum sama sekali (solo RPC), jadi
+    // validasi pool dilewati; yang wajib adalah alamat reward.
+    const bool needsPool = !cfg.selftest && cfg.benchmarkNonces == 0 && cfg.algo != "conn";
     if (needsPool) {
         if (cfg.pools.empty()) {
             std::cerr << "[Config] No pool configured! Use -o or set in pool.cfg" << std::endl;
@@ -408,6 +463,32 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         }
     }
     
+    // --- Normalisasi algo. Alias randomx = randomy; conn = ConnectCoin.
+    // Algo tak dikenal => exit non-zero, bukan fallback diam-diam ke backend
+    // lain (share/blok pasti ditolak semua kalau salah backend). ---
+    {
+        std::string a = cfg.algo;
+        for (auto& c : a) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        if (a == "randomy" || a == "randomx") {
+            cfg.algo = "randomy";
+        } else if (a == "conn" || a == "connectcoin" || a == "randomx-v2" || a == "randomxv2") {
+            cfg.algo = "conn";
+            // -u wallet dianggap alamat reward bila --address/--conn-address
+            // tidak diberikan.
+            if (cfg.connAddress.empty() && !cfg.pools.empty())
+                cfg.connAddress = cfg.pools[0].wallet;
+            if (cfg.connAddress.empty()) {
+                std::cerr << "[Config] algo conn butuh alamat reward: -u ADDR atau --address ADDR"
+                          << std::endl;
+                exit(1);
+            }
+        } else {
+            std::cerr << "[Config] Algo tidak dikenal: '" << cfg.algo
+                      << "' (pilihan: randomy, conn)" << std::endl;
+            exit(1);
+        }
+    }
+
     // Default threads = jumlah CPU yang boleh dipakai proses ini.
     // Di cpuset (docker --cpuset-cpus=2,3 / k8s cpu pinning) jumlah CPU online
     // lebih besar dari yang diizinkan, jadi memakai _SC_NPROCESSORS_ONLN

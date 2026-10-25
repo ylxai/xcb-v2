@@ -28,6 +28,15 @@ struct MinerConfig {
     uint64_t benchmarkNonces = 0; // >0 => benchmark mode (no pool)
     bool selftest = false;        // run SHA3/keccak self test and exit
     std::string ui = "auto";      // auto | ftxui | ansi | log (display mode)
+    // Backend PoW: "randomy" (RandomY, Core Coin XCB) atau "conn"
+    // (ConnectCoin — RandomX V2, mining solo lewat RPC node, tanpa stratum).
+    std::string algo = "randomy";
+    // Parameter hanya untuk algo=conn.
+    std::string connRpc = "http://127.0.0.1:48172";
+    std::string connUser;
+    std::string connPass;
+    std::string connCookie = "~/.connectcoin/.cookie";
+    std::string connAddress;  // alamat reward P2TR (5120<key>)
 };
 
 class Config {
