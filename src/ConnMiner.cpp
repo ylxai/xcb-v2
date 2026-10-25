@@ -89,10 +89,22 @@ void putPush(std::vector<uint8_t>& v, const std::vector<uint8_t>& data) {
     v.insert(v.end(), data.begin(), data.end());
 }
 
-// CScript << nHeight: angka minimal little-endian (BIP34).
+// CScript << nHeight (BIP34). PENTING: CScript::operator<<(int64) memakai
+// push_int64, yang meng-encode 0..16 sebagai OP_0..OP_16 (bukan push data).
+// Node membandingkan prefix scriptSig dengan hasil operator<< ini, jadi
+// tinggi 1 wajib 0x51 (OP_1) — bukan 0x01 0x01. Kesalahan ini muncul sebagai
+// "bad-cb-height".
 void putScriptNum(std::vector<uint8_t>& v, int64_t n) {
     if (n == 0) {
-        v.push_back(0x00);
+        v.push_back(0x00);  // OP_0
+        return;
+    }
+    if (n >= 1 && n <= 16) {
+        v.push_back(static_cast<uint8_t>(0x50 + n));  // OP_1..OP_16
+        return;
+    }
+    if (n == -1) {
+        v.push_back(0x4f);  // OP_1NEGATE
         return;
     }
     const bool neg = n < 0;
@@ -203,6 +215,11 @@ struct ConnMiner::Impl {
         std::vector<std::string> txData;
         uint8_t targetLE[32]{};
         std::atomic<uint32_t> nonce{0};
+        // True setelah blok untuk work ini dikirim: berhenti menghashing
+        // template yang sama (kalau tidak, miner terus menemukan blok lain di
+        // tinggi yang sama dan membanjiri submitblock dengan hasil
+        // "inconclusive").
+        std::atomic<bool> done{false};
     };
 
     struct Snapshot {
@@ -436,6 +453,10 @@ struct ConnMiner::Impl {
 
     void submit(const std::shared_ptr<Work>& w, const uint8_t header[80], uint32_t nonce) {
         found.fetch_add(1);
+        // Satu blok per template. Kalau hasilnya invalid (bukan tip/duplikat),
+        // work tetap ditandai selesai lalu template baru ditarik — lebih baik
+        // daripada terus mengirim blok yang sama-sama salah.
+        w->done.store(true, std::memory_order_relaxed);
         std::vector<uint8_t> block;
         block.insert(block.end(), header, header + 80);
         putVarint(block, 1 + w->txData.size());
@@ -461,12 +482,29 @@ struct ConnMiner::Impl {
             accepted.fetch_add(1);
             lg::good("conn", "BLOK DITERIMA height=" + std::to_string(w->height) + " nonce=" +
                                  std::to_string(nonce) + " (" + blockHex.substr(0, 16) + "...)");
-        } else if (reason == "duplicate" || reason == "duplicate-invalid") {
+        } else if (reason == "inconclusive" || reason.rfind("duplicate", 0) == 0) {
+            // "inconclusive": blok valid tetapi node tidak menjadikannya tip
+            // (kalah balapan di tinggi yang sama, atau tip sudah pindah).
+            // Bukan kesalahan kita; template berikutnya akan menyusul.
             stale.fetch_add(1);
-            lg::debug("conn", "Blok duplikat (sudah ada miner lain): " + reason);
+            lg::debug("conn", "Blok tidak menjadi tip (" + reason + ") height=" +
+                                  std::to_string(w->height));
         } else {
             rejected.fetch_add(1);
             lg::warn("conn", "Blok ditolak node: " + reason);
+            // Diagnostik: simpan blok pertama yang ditolak agar bisa didekode
+            // manual (mis. bad-cb-height) tanpa menebak.
+            static int dumped = 0;
+            if (dumped < 2) {
+                dumped++;
+                FILE* f = std::fopen("/tmp/conn-reject.hex", "w");
+                if (f) {
+                    std::fputs(blockHex.c_str(), f);
+                    std::fputc('\n', f);
+                    std::fclose(f);
+                    lg::warn("conn", "Blok ditolak disimpan ke /tmp/conn-reject.hex");
+                }
+            }
         }
     }
 
@@ -494,6 +532,10 @@ struct ConnMiner::Impl {
                 continue;
             }
             seenGen = work->gen;
+            if (work->done.load(std::memory_order_relaxed)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                continue;
+            }
             uint64_t local = 0;
             for (int i = 0; i < 4096 && run.load(); i++) {
                 uint8_t header[80];
