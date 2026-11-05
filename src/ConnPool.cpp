@@ -358,8 +358,15 @@ bool ConnPool::recvLine(std::string& line, int timeoutMs, std::string& err) {
                 const int r = SSL_read(static_cast<SSL*>(m_ssl), buf, sizeof(buf) - 1);
                 if (r <= 0) {
                     const int e = SSL_get_error(static_cast<SSL*>(m_ssl), r);
-                    if (e == SSL_ERROR_WANT_READ) continue;
-                    err = "SSL_read EOF/error";
+                    // SSL_read hanya dipanggil setelah poll menyatakan data
+                    // siap (atau SSL_pending > 0), jadi WANT_READ di sini
+                    // berarti record TLS parsial yang tidak kunjung lengkap dan
+                    // dihentikan SO_RCVTIMEO. Itu kegagalan koneksi, bukan
+                    // timeout idle: kalau di-continue, poll() memetakan
+                    // "timeout" ke Event::None dan sesi setengah mati dianggap
+                    // sehat.
+                    err = e == SSL_ERROR_WANT_READ ? "SSL_read timeout"
+                                                   : "SSL_read EOF/error";
                     return false;
                 }
                 n = r;
