@@ -43,6 +43,11 @@ public:
     bool submit(const ConnPoolJob& job, uint32_t nonce, const uint8_t hash[32],
                 std::string& err);
 
+    // Dipanggil poolLoop setelah work pertama sesi ini dibangun. Sebelum ini
+    // submit() menolak menulis: job dari sesi lama tidak berlaku di sesi baru,
+    // dan buildEngine untuk seed baru bisa memakan beberapa detik.
+    void markReady();
+
     // Hidup berarti login sudah selesai. Koneksi plaintext tidak punya SSL*,
     // jadi fd yang terbuka saja tidak cukup; dan saat reconnect fd bisa sudah
     // terbuka sebelum TLS siap. Flag yang sama dipakai submit(), sehingga
@@ -76,8 +81,8 @@ private:
     std::string m_buf;
     std::string m_loginId;
     uint64_t m_msgId = 1;
-    // Login selesai: satu-satunya keadaan saat submit boleh menulis. Menutup
-    // celah reconnect, saat fd sudah terbuka tetapi TLS belum siap — submit
-    // lama akan mengirim plaintext ke socket TLS.
+    // Sesi siap menerima share: login selesai dan work pertama sudah dibangun.
+    // Menutup celah reconnect, saat fd sudah terbuka tetapi TLS/job belum siap
+    // — submit lama akan mengirim plaintext atau job sesi sebelumnya.
     std::atomic<bool> m_ready{false};
 };

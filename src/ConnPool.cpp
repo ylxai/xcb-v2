@@ -68,6 +68,11 @@ void ConnPool::close() {
     closeLocked();
 }
 
+void ConnPool::markReady() {
+    std::lock_guard<std::mutex> lock(m_ioMu);
+    m_ready = true;
+}
+
 void ConnPool::closeLocked() {
     m_ready = false;
     if (m_ssl) {
@@ -257,11 +262,8 @@ bool ConnPool::connectAndLogin(ConnPoolJob& first, std::string& err) {
         }
         if (!parseJobJson(line, first, err)) return false;
         {
-            // loginId dan m_ready dipublikasikan bersama: submit() membaca
-            // keduanya di bawah lock yang sama.
             std::lock_guard<std::mutex> lock(m_ioMu);
             if (!loginId.empty()) m_loginId = loginId;
-            m_ready = true;
         }
         return true;
     }

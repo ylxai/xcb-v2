@@ -530,6 +530,9 @@ struct ConnMiner::Impl {
             std::lock_guard<std::mutex> lock(poolSendMu);
             std::string err;
             if (!pool || !pool->submit(w->poolJob, nonce, hash, err)) {
+                // close() bisa terjadi setelah cek alive() di atas; share ini
+                // tidak pernah sampai ke pool, jadi jangan dihitung rejected.
+                if (!pool || !pool->alive()) return;
                 rejected.fetch_add(1);
                 lg::warn("conn", "submit pool gagal: " + err);
             }
@@ -686,6 +689,10 @@ struct ConnMiner::Impl {
                     continue;
                 }
                 buildPoolWork(first);
+                // Baru sekarang sesi boleh menerima share. buildEngine bisa
+                // memakan beberapa detik untuk seed baru; selama itu worker
+                // masih memakai job sesi lama yang pasti ditolak pool ini.
+                pool->markReady();
             }
 
             ConnPoolJob j;
