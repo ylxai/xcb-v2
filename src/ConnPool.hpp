@@ -41,7 +41,10 @@ public:
     bool submit(const ConnPoolJob& job, uint32_t nonce, const uint8_t hash[32],
                 std::string& err);
 
-    bool alive() const { return m_ssl != nullptr; }
+    // Koneksi plaintext tidak punya SSL*, jadi fd yang terbuka juga berarti
+    // hidup. Tanpa ini pool non-TLS selalu dianggap mati dan failover tidak
+    // pernah berjalan.
+    bool alive() const { return m_ssl != nullptr || m_fd >= 0; }
     void close();
     const std::string& wallet() const { return m_wallet; }
 
