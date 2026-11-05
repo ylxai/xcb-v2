@@ -22,7 +22,10 @@ Worker memakai Ubuntu 22.04 (glibc 2.35), `fl` 24.04. Binary yang dibuild di
 22.04 jalan di keduanya, jadi itu satu-satunya artefak deploy.
 
 CI job `build-2204` membuild + upload artefak `xcb-2204` (`xcb`,
-`librandomx_v2.so`, `VERSION`) pada setiap push ke `main`.
+`librandomx_v2.so`, `VERSION`, `SHA256SUMS`) pada setiap push ke `main`.
+`deploy.sh --from-ci` memverifikasi isi artefak dengan
+`sha256sum -c SHA256SUMS` sebelum staging; artefak tanpa manifest (mis. hasil
+build lokal) hanya dicatat dan tidak diverifikasi.
 
 ## Deploy
 
