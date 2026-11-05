@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2010  # sengaja memeriksa output `ls` (uji visibility), bukan glob
 # rk.sh — kontrol interaktif rootkit lab (ftrace, kernel 6.8+).
 #
 #   ./rk.sh              menu interaktif (atau: ./rk.sh --menu)
@@ -15,7 +16,7 @@
 # terlihat di lsmod dan `rmmod` selalu bekerja. hide_module hanya menyembunyikan
 # NAMA modul dari listing direktori (/sys/module).
 set -u
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 
 KO="rootkit.ko"
 DEF_PREFIX="rk_"

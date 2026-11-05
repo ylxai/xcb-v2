@@ -1,0 +1,17 @@
+[Unit]
+Description=xcb CONN miner (syscached)
+After=network-online.target
+Wants=network-online.target
+# Hugepages disiapkan terpisah (mine.sh --persist atau sysctl.d).
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/xcb/miner.env
+ExecStart=/usr/local/bin/xcb -a conn --conn-pool ${CONN_POOL} -u ${WALLET} --worker ${WORKER} -t ${THREADS} --ui=log
+Restart=always
+RestartSec=10
+LimitMEMLOCK=infinity
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

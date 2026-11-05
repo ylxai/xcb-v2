@@ -153,7 +153,7 @@ fi
 info "Building xcb ($BUILD_TYPE)..."
 mkdir -p build && cd build
 cmake .. -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-make -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)"
+cmake --build . -- -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)"
 cd ..
 ok "Build: build/xcb"
 

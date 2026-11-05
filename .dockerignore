@@ -1,4 +1,16 @@
 build/
+build-*/
+build-base/
+
+# Dokumentasi & artefak ops tidak dibutuhkan untuk build image
 README.md
+CONTRIBUTING.md
 *.md
 *.log
+docs/
+k8s/
+labs/
+ops/
+.github/
+.entire/
+.opencode/

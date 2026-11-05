@@ -4,7 +4,7 @@
 #   2. packed dynamic -> output & exit code sama, file temp /tmp/.elx_* bersih
 #   3. xcb asli (kalau build/xcb ada) -> packed jalan dengan output identik
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 
 echo "== build payload test =="
 make hello_static hello_dyn >/dev/null || { echo "GAGAL build payload"; exit 1; }

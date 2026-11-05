@@ -15,9 +15,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lint semua shell script yang dilacak git
+        run: shellcheck -S warning $(git ls-files '*.sh')
+
   build-test:
     name: Build + selftest (glibc)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout (termasuk submodule RandomY + FTXUI)
         uses: actions/checkout@v4
@@ -46,6 +58,9 @@ jobs:
 
       - name: Selftest (verifikasi SHA3-512)
         run: ./build/xcb --selftest
+
+      - name: CTest (wiring test CMake)
+        run: cd build && ctest --output-on-failure
 
       - name: Selftest dari direktori tanpa pool.cfg
         # --selftest tidak bicara ke pool. Kalau step ini gagal, gate selftest
@@ -90,6 +105,7 @@ jobs:
   conn:
     name: Build + selftest (CONN / RandomX V2)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout (termasuk submodule)
         uses: actions/checkout@v4
@@ -144,6 +160,7 @@ jobs:
   build-2204:
     name: Build + artefak deploy (Ubuntu 22.04 / glibc 2.35)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout (termasuk submodule)
         uses: actions/checkout@v4
@@ -174,10 +191,12 @@ jobs:
             build/librandomx_v2.so
             VERSION
           if-no-files-found: error
+          retention-days: 14
 
   musl:
     name: Build + selftest (Alpine/musl)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout (termasuk submodule)
         uses: actions/checkout@v4
@@ -208,6 +227,7 @@ jobs:
   docker:
     name: Docker image + selftest
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout (termasuk submodule)
         uses: actions/checkout@v4

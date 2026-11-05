@@ -62,7 +62,7 @@ info "Configuring ($BUILD_TYPE)..."
 cmake .. -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON 2>&1
 
 info "Building with $JOBS threads..."
-make -j"$JOBS" 2>&1
+cmake --build . -- -j"$JOBS"
 
 cd ..
 ok "Build complete: build/xcb"

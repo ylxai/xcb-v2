@@ -14,7 +14,7 @@
 # privat 0700 dari mktemp, dengan trap cleanup.
 set -u
 umask 077
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 
 KO="rootkit.ko"
 SRC="rootkit.c"

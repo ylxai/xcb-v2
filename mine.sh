@@ -10,7 +10,7 @@
 # Idempotent: sysctl/setcap hanya dijalankan kalau memang belum cukup.
 # Butuh root/sudo HANYA untuk sysctl & setcap; miner tetap jalan sebagai user kamu.
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 
 BIN="./build/xcb"
 [ -x "$BIN" ] || { echo "[setup] Binary tidak ada: $BIN — build dulu (lihat README)."; exit 1; }

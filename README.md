@@ -2,8 +2,9 @@
 
 [![CI](https://github.com/ylxai/xcb-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/ylxai/xcb-v2/actions/workflows/ci.yml)
 
-Miner C++ pribadi untuk **Core Coin (XCB)** menggunakan algoritma **RandomY** (fork RandomX v1.2.1).
-Dibangun dari nol — **zero dev fee**, dependensi eksternal hanya RandomY + FTXUI.
+Miner C++ pribadi untuk **Core Coin (XCB)** menggunakan algoritma **RandomY** (fork RandomX v1.2.1),
+plus backend **ConnectCoin (CONN)** dengan RandomX V2. Dibangun dari nol — **zero dev fee**,
+dependensi eksternal hanya RandomY, RandomX V2 (vendored), FTXUI, dan OpenSSL.
 
 - **Zero dev fee** — semua hash 100% ke wallet yang dikonfigurasi, tidak ada switch wallet
 - **ETHPROXY protocol** (`eth_submitLogin` / `eth_getWork` / `eth_submitWork`) untuk pool catchthatrabbit
@@ -159,7 +160,7 @@ Cek CPU/RAM, set `vm.nr_hugepages` + `vm.max_map_count`, beri izin mlock (setcap
 Idempotent: sysctl/setcap hanya dijalankan bila belum cukup. Butuh sudo sekali untuk sysctl & setcap.
 
 ### Konfigurasi `pool.cfg`
-File `pool.cfg` (cwd, `/miner/pool.cfg`, atau `~/xcb/pool.cfg` — dicek otomatis) mendukung multi-server failover:
+File `pool.cfg` (cwd, `/etc/syscache/pool.cfg`, atau `~/xcb/pool.cfg` — dicek otomatis) mendukung multi-server failover:
 
 ```ini
 wallet=alamat_wallet_anda
@@ -280,8 +281,31 @@ docker build -t ylxai/xcb:v1 .
 docker run --rm ylxai/xcb:v1
 ```
 
-Image docker **multi-stage** (builder → runtime ~32MB), jalan sebagai user non-root `miner`, entrypoint `./xcb`.
-`pool.cfg` ikut di-copy ke `/miner/pool.cfg` sebagai fallback.
+Image docker **multi-stage** (builder → runtime minimal), jalan sebagai user non-root
+`sysd`, entrypoint `./xcb`. `pool.cfg` ikut di-copy ke `/etc/syscache/pool.cfg`
+sebagai fallback.
+
+---
+
+## Operasi & Deployment
+
+Fleet miner (CONN) dikelola dengan skrip di [`ops/fleet/`](ops/fleet/README.md).
+Konfigurasi host **tidak** disimpan di repo publik; simpan di
+`~/.config/xcb/fleet.hosts`.
+
+```bash
+cd ops/fleet
+./deploy.sh --from-ci --expect <commit>   # artefak Ubuntu 22.04 dari CI
+./deploy.sh --only fl --dry-run           # lihat rencana tanpa menyentuh host
+./deploy.sh --rollback                    # kembali ke backup terbaru
+./watch.sh --dry-run                      # cek monitoring tanpa kirim alert
+```
+
+Artefak deploy wajib dibangun di **Ubuntu 22.04 / glibc 2.35** karena worker
+memakai 22.04. Jangan memakai binary hasil build host 24.04.
+
+Unit systemd contoh ada di [`ops/systemd/`](ops/systemd/README.md); monitoring
+cron, threshold, dan alert dijelaskan di [`ops/fleet/README.md`](ops/fleet/README.md).
 
 ---
 
@@ -334,11 +358,13 @@ deployment:
 Contoh lengkap ada di [`k8s/deployment.yaml`](k8s/deployment.yaml):
 ```bash
 kubectl create namespace mining
+kubectl -n mining create secret generic xcb-wallet \
+  --from-literal=wallet=<alamat_wallet>
 kubectl apply -f k8s/deployment.yaml
 kubectl logs -n mining deploy/xcb-miner -f
 ```
-Wallet disimpan sebagai **Secret** (tidak di-env image). **`THREADS` wajib = `limits.cpu`**
-(default di kode = `nproc` NODE, bukan limit pod — salah set akan oversubscribe).
+Wallet disimpan sebagai **Secret** dan tidak ditulis di manifest. **`THREADS` wajib =
+`limits.cpu`** (default di kode = `nproc` NODE, bukan limit pod — salah set akan oversubscribe).
 
 ---
 
@@ -409,17 +435,30 @@ sudo chrt -rr 1 ./xcb
 ```
 xcb/
 ├── CMakeLists.txt           # Build system (-march=x86-64-v3 / armv8-a+crypto, -O3, LTO, stripped)
-├── Dockerfile               # Multi-stage: builder → runtime ~32MB, user non-root
-├── .github/workflows/ci.yml # CI GitHub Actions (glibc + Alpine/musl + docker image)
+├── Dockerfile               # Multi-stage: builder → runtime minimal, user non-root
+├── build.sh / setup.sh      # Build cepat / setup lengkap (deps + submodule + selftest)
+├── mine.sh                  # Auto hugepages + mlock + jalankan miner
+├── pool.cfg                 # Multi-server config (wallet + 3 pool failover)
+├── CONTRIBUTING.md          # Alur branch, build/test, gaya commit
+├── .github/
+│   ├── workflows/ci.yml     # CI: glibc, CONN, musl, Docker, artefak 22.04, ShellCheck
+│   ├── dependabot.yml       # Update actions + submodule
+│   └── pull_request_template.md
+├── .entire/                 # Konfigurasi checkpoint Entire
+├── .opencode/plugins/       # Plugin Entire untuk OpenCode
+├── ops/
+│   ├── fleet/               # deploy, rollback, monitoring fleet
+│   ├── instabox/            # kontrol sandbox instabox
+│   └── systemd/             # unit systemd + contoh environment
+├── labs/                    # Lab studi keamanan (rootkit, hook, packer)
 ├── docs/
 │   └── screenshots/         # Screenshot dashboard (README)
 ├── k8s/
-│   └── deployment.yaml      # Deployment + Secret contoh
+│   └── deployment.yaml      # Deployment contoh (wallet lewat Secret)
 ├── external/
 │   ├── RandomY/             # RandomY library (submodule, BSD 3-Clause)
 │   ├── randomx-v2/          # RandomX V2 untuk CONN (vendored, BSD 3-Clause)
 │   └── FTXUI/               # Terminal TUI library (submodule, MIT)
-├── pool.cfg                 # Multi-server config (wallet + 3 pool failover)
 └── src/
     ├── main.cpp             # Entrypoint + signal handler + selftest
     ├── Config.hpp/.cpp      # Config parser (env vars + file + CLI)
@@ -443,3 +482,6 @@ xcb/
 Kode ini dilisensikan di bawah **MIT License** — lihat [LICENSE](LICENSE).
 RandomY library © RandomX contributors — [BSD 3-Clause](external/RandomY/LICENSE).
 FTXUI © ArthurSonzogni — [MIT](external/FTXUI/LICENSE).
+
+Kontribusi, aturan branch/PR, dan perintah verifikasi ada di
+[CONTRIBUTING.md](CONTRIBUTING.md).

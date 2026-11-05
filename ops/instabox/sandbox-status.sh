@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sandbox-status.sh — status semua sandbox instabox (padanan fleet-status.sh)
+# sandbox-status.sh — status semua sandbox instabox (service, hashrate, share)
 #
 #   ./sandbox-status.sh              pakai daftar default
 #   ./sandbox-status.sh xcb2 xcb5    cek sandbox tertentu

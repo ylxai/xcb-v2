@@ -3,7 +3,7 @@
 #   1. SEMUA varian menghasilkan output yang SAMA (fungsi identik)
 #   2. SEMUA varian punya sha256 yang BERBEDA (bentuk berbeda)
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 
 N=${1:-6}
 EXPECT="POLYMORPHIC-DEMO-OK"
