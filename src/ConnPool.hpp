@@ -48,6 +48,12 @@ public:
     // dan buildEngine untuk seed baru bisa memakan beberapa detik.
     void markReady();
 
+    // Job terakhir yang dikirim pool. Worker bisa masih memakai Work lama
+    // (pemeriksaan generasi hanya tiap 256 hash), dan buildEngine untuk seed
+    // baru berjalan sebelum snap.work berpindah — jadi submit() membandingkan
+    // ke sini, bukan ke snap.work.
+    bool isCurrentJob(const std::string& id) const;
+
     // Hidup berarti login sudah selesai. Koneksi plaintext tidak punya SSL*,
     // jadi fd yang terbuka saja tidak cukup; dan saat reconnect fd bisa sudah
     // terbuka sebelum TLS siap. Flag yang sama dipakai submit(), sehingga
@@ -72,13 +78,14 @@ private:
     // SSL_read, worker memanggil SSL_write, dan poolLoop bisa SSL_free saat
     // reconnect — semuanya lewat mutex ini. Poll menunggu data tetap di luar
     // lock supaya submit tidak ikut tertahan sampai timeout.
-    std::mutex m_ioMu;
+    mutable std::mutex m_ioMu;
 
     void* m_ctx = nullptr;  // SSL_CTX*
     void* m_ssl = nullptr;  // SSL*
     int m_fd = -1;
     std::string m_buf;
     std::string m_loginId;
+    std::string m_jobId;
     uint64_t m_msgId = 1;
     // Sesi siap menerima share: login selesai dan work pertama sudah dibangun.
     // Menutup celah reconnect, saat fd sudah terbuka tetapi TLS/job belum siap

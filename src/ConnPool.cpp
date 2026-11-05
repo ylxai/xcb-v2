@@ -76,6 +76,11 @@ void ConnPool::markReady() {
     m_ready = true;
 }
 
+bool ConnPool::isCurrentJob(const std::string& id) const {
+    std::lock_guard<std::mutex> lock(m_ioMu);
+    return !m_jobId.empty() && m_jobId == id;
+}
+
 void ConnPool::closeLocked() {
     m_ready = false;
     if (m_ssl) {
@@ -93,6 +98,7 @@ void ConnPool::closeLocked() {
     }
     m_buf.clear();
     m_loginId.clear();
+    m_jobId.clear();
 }
 
 bool ConnPool::connectAndLogin(ConnPoolJob& first, std::string& err) {
@@ -267,6 +273,7 @@ bool ConnPool::connectAndLogin(ConnPoolJob& first, std::string& err) {
         {
             std::lock_guard<std::mutex> lock(m_ioMu);
             if (!loginId.empty()) m_loginId = loginId;
+            m_jobId = first.id;
         }
         return true;
     }
@@ -456,12 +463,22 @@ ConnPool::Event ConnPool::poll(ConnPoolJob& job, int timeoutMs, std::string& det
     // dalam pesan lain. Satu baris cukup diparse sekali.
     std::string perr;
     const Json doc = parseJson(line, &perr);
-    if (!doc.isObj()) return Event::None;
+    if (!doc.isObj()) {
+        // Baris kosong bukan kesalahan; baris rusak berarti notifikasi job
+        // bisa hilang tanpa jejak, jadi catat agar tidak silent.
+        if (line.find_first_not_of(" \t\r\n") == std::string::npos) return Event::None;
+        lg::warn("conn", "baris pool bukan JSON: " + perr + " | " + line.substr(0, 160));
+        return Event::None;
+    }
 
     std::string method;
     if (doc.getStr("method", method)) {
         if (method == "job") {
             if (!parseJobDoc(doc, job, detail)) return Event::Error;
+            {
+                std::lock_guard<std::mutex> lock(m_ioMu);
+                m_jobId = job.id;
+            }
             return Event::Job;
         }
         if (method == "keepalived") return Event::None;

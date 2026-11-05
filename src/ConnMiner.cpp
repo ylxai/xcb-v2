@@ -527,16 +527,13 @@ struct ConnMiner::Impl {
             // Saat reconnect belum ada sesi yang bisa menerima share; job lama
             // pasti ditolak pool baru, jadi jangan dihitung sebagai rejected.
             if (!pool || !pool->alive()) return;
-            // Job bisa sudah berganti saat worker masih memakai Work lama:
-            // pemeriksaan generasi hanya tiap 256 hash. rplant menjawab share
-            // dengan job_id lama sebagai [21, "stale share"], jadi kirimannya
-            // pasti sia-sia — hitung stale, jangan kirim.
-            {
-                std::lock_guard<std::mutex> lock(mu);
-                if (!snap.work || snap.work->poolJob.id != w->poolJob.id) {
-                    stale.fetch_add(1);
-                    return;
-                }
+            // Job bisa sudah berganti saat worker masih memakai Work lama, dan
+            // buildEngine untuk seed baru berjalan sebelum snap.work berpindah.
+            // ConnPool tahu job terakhir yang diterima, jadi bandingkan ke sana:
+            // rplant menjawab share job lama sebagai [21, "stale share"].
+            if (!pool->isCurrentJob(w->poolJob.id)) {
+                stale.fetch_add(1);
+                return;
             }
             std::lock_guard<std::mutex> lock(poolSendMu);
             std::string err;
@@ -754,7 +751,8 @@ struct ConnMiner::Impl {
                 }
                 lg::info("conn", "HR " + std::to_string(static_cast<uint64_t>(hr)) + " H/s | A " +
                                      std::to_string(accepted.load()) + " R " +
-                                     std::to_string(rejected.load()) + " | pool height " +
+                                     std::to_string(rejected.load()) + " S " +
+                                     std::to_string(stale.load()) + " | pool height " +
                                      std::to_string(height) + " | found " +
                                      std::to_string(found.load()));
             }
