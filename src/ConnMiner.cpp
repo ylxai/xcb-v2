@@ -838,6 +838,10 @@ bool ConnMiner::start(const ConnMinerConfig& cfg) {
                              std::to_string(cfg.poolPort) + (cfg.poolTls ? ", tls)" : ", plain)"));
         if (!m_impl->buildEngine(first.seedHex)) return false;
         if (!m_impl->buildPoolWork(first)) return false;
+        // Sesi pertama juga harus ditandai siap. Tanpa ini poolLoop melihat
+        // !alive() dan menutup sesi yang baru saja dipakai login, lalu login
+        // ulang — dua koneksi untuk satu sesi.
+        m_impl->pool->markReady();
 
         m_running.store(true);
         m_impl->run.store(true);
