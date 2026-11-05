@@ -133,6 +133,15 @@ endif()
 # ============================================================
 add_executable(xcb ${MINER_SOURCES} ${MINER_HEADERS})
 
+# Runtime butuh librandomx_v2.so di direktori yang sama (RPATH $ORIGIN).
+# Salin ke samping binary supaya tes langsung dari build/ jalan tanpa
+# mengubah LD_LIBRARY_PATH; cmake --install tetap memasang keduanya di bin/.
+add_custom_command(TARGET xcb POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:randomx_v2> $<TARGET_FILE_DIR:xcb>
+    COMMENT "Copy librandomx_v2.so ke samping xcb"
+)
+
 target_link_libraries(xcb
     PRIVATE
         randomx               # RandomY library (Core Coin XCB)
