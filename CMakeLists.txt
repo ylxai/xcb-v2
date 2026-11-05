@@ -7,7 +7,7 @@ project(xcb VERSION 1.0.0 LANGUAGES CXX C ASM)
 # CTest: `cd build && ctest` menjalankan selftest yang sama dengan CI.
 include(CTest)
 
-# Versi + commit untuk --version. Di Docker build tanpa .git, fallback "unknown".
+# Versi + commit untuk --version. Build dari tarball tanpa .git -> fallback "unknown".
 execute_process(
     COMMAND git rev-parse --short HEAD
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -33,8 +33,8 @@ endif()
 # ============================================================
 # musl (Alpine) gagal build dengan -flto + _FORTIFY_SOURCE bawaan:
 #   "inlining failed in call to 'always_inline' 'vsnprintf'" -> lto-wrapper fatal.
-# Deteksi di sini, bukan di setup.sh, supaya build via Dockerfile atau cmake
-# manual ikut terlindungi.
+# Deteksi di sini, bukan di setup.sh, supaya build via cmake manual ikut
+# terlindungi.
 execute_process(
     COMMAND ${CMAKE_CXX_COMPILER} -dumpmachine
     OUTPUT_VARIABLE MINER_TARGET_TRIPLE
@@ -160,8 +160,8 @@ target_link_libraries(xcb
 )
 
 # Optimasi portabel per arsitektur CPU
-# PORTABLE=ON menurunkan baseline x86 ke x86-64-v2 (tanpa AVX2) untuk image yang
-# didistribusikan ke host CPU tak diketahui (runner CI, node Akash pre-Haswell).
+# PORTABLE=ON menurunkan baseline x86 ke x86-64-v2 (tanpa AVX2) untuk binary yang
+# didistribusikan ke host CPU tak diketahui (runner CI, node cloud pre-Haswell).
 option(PORTABLE "Turunkan baseline x86 ke x86-64-v2 (tanpa AVX2)" OFF)
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")

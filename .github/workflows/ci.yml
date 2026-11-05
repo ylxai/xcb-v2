@@ -70,8 +70,8 @@ jobs:
         run: cd build && ctest --output-on-failure
 
       - name: Selftest dari direktori tanpa pool.cfg
-        # --selftest tidak bicara ke pool. Kalau step ini gagal, gate selftest
-        # di Dockerfile dan probe k8s ikut rusak begitu cwd berubah.
+        # --selftest tidak bicara ke pool. Step ini menjaga agar selftest tetap
+        # jalan saat cwd tidak punya pool.cfg.
         run: cd "$(mktemp -d)" && "$GITHUB_WORKSPACE/build/xcb" --selftest
 
       - name: Benchmark smoke test
@@ -230,31 +230,3 @@ jobs:
           ./build/xcb --selftest
           file build/xcb
           EOF
-
-  docker:
-    name: Docker image + selftest
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Checkout (termasuk submodule)
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Build image (selftest jalan di builder stage)
-        run: docker build -t xcb:ci .
-
-      - name: Selftest di runtime image
-        # Binary ada di WORKDIR /miner, bukan di cwd pemanggil.
-        run: docker run --rm --entrypoint sh -w /tmp xcb:ci -c 'cd /miner && ./xcb --selftest'
-
-      - name: Benchmark di container (tanpa hugepages, tanpa network)
-        run: |
-          set -o pipefail
-          docker run --rm --network none -e THREADS=2 xcb:ci --benchmark 1000 2>&1 | tee dbench.log
-          if grep -q 'No workers created' dbench.log; then
-            echo "::error::VM gagal dibuat di container"; exit 1
-          fi
-          # Image tidak lagi menyetel FULL_MEM/LARGE_PAGES: auto-detect yang memutuskan.
-          grep -q 'auto FULL_MEM=' dbench.log || { echo "::error::auto-detect FULL_MEM tidak jalan di image"; exit 1; }
-          grep -q 'auto LARGE_PAGES=0' dbench.log || { echo "::error::auto-detect LARGE_PAGES tidak jalan di image"; exit 1; }

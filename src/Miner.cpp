@@ -78,7 +78,7 @@ bool Miner::start(const MinerConfig& cfg) {
          std::string(envLog) != "false" && std::string(envLog) != "no");
 
     // Display mode. Full-screen dashboards need a real terminal in text mode;
-    // otherwise everything falls back to plain log lines (docker/CI safe).
+    // otherwise everything falls back to plain log lines (CI safe).
     const bool tty = isatty(STDOUT_FILENO) != 0 && !lg::jsonMode();
     if (!tty) {
         m_uiMode = UiMode::Log;
@@ -269,7 +269,7 @@ bool Miner::initDataset() {
     auto t1 = std::chrono::steady_clock::now();
 
     // Large pages need both hugepages configured AND mlock privileges. Most
-    // containers, CI runners and managed k8s nodes have neither, and the
+    // containers, CI runners and managed cloud nodes have neither, and the
     // default is largePages=true — so the alloc used to fail, every VM then
     // failed to build, and the process still exited 0 without hashing a single
     // nonce. Drop the flag and retry once instead (same approach as xmrig).

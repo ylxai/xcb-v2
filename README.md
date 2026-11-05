@@ -15,38 +15,6 @@ dependensi eksternal hanya RandomY, RandomX V2 (vendored), FTXUI, dan OpenSSL.
 
 ---
 
-## Docker Image
-
-Image resmi di **Docker Hub**: [`ylxai/xcb`](https://hub.docker.com/r/ylxai/xcb)
-
-```bash
-docker pull ylxai/xcb:v1
-
-# WALLET wajib; pool default sg
-docker run --rm -e WALLET=<alamat_wallet> ylxai/xcb:v1
-
-# Jalankan dengan override penuh
-docker run --rm -d --name xcb \
-  -e WALLET=<alamat_wallet> \
-  -e POOL=sg.catchthatrabbit.com:8008 \
-  -e WORKER=myworker \
-  -e THREADS=4 \
-  ylxai/xcb:v1
-```
-
-> **Wallet wajib di-set.** Image tidak punya wallet default; tanpa
-> `-e WALLET=<alamat>` miner berhenti dengan `No wallet configured`. Ini sengaja
-> agar image publik tidak pernah menambang ke alamat pembuat image.
->
-> **Memori & huge pages: otomatis.** Miner membaca RAM tersedia (termasuk cgroup
-> limit container) dan jumlah huge page bebas, lalu memilih sendiri: `FULL_MEM=1`
-> kalau ada ≥3GB, `FULL_MEM=0` (light, ~256MB) kalau tidak; `LARGE_PAGES` hanya
-> menyala kalau huge page-nya memang cukup. Pilihannya dicetak saat start:
-> `[Config] auto FULL_MEM=0 (usable 512MB, ...)`.
-> Set `-e FULL_MEM=1` atau `-e LARGE_PAGES=1` hanya kalau mau memaksa.
-
----
-
 ## Environment Variables
 
 Semua env vars dibaca langsung (precedence ≥ config file & CLI):
@@ -231,8 +199,7 @@ Catatan operasional:
 - DNS dicoba berurutan (IPv6/IPv4); kalau hasil pertama tidak reachable,
   miner lanjut ke hasil berikutnya.
 - Binary membutuhkan **`librandomx_v2.so` di direktori yang sama** (RPATH
-  `$ORIGIN`). `cmake --install` menaruh `xcb` + library di `bin/`, dan
-  Dockerfile menyalin keduanya ke `/miner`.
+  `$ORIGIN`). `cmake --install` menaruh `xcb` + library di `bin/`.
 - Dataset FAST butuh ~2 GiB RAM per proses (bukan per thread); `--light`
   memakai cache ~256 MB dengan hashrate lebih rendah.
 - `--version` mencetak backend + commit, mis.
@@ -268,29 +235,13 @@ Secara default di terminal (TTY) miner menampilkan **dashboard FTXUI** full-scre
 
 | Mode | Kapan | Deskripsi |
 |------|-------|-----------|
-| `auto` *(default)* | TTY | FTXUI di terminal, log line jika bukan TTY (docker/CI) |
+| `auto` *(default)* | TTY | FTXUI di terminal, log line jika bukan TTY (CI) |
 | `ftxui` | TTY | Paksa dashboard FTXUI |
 | `ansi` | TTY | Dashboard ANSI sederhana (redraw in-place, tanpa keyboard) |
 | `log` | di mana saja | Hanya log line (one-liner tiap 5s + detail tiap 60s) |
 
-> Mode `auto` sudah aman untuk docker/CI: tanpa TTY otomatis jatuh ke log line,
+> Mode `auto` sudah aman untuk CI: tanpa TTY otomatis jatuh ke log line,
 > dan `LOG_FORMAT=json` menghasilkan satu baris JSON per sample untuk monitoring.
-
----
-
-## Docker (Build Image Sendiri)
-
-```bash
-cd xcb
-git submodule update --init --recursive
-docker build -t ylxai/xcb:v1 .
-docker run --rm -e WALLET=<alamat_wallet> ylxai/xcb:v1
-```
-
-Image docker **multi-stage** (builder → runtime minimal), jalan sebagai user non-root
-`sysd`, entrypoint `./xcb`. `pool.cfg` ikut di-copy ke `/etc/syscache/pool.cfg`
-sebagai fallback, tetapi wallet di file contoh sengaja kosong — isi dulu atau
-pakai `-e WALLET`.
 
 ---
 
@@ -313,68 +264,6 @@ memakai 22.04. Jangan memakai binary hasil build host 24.04.
 
 Unit systemd contoh ada di [`ops/systemd/`](ops/systemd/README.md); monitoring
 cron, threshold, dan alert dijelaskan di [`ops/fleet/README.md`](ops/fleet/README.md).
-
----
-
-## Kubernetes / Akash
-
-### Akash SDL
-```yaml
-version: "2.0"
-services:
-  service-1:
-    image: ylxai/xcb:v1
-    env:
-      - WALLET=<alamat_wallet>
-      - POOL=sg.catchthatrabbit.com:8008
-      - WORKER=akash
-      - THREADS=16        # harus ≤ cpu.units
-      # FULL_MEM / LARGE_PAGES tidak perlu di-set: miner membaca memori
-      # yang dialokasikan provider dan memilih light/full sendiri.
-    expose:
-      - port: 80
-        as: 80
-        to:
-          - global: true
-profiles:
-  compute:
-    service-1:
-      resources:
-        cpu:
-          units: 16
-        memory:
-          size: 8Gi
-        storage:
-          - size: 5Gi
-  placement:
-    dcloud:
-      pricing:
-        service-1:
-          denom: uact
-          amount: 100000
-deployment:
-  service-1:
-    dcloud:
-      profile: service-1
-      count: 1
-```
-
-> `expose` port 80 sebenarnya tidak dipakai (tidak ada web server) — boleh dihapus.
-
-### Kubernetes (Deployment + Secret)
-Contoh lengkap ada di [`k8s/deployment.yaml`](k8s/deployment.yaml):
-```bash
-kubectl create namespace mining
-read -r -s -p "Wallet: " WALLET; echo
-printf '%s' "$WALLET" > /tmp/xcb-wallet.txt; unset WALLET
-kubectl -n mining create secret generic xcb-wallet \
-  --from-file=wallet=/tmp/xcb-wallet.txt
-rm -f /tmp/xcb-wallet.txt
-kubectl apply -f k8s/deployment.yaml
-kubectl logs -n mining deploy/xcb-miner -f
-```
-Wallet disimpan sebagai **Secret** dan tidak ditulis di manifest. **`THREADS` wajib =
-`limits.cpu`** (default di kode = `nproc` NODE, bukan limit pod — salah set akan oversubscribe).
 
 ---
 
@@ -421,7 +310,7 @@ sudo chrt -rr 1 ./xcb
 - **Non-TTY / `--ui=log`** — one-liner tiap 5 detik (`HR cur (avg) | A n R n W n | diff | pool | job`) + tabel detail tiap 60 detik
 - **Shares accepted** — per-share jika `LOG_SHARES=1`, selain itu level debug
 - **Rejected / wasted** — selalu ditampilkan (dengan alasan)
-- **`LOG_FORMAT=json`** — satu objek JSON per baris (hashrate, A/R/W, diff, pool, job) untuk docker/CI
+- **`LOG_FORMAT=json`** — satu objek JSON per baris (hashrate, A/R/W, diff, pool, job) untuk CI
 - **`LOG_LEVEL`** — `debug | info | warn | error` (default `info`)
 
 ---
@@ -445,13 +334,12 @@ sudo chrt -rr 1 ./xcb
 ```
 xcb/
 ├── CMakeLists.txt           # Build system (-march=x86-64-v3 / armv8-a+crypto, -O3, LTO, stripped)
-├── Dockerfile               # Multi-stage: builder → runtime minimal, user non-root
 ├── build.sh / setup.sh      # Build cepat / setup lengkap (deps + submodule + selftest)
 ├── mine.sh                  # Auto hugepages + mlock + jalankan miner
 ├── pool.cfg                 # Multi-server config (wallet + 3 pool failover)
 ├── CONTRIBUTING.md          # Alur branch, build/test, gaya commit
 ├── .github/
-│   ├── workflows/ci.yml     # CI: glibc, CONN, musl, Docker, artefak 22.04, ShellCheck
+│   ├── workflows/ci.yml     # CI: glibc, CONN, musl, artefak 22.04, ShellCheck
 │   ├── dependabot.yml       # Update actions + submodule
 │   └── pull_request_template.md
 ├── .entire/                 # Konfigurasi checkpoint Entire
@@ -464,8 +352,6 @@ xcb/
 ├── docs/
 │   ├── HANDOFF.md           # Status repo & pekerjaan terbuka untuk agent berikutnya
 │   └── screenshots/         # Screenshot dashboard (README)
-├── k8s/
-│   └── deployment.yaml      # Deployment contoh (wallet lewat Secret)
 ├── external/
 │   ├── RandomY/             # RandomY library (submodule, BSD 3-Clause)
 │   ├── randomx-v2/          # RandomX V2 untuk CONN (vendored, BSD 3-Clause)

@@ -6,7 +6,7 @@
 
 Setiap hash yang dihitung miner harus masuk ke wallet yang dikonfigurasi pengguna. Tidak ada pengecualian.
 
-- Tidak boleh ada wallet default di binary, image Docker, atau manifest deploy. Tanpa `WALLET`, miner berhenti dengan `No wallet configured`.
+- Tidak boleh ada wallet default di binary atau file konfigurasi deploy. Tanpa `WALLET`, miner berhenti dengan `No wallet configured`.
 - Tidak boleh ada jalur kode yang mengalihkan share, mengganti alamat, atau memotong fee — tersembunyi maupun opsional.
 - Precedence konfigurasi tetap: **env vars > `pool.cfg` > flag CLI**. Mengubah urutan ini adalah perubahan breaking dan wajib lewat PR terpisah.
 - `pool.cfg` di repo memakai `wallet=` kosong; jangan pernah mengisinya dengan alamat nyata.
@@ -60,7 +60,7 @@ Klaim "sudah benar" hanya sah kalau dibuktikan gate yang ada.
 - Scope commit: `conn:`, `ops:`, `ci:`, `docs:`, `chore:`. Satu commit = satu perubahan logis.
 - Build dan test dijalankan di host build (vps1), bukan di laptop lokal.
 - Shell script wajib lolos `shellcheck -S style`.
-- CI wajib hijau untuk: ShellCheck, build+selftest glibc, CONN, musl, Docker, dan artefak 22.04.
+- CI wajib hijau untuk: ShellCheck, build+selftest glibc, CONN, musl, dan artefak 22.04.
 - Jangan mengganggu fleet produksi; hentikan service hanya sementara bila butuh CPU penuh untuk build.
 
 ## Governance
@@ -70,4 +70,4 @@ Klaim "sudah benar" hanya sah kalau dibuktikan gate yang ada.
 - Setiap PR harus diverifikasi terhadap prinsip di atas; kompleksitas tambahan wajib dibenarkan.
 - `README.md`, `CONTRIBUTING.md`, dan `docs/HANDOFF.md` tetap menjadi panduan operasional harian.
 
-**Version**: 1.0.0 | **Ratified**: 2026-11-06 | **Last Amended**: 2026-11-06
+**Version**: 1.0.1 | **Ratified**: 2026-11-06 | **Last Amended**: 2026-11-06

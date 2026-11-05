@@ -17,7 +17,7 @@
 #include <randomx.h>
 
 // CPU yang boleh dipakai proses ini. sched_getaffinity menghormati cpuset
-// (docker --cpuset-cpus, k8s cpu manager, taskset), sementara
+// (cpuset, container CPU manager, taskset), sementara
 // _SC_NPROCESSORS_ONLN tidak — memakai yang kedua berarti membuat thread untuk
 // CPU yang tidak boleh disentuh dan pin-nya gagal EINVAL.
 std::vector<int> Config::usableCpus() {
@@ -213,7 +213,7 @@ MinerConfig Config::loadFile(const std::string& path) {
 MinerConfig Config::parse(int argc, char* argv[]) {
     MinerConfig cfg;
     
-    // 1. Try environment variables first (Docker/Akash friendly)
+    // 1. Try environment variables first (env/systemd friendly)
     const char* envWallet = getenv("WALLET");
     const char* envPool = getenv("POOL");
     const char* envWorker = getenv("WORKER");
@@ -296,7 +296,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     
     // 4. Parse CLI args (override file & env). Always runs, even with env
     //    pools, so flags like --selftest/--benchmark/-t/--light still work
-    //    (e.g. inside the docker image where WALLET/POOL are always set).
+    //    (e.g. when WALLET/POOL come from environment).
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         
@@ -469,7 +469,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     // Validate — but only for modes that actually talk to a pool.
     // --selftest and --benchmark never open a stratum connection, so requiring
     // pool.cfg there breaks `miner-saya --selftest` from any directory (CI
-    // gate, docker image, k8s probe) for no reason.
+    // gate) for no reason.
     // Algo conn tidak memakai pool/stratum sama sekali (solo RPC), jadi
     // validasi pool dilewati; yang wajib adalah alamat reward.
     const bool needsPool = !cfg.selftest && cfg.benchmarkNonces == 0 && cfg.algo != "conn";
@@ -513,7 +513,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     }
 
     // Default threads = jumlah CPU yang boleh dipakai proses ini.
-    // Di cpuset (docker --cpuset-cpus=2,3 / k8s cpu pinning) jumlah CPU online
+    // Di cpuset (cpuset / container CPU pinning) jumlah CPU online
     // lebih besar dari yang diizinkan, jadi memakai _SC_NPROCESSORS_ONLN
     // membuat thread berlebih yang berebut core yang sama.
     if (cfg.threads <= 0) {
