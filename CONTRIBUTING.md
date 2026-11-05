@@ -21,8 +21,11 @@ repo ini supaya perubahan mudah ditinjau dan tidak merusak build/deploy.
 Untuk perubahan yang menyentuh deploy, uji juga:
 
 ```bash
-git ls-files -z '*.sh' | xargs -0 -r shellcheck -S style
+git ls-files -z '*.sh' ':(exclude).specify/*' | xargs -0 -r shellcheck -S style
 ```
+
+Script di `.specify/scripts/` di-generate `specify init` dan tidak ikut dilintasi;
+perbaikannya akan hilang setiap upgrade Spec Kit.
 
 Artefak deploy fleet **wajib dibangun di Ubuntu 22.04** (glibc 2.35). Jangan
 memakai binary hasil build host 24.04 untuk worker 22.04 — lihat

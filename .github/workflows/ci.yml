@@ -29,7 +29,9 @@ jobs:
       - name: Lint semua shell script yang dilacak git
         # -S style = severity terendah (menangkap info/style juga).
         # -0/-r aman untuk nama file berspasi dan repo tanpa *.sh.
-        run: git ls-files -z '*.sh' | xargs -0 -r shellcheck -S style
+        # .specify/scripts di-generate `specify init` (vendor), bukan kode kita:
+        # perbaikannya hilang tiap upgrade, jadi dikecualikan dari gate.
+        run: git ls-files -z '*.sh' ':(exclude).specify/*' | xargs -0 -r shellcheck -S style
 
   build-test:
     name: Build + selftest (glibc)
