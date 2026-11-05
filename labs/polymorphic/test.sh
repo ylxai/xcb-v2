@@ -3,7 +3,7 @@
 #   1. SEMUA varian menghasilkan output yang SAMA (fungsi identik)
 #   2. SEMUA varian punya sha256 yang BERBEDA (bentuk berbeda)
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 
 N=${1:-6}
 EXPECT="POLYMORPHIC-DEMO-OK"
@@ -32,7 +32,7 @@ done
 echo
 echo "== verifikasi 2: semua sha256 BERBEDA =="
 uniq=$(sha256sum variant_* | awk '{print $1}' | sort -u | wc -l)
-total=$(ls variant_* | wc -l)
+total=$(find . -maxdepth 1 -name 'variant_*' | wc -l)
 echo "  hash unik: $uniq / $total"
 [ "$uniq" -eq "$total" ] || fail=1
 

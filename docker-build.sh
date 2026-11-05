@@ -33,7 +33,7 @@ for arg in "$@"; do
     --no-cache) NO_CACHE="--no-cache" ;;
     -h|--help)
       echo "Usage: $0 [--run] [--push] [--no-cache]"
-      echo "  --run       Build + run container"
+      echo "  --run       Build + run container (WALLET wajib di-set)"
       echo "  --push      Build + push to ylxai/xcb:v2"
       echo "  --no-cache  Build without Docker cache"
       exit 0 ;;
@@ -61,6 +61,7 @@ info "Image size: $SIZE"
 
 # Run
 if [ "$RUN" -eq 1 ]; then
+  : "${WALLET:?WALLET wajib di-set untuk --run (tidak ada default di repo)}"
   # Stop old container if exists
   docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 
@@ -68,7 +69,7 @@ if [ "$RUN" -eq 1 ]; then
   # FULL_MEM/LARGE_PAGES tidak di-set: miner memilih sendiri dari RAM & hugepages
   # yang tersedia di container. Override manual: FULL_MEM=1 ./docker-build.sh --run
   docker run --name "$CONTAINER_NAME" --rm \
-    -e WALLET="${WALLET:-cb23d6d8557e776f5ff9ab6a7fb7f59a3d385245fa7a}" \
+    -e WALLET="$WALLET" \
     -e POOL="${POOL:-sg.catchthatrabbit.com:8008}" \
     -e WORKER="${WORKER:-docker}" \
     -e THREADS="${THREADS:-}" \

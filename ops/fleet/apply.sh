@@ -22,6 +22,7 @@ lib_backup_for() {
 
 newest_stamp() {
     local f
+    # shellcheck disable=SC2012  # BIN path terkontrol, tanpa spasi
     f=$(ls -1t "${BIN}".bak-* 2>/dev/null | head -1)
     [ -n "$f" ] || return 1
     echo "${f##*.bak-}"

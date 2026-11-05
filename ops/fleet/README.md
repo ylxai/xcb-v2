@@ -12,6 +12,9 @@ $EDITOR ~/.config/xcb/fleet.hosts
 ```
 
 Format: `nama=alamat`, dengan `local` untuk host tempat skrip dijalankan.
+Unit systemd dan environment file contoh ada di
+[`../systemd/`](../systemd/README.md). `deploy.sh` hanya mengganti binary +
+library; unit `syscached` dikelola terpisah.
 
 ## Artefak build (glibc 2.35 / Ubuntu 22.04)
 

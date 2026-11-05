@@ -15,9 +15,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Lint semua shell script yang dilacak git
+        # -S style = severity terendah (menangkap info/style juga).
+        # -0/-r aman untuk nama file berspasi dan repo tanpa *.sh.
+        run: git ls-files -z '*.sh' | xargs -0 -r shellcheck -S style
+
   build-test:
     name: Build + selftest (glibc)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout (termasuk submodule RandomY + FTXUI)
         uses: actions/checkout@v4
@@ -31,7 +48,7 @@ jobs:
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build -j"$(nproc)"
+        run: cmake --build build --parallel "$(nproc)"
 
       - name: Verify flag build (LTO + baseline arch aktif)
         run: |
@@ -46,6 +63,9 @@ jobs:
 
       - name: Selftest (verifikasi SHA3-512)
         run: ./build/xcb --selftest
+
+      - name: CTest (wiring test CMake)
+        run: cd build && ctest --output-on-failure
 
       - name: Selftest dari direktori tanpa pool.cfg
         # --selftest tidak bicara ke pool. Kalau step ini gagal, gate selftest
@@ -90,6 +110,7 @@ jobs:
   conn:
     name: Build + selftest (CONN / RandomX V2)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout (termasuk submodule)
         uses: actions/checkout@v4
@@ -102,7 +123,7 @@ jobs:
       - name: Configure + build
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build -j"$(nproc)"
+          cmake --build build --parallel "$(nproc)"
 
       - name: Version menunjuk backend CONN
         run: |
@@ -144,6 +165,7 @@ jobs:
   build-2204:
     name: Build + artefak deploy (Ubuntu 22.04 / glibc 2.35)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout (termasuk submodule)
         uses: actions/checkout@v4
@@ -158,7 +180,7 @@ jobs:
             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential cmake git libssl-dev ca-certificates >/dev/null
             git config --global --add safe.directory /src
             cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-            cmake --build build -j"$(nproc)"
+            cmake --build build --parallel "$(nproc)"
             ./build/xcb --version | tee VERSION
             if grep -q unknown VERSION; then echo "ERROR: commit tidak terbaca di --version"; exit 1; fi
             ./build/xcb --selftest
@@ -174,10 +196,12 @@ jobs:
             build/librandomx_v2.so
             VERSION
           if-no-files-found: error
+          retention-days: 14
 
   musl:
     name: Build + selftest (Alpine/musl)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout (termasuk submodule)
         uses: actions/checkout@v4
@@ -200,7 +224,7 @@ jobs:
           if echo "$flags" | grep -q -- '-flto'; then
             echo "ERROR: LTO masih aktif di musl"; exit 1
           fi
-          cmake --build build -j"$(nproc)"
+          cmake --build build --parallel "$(nproc)"
           ./build/xcb --selftest
           file build/xcb
           EOF
@@ -208,6 +232,7 @@ jobs:
   docker:
     name: Docker image + selftest
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout (termasuk submodule)
         uses: actions/checkout@v4

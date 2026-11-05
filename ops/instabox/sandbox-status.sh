@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sandbox-status.sh — status semua sandbox instabox (padanan fleet-status.sh)
+# sandbox-status.sh — status semua sandbox instabox (service, hashrate, share)
 #
 #   ./sandbox-status.sh              pakai daftar default
 #   ./sandbox-status.sh xcb2 xcb5    cek sandbox tertentu
@@ -13,11 +13,13 @@
 #   worker   : nama worker dari "Pool login OK (...) sebagai <worker>"
 #   run_left : sisa waktu sebelum batas max-run (8 jam) tercapai
 set -u
+# shellcheck source=/dev/null
 source "$HOME/.instabox/env" 2>/dev/null || { echo "env instabox tidak ada (~/.instabox/env)"; exit 1; }
 IB="$HOME/.local/bin/instabox"
 MACHINES="${*:-analisa1 xcb2 xcb3 xcb4 xcb5}"
 UNIT="${UNIT:-syscached}"
 
+# shellcheck disable=SC2016  # probe sengaja single-quote: diekspansi di sandbox
 probe='
 svc=$(systemctl is-active '"$UNIT"' 2>&1)
 pid=$(systemctl show -p MainPID --value '"$UNIT"' 2>/dev/null)

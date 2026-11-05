@@ -4,7 +4,7 @@
 #   2. packed dynamic -> output & exit code sama, file temp /tmp/.elx_* bersih
 #   3. xcb asli (kalau build/xcb ada) -> packed jalan dengan output identik
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 
 echo "== build payload test =="
 make hello_static hello_dyn >/dev/null || { echo "GAGAL build payload"; exit 1; }
@@ -38,7 +38,7 @@ else
     echo "  GAGAL dynamic"; exit 1
 fi
 sleep 0.3
-left=$(ls /tmp/.elx_* 2>/dev/null | wc -l)
+left=$(find /tmp -maxdepth 1 -name '.elx_*' 2>/dev/null | wc -l)
 if [ "$left" -eq 0 ]; then
     echo "  OK temp file dibersihkan (0 sisa)"
 else

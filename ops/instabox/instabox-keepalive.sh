@@ -9,6 +9,7 @@
 # Cron (5 menit < idle 30 menit):
 #   */5 * * * * $HOME/.instabox/instabox-keepalive.sh >> $HOME/.instabox/keepalive.log 2>&1
 set -u
+# shellcheck source=/dev/null
 source "$HOME/.instabox/env" 2>/dev/null || { echo "$(date '+%F %T') env instabox tidak ada"; exit 1; }
 IB="$HOME/.local/bin/instabox"
 MACHINES="${MACHINES:-analisa1 xcb2 xcb3 xcb4 xcb5}"

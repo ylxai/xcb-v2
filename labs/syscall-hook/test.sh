@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2010  # sengaja memeriksa output `ls` (uji visibility), bukan glob
+# shellcheck disable=SC2015  # `pass` selalu return 0; pola A && pass || fail aman untuk test
 # test.sh — jalankan semua demo hooking + verifikasi hasil (assertion nyata).
 #
 # Test ini gagal (exit non-zero) bila hook tidak berperilaku sesuai klaim,
 # bukan sekadar mencetak output. Semua demo dijalankan tanpa root.
 set -uo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 
 fail=0
 pass() { echo "  PASS: $*"; }

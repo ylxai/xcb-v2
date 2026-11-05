@@ -83,8 +83,9 @@ resolve_hosts() {
             [ -f "$f" ] && { HOSTS_FILE="$f"; break; }
         done
     fi
-    [ -n "$HOSTS_FILE" ] && [ -f "$HOSTS_FILE" ] ||
+    if [ -z "$HOSTS_FILE" ] || [ ! -f "$HOSTS_FILE" ]; then
         die "hosts file tidak ditemukan; buat ~/.config/xcb/fleet.hosts (lihat hosts.conf.example)"
+    fi
     mapfile -t HOSTS < <(grep -vE '^[[:space:]]*(#|$)' "$HOSTS_FILE")
     [ ${#HOSTS[@]} -gt 0 ] || die "hosts file kosong: $HOSTS_FILE"
     log "hosts: $HOSTS_FILE (${#HOSTS[@]} host)"
