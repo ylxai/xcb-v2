@@ -87,6 +87,60 @@ jobs:
           fi
           grep -q 'Light mode' cg.log || { echo "::error::light mode tidak aktif"; exit 1; }
 
+  conn:
+    name: Build + selftest (CONN / RandomX V2)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (termasuk submodule)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ libssl-dev
+
+      - name: Configure + build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+
+      - name: Version menunjuk backend CONN
+        run: |
+          ./build/xcb --version | tee ver.log
+          grep -q 'ConnectCoin CONN' ver.log || {
+            echo "::error::--version tidak menyebut backend CONN"; exit 1; }
+          grep -qE 'xcb [0-9]+\.[0-9]+\.[0-9]+ \(ConnectCoin CONN - RandomX V2, [0-9a-f]+\)' ver.log || {
+            echo "::error::format versi/commit salah"; exit 1; }
+
+      - name: Selftest (termasuk vektor RandomX V2)
+        run: |
+          set -o pipefail
+          ./build/xcb --selftest 2>&1 | tee st.log
+          grep -q 'randomx-v2 : OK' st.log || {
+            echo "::error::selftest RandomX V2 tidak jalan"; exit 1; }
+          grep -q 'RESULT: PASS' st.log
+
+      - name: Binary menemukan librandomx_v2.so
+        run: |
+          ldd build/xcb | tee ldd.log
+          grep -q 'librandomx_v2.so =>' ldd.log || {
+            echo "::error::librandomx_v2.so tidak ter-resolve"; exit 1; }
+          if grep -q 'not found' ldd.log; then
+            echo "::error::ada shared library yang hilang"; exit 1
+          fi
+          readelf -d build/xcb | grep -q 'RPATH\|RUNPATH' || {
+            echo "::error::RPATH $ORIGIN hilang"; exit 1; }
+
+      - name: Install menaruh binary + library berdampingan
+        run: |
+          cmake --install build --prefix "$PWD/stage"
+          test -x stage/bin/xcb
+          test -f stage/bin/librandomx_v2.so
+          ( cd /tmp && "$GITHUB_WORKSPACE/stage/bin/xcb" --version )
+
+      - name: Backend CONN terdaftar di --help
+        run: ./build/xcb --help | grep -q -- '--conn-pool'
+
   musl:
     name: Build + selftest (Alpine/musl)
     runs-on: ubuntu-latest
