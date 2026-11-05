@@ -324,7 +324,7 @@ static void loadFromScratchpad(uint32_t src, uint32_t dst, uint32_t mod, uint32_
 	emit32(0x0002B283);
 }
 
-void* generateProgramVectorRV64(uint8_t* buf, Program& prog, ProgramConfiguration& pcfg, const uint8_t (&inst_map)[256], void* entryDataInitScalar, uint32_t datasetOffset, randomx_flags flags)
+void* generateProgramVectorRV64(uint8_t* buf, Program& prog, ProgramConfiguration& pcfg, const uint8_t (&inst_map)[256], void* entryDataInitScalar, uint32_t datasetOffset, rxv2_flags flags)
 {
 	uint64_t* params = (uint64_t*)(buf + DIST(randomx_riscv64_vector_code_begin, randomx_riscv64_vector_program_params));
 

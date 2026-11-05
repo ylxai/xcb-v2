@@ -29,15 +29,15 @@ std::string toHex(const uint8_t* p, size_t n) {
     return s;
 }
 
-randomx_flags baseFlags() {
-    randomx_flags f = randomx_get_flags();
+rxv2_flags baseFlags() {
+    rxv2_flags f = randomx_get_flags();
     // HAPUS flag FULL_MEM/LARGE_PAGES/SECURE/V2 yang mungkin terwarisi, lalu
     // set ulang sesuai kebutuhan.
-    f = static_cast<randomx_flags>(f & ~(RANDOMX_FLAG_FULL_MEM | RANDOMX_FLAG_LARGE_PAGES |
+    f = static_cast<rxv2_flags>(f & ~(RANDOMX_FLAG_FULL_MEM | RANDOMX_FLAG_LARGE_PAGES |
                                          RANDOMX_FLAG_SECURE | RANDOMX_FLAG_V2));
     // Consensus ConnectCoin WAJIB V2 (program 384). Tanpa flag ini library
     // menghitung RandomX 256-program -> semua share/blok invalid.
-    return static_cast<randomx_flags>(f | RANDOMX_FLAG_V2);
+    return static_cast<rxv2_flags>(f | RANDOMX_FLAG_V2);
 }
 
 }  // namespace
@@ -46,9 +46,9 @@ Context::Context(const uint8_t key[32], bool fast, bool largePages, int initThre
     : Context(key, 32, fast, largePages, initThreads) {}
 
 Context::Context(const uint8_t* key, size_t keyLen, bool fast, bool largePages, int initThreads) {
-    const randomx_flags base = baseFlags();
-    randomx_flags allocFlags = base;
-    if (largePages) allocFlags = static_cast<randomx_flags>(allocFlags | RANDOMX_FLAG_LARGE_PAGES);
+    const rxv2_flags base = baseFlags();
+    rxv2_flags allocFlags = base;
+    if (largePages) allocFlags = static_cast<rxv2_flags>(allocFlags | RANDOMX_FLAG_LARGE_PAGES);
 
     if (fast) {
         m_cache = randomx_alloc_cache(allocFlags);
@@ -113,15 +113,15 @@ Context::~Context() {
 
 std::unique_ptr<Context::VM> Context::createVM() {
     if (!m_ok) return nullptr;
-    randomx_flags f = baseFlags();
-    if (m_fast) f = static_cast<randomx_flags>(f | RANDOMX_FLAG_FULL_MEM);
+    rxv2_flags f = baseFlags();
+    if (m_fast) f = static_cast<rxv2_flags>(f | RANDOMX_FLAG_FULL_MEM);
 
     randomx_cache* cache = m_fast ? nullptr : static_cast<randomx_cache*>(m_cache);
     randomx_dataset* dataset = m_fast ? static_cast<randomx_dataset*>(m_dataset) : nullptr;
 
     void* vm = nullptr;
     if (m_largePages)
-        vm = randomx_create_vm(static_cast<randomx_flags>(f | RANDOMX_FLAG_LARGE_PAGES), cache, dataset);
+        vm = randomx_create_vm(static_cast<rxv2_flags>(f | RANDOMX_FLAG_LARGE_PAGES), cache, dataset);
     if (!vm) vm = randomx_create_vm(f, cache, dataset);
 
     auto out = std::make_unique<VM>();

@@ -51,7 +51,7 @@ namespace randomx {
 	static const char* regIc8 = "bl";
 	static const char* regScratchpadAddr = "rsi";
 
-	void AssemblyGeneratorX86::generateProgram(Program& prog, randomx_flags flags) {
+	void AssemblyGeneratorX86::generateProgram(Program& prog, rxv2_flags flags) {
 		for (unsigned i = 0; i < RegistersCount; ++i) {
 			registerUsage[i] = -1;
 		}

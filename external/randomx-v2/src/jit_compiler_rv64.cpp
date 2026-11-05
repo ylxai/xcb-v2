@@ -42,7 +42,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "soft_aes.h"
 
 namespace {
-#define HANDLER_ARGS randomx::CompilerState& state, randomx::Instruction isn, int i, randomx_flags flags
+#define HANDLER_ARGS randomx::CompilerState& state, randomx::Instruction isn, int i, rxv2_flags flags
 	using InstructionHandler = void(HANDLER_ARGS);
 	extern InstructionHandler* opcodeMap1[256];
 }
@@ -472,12 +472,12 @@ namespace randomx {
 		buf.emitAt(codePos, rvi(rv64::JAL, dst + imm1912, 0, imm20 + imm101 + imm11));
 	}
 
-	static void emitInstruction(CompilerState& state, Instruction isn, int i, randomx_flags flags) {
+	static void emitInstruction(CompilerState& state, Instruction isn, int i, rxv2_flags flags) {
 		state.instructionOffsets[i] = state.codePos;
 		opcodeMap1[isn.opcode](state, isn, i, flags);
 	}
 
-	static void emitProgramPrefix(CompilerState& state, Program& prog, ProgramConfiguration& pcfg, randomx_flags flags) {
+	static void emitProgramPrefix(CompilerState& state, Program& prog, ProgramConfiguration& pcfg, rxv2_flags flags) {
 		state.codePos = RandomXCodePos;
 		state.rcpCount = 0;
 
@@ -500,7 +500,7 @@ namespace randomx {
 		}
 	}
 
-	static void emitProgramSuffix(CompilerState& state, ProgramConfiguration& pcfg, randomx_flags flags) {
+	static void emitProgramSuffix(CompilerState& state, ProgramConfiguration& pcfg, rxv2_flags flags) {
 		if (flags & RANDOMX_FLAG_V2) {
 			state.emit(codeSpadStoreSoftAes, sizeSpadStoreSoftAes);
 		}

@@ -5,6 +5,10 @@
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
+#include <openssl/x509_vfy.h>
+
+#include <arpa/inet.h>
+#include <cstdlib>
 
 #include <cerrno>
 #include <chrono>
@@ -89,24 +93,33 @@ bool ConnPool::connectAndLogin(ConnPoolJob& first, std::string& err) {
         err = "resolve gagal: " + m_host;
         return false;
     }
-    int fd = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (fd < 0) {
-        ::freeaddrinfo(res);
-        err = "socket() gagal";
-        return false;
-    }
-    struct timeval tv;
-    tv.tv_sec = 30;
-    tv.tv_usec = 0;
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    if (::connect(fd, res->ai_addr, res->ai_addrlen) != 0) {
-        err = "connect gagal: " + std::string(std::strerror(errno));
-        ::freeaddrinfo(res);
+
+    // Coba semua hasil DNS (IPv6 lalu IPv4, atau sebaliknya). Dulu hanya
+    // hasil pertama yang dipakai: host dengan AAAA tidak reachable gagal
+    // connect padahal A-nya sehat.
+    int fd = -1;
+    int lastErr = 0;
+    for (struct addrinfo* ai = res; ai != nullptr; ai = ai->ai_next) {
+        fd = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) {
+            lastErr = errno;
+            continue;
+        }
+        struct timeval tv;
+        tv.tv_sec = 30;
+        tv.tv_usec = 0;
+        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        if (::connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
+        lastErr = errno;
         ::close(fd);
-        return false;
+        fd = -1;
     }
     ::freeaddrinfo(res);
+    if (fd < 0) {
+        err = "connect gagal: " + std::string(std::strerror(lastErr));
+        return false;
+    }
 
     if (m_tls) {
         SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
@@ -115,18 +128,76 @@ bool ConnPool::connectAndLogin(ConnPoolJob& first, std::string& err) {
             err = "SSL_CTX_new gagal";
             return false;
         }
-        SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);
+
+        // Verifikasi sertifikat + hostname secara default. Pool dengan
+        // sertifikat self-signed bisa memakai CONN_TLS_INSECURE=1, dengan
+        // peringatan eksplisit di log.
+        const char* insecureEnv = std::getenv("CONN_TLS_INSECURE");
+        const bool insecure = insecureEnv && insecureEnv[0] != '\0' &&
+                              std::strcmp(insecureEnv, "0") != 0 &&
+                              std::strcmp(insecureEnv, "false") != 0 &&
+                              std::strcmp(insecureEnv, "no") != 0;
+        if (insecure) {
+            lg::warn("conn", "CONN_TLS_INSECURE=1: verifikasi sertifikat pool dimatikan");
+            SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);
+        } else {
+            SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
+            if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
+                SSL_CTX_free(ctx);
+                ::close(fd);
+                err = "CA bundle untuk verifikasi TLS tidak bisa dibaca";
+                return false;
+            }
+        }
+
         SSL* ssl = SSL_new(ctx);
+        if (!ssl) {
+            SSL_CTX_free(ctx);
+            ::close(fd);
+            err = "SSL_new gagal";
+            return false;
+        }
         SSL_set_fd(ssl, fd);
         SSL_set_tlsext_host_name(ssl, m_host.c_str());
+        if (!insecure) {
+            // Hostname bisa berupa DNS atau IP literal.
+            unsigned char abuf[sizeof(struct in6_addr)];
+            const bool isIp = ::inet_pton(AF_INET, m_host.c_str(), abuf) == 1 ||
+                              ::inet_pton(AF_INET6, m_host.c_str(), abuf) == 1;
+            const int hostOk = isIp
+                ? X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl), m_host.c_str())
+                : SSL_set1_host(ssl, m_host.c_str());
+            if (hostOk != 1) {
+                SSL_free(ssl);
+                SSL_CTX_free(ctx);
+                ::close(fd);
+                err = "setup verifikasi hostname TLS gagal";
+                return false;
+            }
+        }
         if (SSL_connect(ssl) != 1) {
             char eb[256] = {0};
             ERR_error_string_n(ERR_peek_last_error(), eb, sizeof(eb));
+            const long vr = SSL_get_verify_result(ssl);
+            if (!insecure && vr != X509_V_OK) {
+                err = std::string("TLS verifikasi gagal: ") + X509_verify_cert_error_string(vr);
+            } else {
+                err = std::string("TLS handshake gagal: ") + eb;
+            }
             SSL_free(ssl);
             SSL_CTX_free(ctx);
             ::close(fd);
-            err = std::string("TLS handshake gagal: ") + eb;
             return false;
+        }
+        if (!insecure) {
+            const long vr = SSL_get_verify_result(ssl);
+            if (vr != X509_V_OK) {
+                err = std::string("TLS verifikasi gagal: ") + X509_verify_cert_error_string(vr);
+                SSL_free(ssl);
+                SSL_CTX_free(ctx);
+                ::close(fd);
+                return false;
+            }
         }
         // recv dikendalikan poll/SSL_read sendiri; lepas SO_RCVTIMEO agar
         // tidak mengganggu kalkulasi timeout.

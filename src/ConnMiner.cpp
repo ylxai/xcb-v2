@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -253,6 +254,22 @@ struct ConnMiner::Impl {
     std::atomic<uint64_t> rejected{0};
     std::atomic<uint64_t> stale{0};
     std::mutex submitMu;
+    // Untuk tidur yang bisa dibangunkan stop().
+    std::mutex sleepMu;
+    std::condition_variable sleepCv;
+
+    // Tidur yang bisa dibangunkan stop(): shutdown tidak perlu menunggu
+    // backoff reconnect sampai 30 detik.
+    void sleepFor(std::chrono::milliseconds d) {
+        std::unique_lock<std::mutex> lk(sleepMu);
+        sleepCv.wait_for(lk, d, [this]() { return !run.load(); });
+    }
+    void wake() {
+        {
+            std::lock_guard<std::mutex> lk(sleepMu);
+        }
+        sleepCv.notify_all();
+    }
 
     bool buildEngine(const std::string& keyHex) {
         std::vector<uint8_t> key;
@@ -621,6 +638,7 @@ struct ConnMiner::Impl {
         auto lastLog = std::chrono::steady_clock::now();
         uint64_t lastHashes = 0;
         int backoff = 2;
+        std::chrono::steady_clock::time_point sessionStart{};
         while (run.load()) {
             if (!pool->alive()) {
                 ConnPoolJob first;
@@ -628,15 +646,15 @@ struct ConnMiner::Impl {
                 if (!pool->connectAndLogin(first, err)) {
                     lg::warn("conn", "pool login gagal: " + err + " (retry " +
                                          std::to_string(backoff) + "s)");
-                    std::this_thread::sleep_for(std::chrono::seconds(backoff));
+                    sleepFor(std::chrono::seconds(backoff));
                     backoff = std::min(backoff * 2, 30);
                     continue;
                 }
-                backoff = 2;
+                sessionStart = std::chrono::steady_clock::now();
                 lg::info("conn", "Pool login OK (" + cfg.poolHost + ") sebagai " +
                                      cfg.poolWorker);
                 if (first.seedHex != curKey && !buildEngine(first.seedHex)) {
-                    std::this_thread::sleep_for(std::chrono::seconds(5));
+                    sleepFor(std::chrono::seconds(5));
                     continue;
                 }
                 buildPoolWork(first);
@@ -657,6 +675,21 @@ struct ConnMiner::Impl {
             } else if (ev == ConnPool::Event::Error) {
                 lg::warn("conn", "Koneksi pool terputus: " + detail);
                 pool->close();
+                // Backoff hanya di-reset kalau sesi bertahan lama. Pool yang
+                // menerima login lalu langsung menutup koneksi tidak boleh
+                // membuat miner reconnect tiap 2 detik (pola yang sempat
+                // membuat ai-workers-1 0 H/s).
+                const auto lived = std::chrono::duration_cast<std::chrono::seconds>(
+                                       std::chrono::steady_clock::now() - sessionStart)
+                                       .count();
+                if (lived >= 60) {
+                    backoff = 2;
+                } else {
+                    lg::info("conn", "Sesi hanya " + std::to_string(lived) +
+                                         "s, reconnect dalam " + std::to_string(backoff) + "s");
+                    sleepFor(std::chrono::seconds(backoff));
+                    backoff = std::min(backoff * 2, 30);
+                }
             }
 
             const auto now = std::chrono::steady_clock::now();
@@ -694,18 +727,18 @@ struct ConnMiner::Impl {
                 if ((gbtFails++ % 15) == 0)
                     lg::warn("conn", "getblocktemplate gagal (" + std::to_string(gbtFails) +
                                          "x): " + err);
-                std::this_thread::sleep_for(std::chrono::seconds(2));
+                sleepFor(std::chrono::seconds(2));
                 continue;
             }
             gbtFails = 0;
             const bool newKey = (t.randomxkey != curKey);
             const bool newTip = (t.prevhash != curPrev) || (t.height != curHeight);
             if (newKey && !buildEngine(t.randomxkey)) {
-                std::this_thread::sleep_for(std::chrono::seconds(5));
+                sleepFor(std::chrono::seconds(5));
                 continue;
             }
             if (newTip && !buildWork(t)) {
-                std::this_thread::sleep_for(std::chrono::seconds(2));
+                sleepFor(std::chrono::seconds(2));
                 continue;
             }
 
@@ -730,7 +763,7 @@ struct ConnMiner::Impl {
                                      std::to_string(height) + " | found " +
                                      std::to_string(found.load()));
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+            sleepFor(std::chrono::milliseconds(1500));
         }
     }
 };
@@ -866,6 +899,7 @@ bool ConnMiner::start(const ConnMinerConfig& cfg) {
 void ConnMiner::stop() {
     if (!m_impl) return;
     m_impl->run.store(false);
+    m_impl->wake();
     m_running.store(false);
     for (auto& t : m_impl->workers)
         if (t.joinable()) t.join();

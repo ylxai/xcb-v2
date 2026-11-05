@@ -46,8 +46,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 extern "C" {
 
-	randomx_flags randomx_get_flags() {
-		randomx_flags flags = RANDOMX_HAVE_COMPILER ? RANDOMX_FLAG_JIT : RANDOMX_FLAG_DEFAULT;
+	rxv2_flags randomx_get_flags() {
+		rxv2_flags flags = RANDOMX_HAVE_COMPILER ? RANDOMX_FLAG_JIT : RANDOMX_FLAG_DEFAULT;
 		randomx::Cpu cpu;
 #ifdef RANDOMX_FORCE_SECURE
 		if (flags == RANDOMX_FLAG_JIT) {
@@ -66,7 +66,7 @@ extern "C" {
 		return flags;
 	}
 
-	randomx_cache *randomx_alloc_cache(randomx_flags flags) {
+	randomx_cache *randomx_alloc_cache(rxv2_flags flags) {
 		randomx_cache *cache = nullptr;
 		auto impl = randomx::selectArgonImpl(flags);
 		if (impl == nullptr) {
@@ -149,7 +149,7 @@ extern "C" {
 		delete cache;
 	}
 
-	randomx_dataset *randomx_alloc_dataset(randomx_flags flags) {
+	randomx_dataset *randomx_alloc_dataset(rxv2_flags flags) {
 
 		//fail on 32-bit systems if DatasetSize is >= 4 GiB
 		if (randomx::DatasetSize > std::numeric_limits<size_t>::max()) {
@@ -222,7 +222,7 @@ extern "C" {
 		delete dataset;
 	}
 
-	randomx_vm *randomx_create_vm(randomx_flags flags, randomx_cache *cache, randomx_dataset *dataset) {
+	randomx_vm *randomx_create_vm(rxv2_flags flags, randomx_cache *cache, randomx_dataset *dataset) {
 		assert(cache != nullptr || (flags & RANDOMX_FLAG_FULL_MEM));
 		assert(cache == nullptr || cache->isInitialized());
 		assert(dataset != nullptr || !(flags & RANDOMX_FLAG_FULL_MEM));

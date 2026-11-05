@@ -62,13 +62,13 @@ namespace randomx {
 		void enableExecution();
 		void enableAll();
 
-		void setFlags(randomx_flags f) { flags = f; }
+		void setFlags(rxv2_flags f) { flags = f; }
 
 		static uint8_t instMap[256];
 	private:
 		CompilerState state;
 
-		randomx_flags flags;
+		rxv2_flags flags;
 
 		uint8_t* vectorCode = nullptr;
 		size_t vectorCodeSize = 0;

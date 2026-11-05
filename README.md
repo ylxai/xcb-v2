@@ -1,4 +1,4 @@
-# xcb — Core Coin (XCB) RandomY Miner
+# xcb — Miner XCB (RandomY) + ConnectCoin (CONN / RandomX V2)
 
 [![CI](https://github.com/ylxai/xcb-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/ylxai/xcb-v2/actions/workflows/ci.yml)
 
@@ -187,6 +187,52 @@ maksimal 32 char, dan jatuh ke `worker` bila tidak ada karakter yang sah. Nilai
 
 ---
 
+## ConnectCoin (CONN) — RandomX V2
+
+Backend kedua di binary yang sama: **ConnectCoin (CONN)** memakai RandomX V2
+(dataset 2 GiB, VM 384 instruksi) dengan key epoch dari `getblocktemplate`.
+Pilih backend lewat `-a`.
+
+```bash
+# Pool stratum CONN (TLS)
+./xcb -a conn --conn-pool eu.rplant.xyz:17194 \
+      -u cc1p2mf0hyvm86vglrx6j3sq0hcxn7y8k2lt2fu8fzguv825j6epskxqtx8cmn \
+      --worker "$(hostname)" -t 4
+
+# Solo lewat node lokal (cookie RPC dibaca otomatis)
+./xcb -a conn -u cc1... -t 4
+./xcb -a conn --conn-rpc http://127.0.0.1:48172 --conn-user u --conn-pass p
+```
+
+| Flag / env | Arti |
+|---|---|
+| `-a conn` | pilih backend CONN (default `randomy`) |
+| `--conn-pool host:port` | pool stratum CONN (TLS) |
+| `--conn-rpc URL` | RPC `connectcoind` untuk mode solo (default `http://127.0.0.1:48172`) |
+| `--conn-user` / `--conn-pass` | kredensial RPC kalau tidak memakai cookie |
+| `--conn-cookie PATH` | cookie RPC (default `~/.connectcoin/.cookie`) |
+| `CONN_TLS_INSECURE=1` | matikan verifikasi sertifikat pool (self-signed) |
+
+Catatan operasional:
+
+- **TLS diverifikasi penuh secara default** (sertifikat + hostname). Pool dengan
+  sertifikat self-signed harus memakai `CONN_TLS_INSECURE=1`; miner menulis
+  peringatan eksplisit di log saat mode itu aktif.
+- Reconnect memakai backoff 2→30 detik. Delay baru di-reset setelah sesi
+  bertahan **≥60 detik**, jadi pool yang menerima login lalu langsung menutup
+  koneksi tidak memicu reconnect loop tiap 2 detik.
+- DNS dicoba berurutan (IPv6/IPv4); kalau hasil pertama tidak reachable,
+  miner lanjut ke hasil berikutnya.
+- Binary membutuhkan **`librandomx_v2.so` di direktori yang sama** (RPATH
+  `$ORIGIN`). `cmake --install` menaruh `xcb` + library di `bin/`, dan
+  Dockerfile menyalin keduanya ke `/miner`.
+- Dataset FAST butuh ~2 GiB RAM per proses (bukan per thread); `--light`
+  memakai cache ~256 MB dengan hashrate lebih rendah.
+- `--version` mencetak backend + commit, mis.
+  `xcb 1.0.0 (ConnectCoin CONN - RandomX V2, 62186fd)`.
+
+---
+
 ## Dashboard / UI Mode
 
 Secara default di terminal (TTY) miner menampilkan **dashboard FTXUI** full-screen yang hidup:
@@ -371,6 +417,7 @@ xcb/
 │   └── deployment.yaml      # Deployment + Secret contoh
 ├── external/
 │   ├── RandomY/             # RandomY library (submodule, BSD 3-Clause)
+│   ├── randomx-v2/          # RandomX V2 untuk CONN (vendored, BSD 3-Clause)
 │   └── FTXUI/               # Terminal TUI library (submodule, MIT)
 ├── pool.cfg                 # Multi-server config (wallet + 3 pool failover)
 └── src/
@@ -382,6 +429,10 @@ xcb/
     ├── Dashboard.hpp/.cpp   # TUI FTXUI full-screen (tab Overview/Threads/Shares)
     ├── Log.hpp/.cpp         # Logger thread-safe (level, warna, JSON)
     ├── Submitter.hpp/.cpp   # Async share submitter (bounded queue)
+    ├── ConnPool.hpp/.cpp    # Stratum CONN (TLS + verifikasi + backoff)
+    ├── ConnRpc.hpp/.cpp     # JSON-RPC connectcoind (solo) + parser JSON
+    ├── ConnMiner.hpp/.cpp   # Backend CONN: template loop + worker RandomX V2
+    ├── Hashing/RandomXV2.*  # Wrapper Context/VM RandomX V2
     └── Sha3_512.hpp/.cpp    # SHA3-512 keccak satu-blok (hot path 40B)
 ```
 

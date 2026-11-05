@@ -24,6 +24,22 @@ extern "C" void signal_handler(int sig) {
     g_running.store(false);  // async-signal-safe: only set a flag
 }
 
+#ifndef XCB_VERSION
+#define XCB_VERSION "dev"
+#endif
+#ifndef XCB_GIT_COMMIT
+#define XCB_GIT_COMMIT "unknown"
+#endif
+
+static std::string versionLine() {
+#ifdef XCB_WITH_CONN
+    return std::string("xcb ") + XCB_VERSION + " (ConnectCoin CONN - RandomX V2, " +
+           XCB_GIT_COMMIT + ")";
+#else
+    return std::string("xcb ") + XCB_VERSION + " (Core Coin RandomY, " + XCB_GIT_COMMIT + ")";
+#endif
+}
+
 static std::string bytes_to_hex(const uint8_t* data, int len) {
     static const char hex[] = "0123456789abcdef";
     std::string s;
@@ -162,7 +178,7 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--version" || a == "-V") {
-            std::cout << "xcb v2 (Core Coin RandomY)" << std::endl;
+            std::cout << versionLine() << std::endl;
             return 0;
         }
     }
@@ -213,7 +229,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    lg::info("main", "xcb v2 (Core Coin RandomY)");
+    lg::info("main", versionLine());
     lg::info("config", "Pools: " + std::to_string(cfg.pools.size()) + ", Threads: " +
                             std::to_string(cfg.threads) +
                             (cfg.benchmarkNonces > 0 ? ", Benchmark: " +

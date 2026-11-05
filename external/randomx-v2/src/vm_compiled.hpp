@@ -49,7 +49,7 @@ namespace randomx {
 		void operator delete(void* ptr) {
 			AlignedAllocator<CacheLineSize>::freeMemory(ptr, sizeof(CompiledVm));
 		}
-		explicit CompiledVm(randomx_flags flags);
+		explicit CompiledVm(rxv2_flags flags);
 		void setDataset(randomx_dataset* dataset) override;
 		void run(void* seed) override;
 

@@ -65,7 +65,7 @@ namespace randomx {
 		void enableExecution();
 		void enableAll();
 
-		void setFlags(randomx_flags f) { vmFlags = f; }
+		void setFlags(rxv2_flags f) { vmFlags = f; }
 	private:
 		static InstructionGeneratorX86 engine[256];
 		std::vector<int32_t> instructionOffsets;
@@ -73,7 +73,7 @@ namespace randomx {
 		uint8_t* code;
 		int32_t codePos;
 
-		randomx_flags vmFlags;
+		rxv2_flags vmFlags;
 
 		void generateProgramPrologue(Program&, ProgramConfiguration&);
 		void generateProgramEpilogue(Program&, ProgramConfiguration&);

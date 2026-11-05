@@ -4,6 +4,18 @@ option(ENABLE_SELF_DEFENSE "Aktifkan proteksi diri: anti-debugging (deteksi ptra
 
 project(xcb VERSION 1.0.0 LANGUAGES CXX C ASM)
 
+# Versi + commit untuk --version. Di Docker build tanpa .git, fallback "unknown".
+execute_process(
+    COMMAND git rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE XCB_GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT XCB_GIT_COMMIT)
+    set(XCB_GIT_COMMIT "unknown")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -162,8 +174,16 @@ target_link_options(xcb PRIVATE
 )
 
 install(TARGETS xcb DESTINATION bin)
+# librandomx_v2.so harus di direktori yang sama dengan xcb (RPATH $ORIGIN).
+install(TARGETS randomx_v2 LIBRARY DESTINATION bin)
 # Deploy: librandomx_v2.so diletakkan di samping biner.
 set_target_properties(xcb PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
+
+target_compile_definitions(xcb PRIVATE
+    XCB_VERSION="${PROJECT_VERSION}"
+    XCB_GIT_COMMIT="${XCB_GIT_COMMIT}"
+    XCB_WITH_CONN=1
+)
 
 if(ENABLE_SELF_DEFENSE)
     target_compile_definitions(xcb PRIVATE XCB_SELF_DEFENSE)

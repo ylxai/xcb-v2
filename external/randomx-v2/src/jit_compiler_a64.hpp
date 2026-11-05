@@ -65,7 +65,7 @@ namespace randomx {
 		void enableExecution();
 		void enableAll();
 
-		void setFlags(randomx_flags f) { flags = f; }
+		void setFlags(rxv2_flags f) { flags = f; }
 	private:
 		static InstructionGeneratorA64 engine[256];
 		uint32_t reg_changed_offset[8];
@@ -73,7 +73,7 @@ namespace randomx {
 		uint32_t literalPos;
 		uint32_t num32bitLiterals;
 
-		randomx_flags flags;
+		rxv2_flags flags;
 
 		static void emit32(uint32_t val, uint8_t* code, uint32_t& codePos)
 		{

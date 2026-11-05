@@ -73,6 +73,6 @@ namespace randomx {
 		void enableExecution() {}
 		void enableAll() {}
 
-		void setFlags(randomx_flags) {}
+		void setFlags(rxv2_flags) {}
 	};
 }

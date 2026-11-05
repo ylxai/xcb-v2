@@ -39,6 +39,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define RANDOMX_EXPORT
 #endif
 
+// xcb-v2: tipe ini di-rename dari randomx_flags -> rxv2_flags supaya
+// tidak melanggar C++ ODR saat librandomx_v2.so di-link bersama
+// RandomY (XCB) yang punya enum dengan nama sama tetapi isi berbeda.
 typedef enum {
   RANDOMX_FLAG_DEFAULT = 0,
   RANDOMX_FLAG_LARGE_PAGES = 1,
@@ -50,7 +53,7 @@ typedef enum {
   RANDOMX_FLAG_ARGON2_AVX2 = 64,
   RANDOMX_FLAG_ARGON2 = 96,
   RANDOMX_FLAG_V2 = 128,
-} randomx_flags;
+} rxv2_flags;
 
 typedef struct randomx_dataset randomx_dataset;
 typedef struct randomx_cache randomx_cache;
@@ -65,13 +68,13 @@ typedef struct randomx_vm randomx_vm;
 #define CONSTEXPR
 #endif
 
-inline CONSTEXPR randomx_flags operator |(randomx_flags a, randomx_flags b) {
-	return static_cast<randomx_flags>(static_cast<int>(a) | static_cast<int>(b));
+inline CONSTEXPR rxv2_flags operator |(rxv2_flags a, rxv2_flags b) {
+	return static_cast<rxv2_flags>(static_cast<int>(a) | static_cast<int>(b));
 }
-inline CONSTEXPR randomx_flags operator &(randomx_flags a, randomx_flags b) {
-	return static_cast<randomx_flags>(static_cast<int>(a) & static_cast<int>(b));
+inline CONSTEXPR rxv2_flags operator &(rxv2_flags a, rxv2_flags b) {
+	return static_cast<rxv2_flags>(static_cast<int>(a) & static_cast<int>(b));
 }
-inline randomx_flags& operator |=(randomx_flags& a, randomx_flags b) {
+inline rxv2_flags& operator |=(rxv2_flags& a, rxv2_flags b) {
 	return a = a | b;
 }
 
@@ -87,7 +90,7 @@ extern "C" {
  *         These flags must be added manually if desired.
  *         On OpenBSD RANDOMX_FLAG_SECURE is enabled by default in JIT mode as W^X is enforced by the OS.
  */
-RANDOMX_EXPORT randomx_flags randomx_get_flags(void);
+RANDOMX_EXPORT rxv2_flags randomx_get_flags(void);
 
 /**
  * Creates a randomx_cache structure and allocates memory for RandomX Cache.
@@ -108,7 +111,7 @@ RANDOMX_EXPORT randomx_flags randomx_get_flags(void);
  *         (2) the RANDOMX_FLAG_JIT is set and JIT compilation is not supported on the current platform
  *         (3) an invalid or unsupported RANDOMX_FLAG_ARGON2 value is set
  */
-RANDOMX_EXPORT randomx_cache *randomx_alloc_cache(randomx_flags flags);
+RANDOMX_EXPORT randomx_cache *randomx_alloc_cache(rxv2_flags flags);
 
 /**
  * Initializes the cache memory and SuperscalarHash using the provided key value.
@@ -146,7 +149,7 @@ RANDOMX_EXPORT void randomx_release_cache(randomx_cache* cache);
  * @return Pointer to an allocated randomx_dataset structure.
  *         NULL is returned if memory allocation fails.
  */
-RANDOMX_EXPORT randomx_dataset *randomx_alloc_dataset(randomx_flags flags);
+RANDOMX_EXPORT randomx_dataset *randomx_alloc_dataset(rxv2_flags flags);
 
 /**
  * Gets the number of items contained in the dataset.
@@ -210,7 +213,7 @@ RANDOMX_EXPORT void randomx_release_dataset(randomx_dataset *dataset);
  *         (3) cache parameter is NULL and RANDOMX_FLAG_FULL_MEM is not set
  *         (4) dataset parameter is NULL and RANDOMX_FLAG_FULL_MEM is set
 */
-RANDOMX_EXPORT randomx_vm *randomx_create_vm(randomx_flags flags, randomx_cache *cache, randomx_dataset *dataset);
+RANDOMX_EXPORT randomx_vm *randomx_create_vm(rxv2_flags flags, randomx_cache *cache, randomx_dataset *dataset);
 
 /**
  * Reinitializes a virtual machine with a new Cache. This function should be called anytime
