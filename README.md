@@ -187,6 +187,9 @@ Hostname dibersihkan dulu — hanya huruf/angka/`-`/`_`, dipotong di titik perta
 maksimal 32 char, dan jatuh ke `worker` bila tidak ada karakter yang sah. Nilai
 `auto` juga berlaku lewat `WORKER=auto` maupun `-u wallet.auto`.
 
+> **Wallet wajib diisi.** `pool.cfg` di repo sengaja memakai `wallet=` kosong;
+> isi dengan alamat Anda atau lewatkan `-u <alamat>` saat menjalankan miner.
+>
 > Precedence: **env vars > pool.cfg > CLI flags**. `WALLET`+`POOL` env aktif = pool.cfg diabaikan.
 > Commands flag: `-o host:port`, `-u wallet[.worker]`, `-p password`, `-t N`, `--light`, `--no-jit`, `--ui=MODE`, `-h`.
 
