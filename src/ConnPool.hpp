@@ -43,7 +43,8 @@ public:
     bool submit(const ConnPoolJob& job, uint32_t nonce, const uint8_t hash[32],
                 std::string& err);
 
-    // Dipanggil poolLoop setelah work pertama sesi ini dibangun. Sebelum ini
+    // Dipanggil ConnMiner setelah work pertama sesi ini dibangun — dari
+    // start() untuk sesi awal dan dari poolLoop setelah reconnect. Sebelum ini
     // submit() menolak menulis: job dari sesi lama tidak berlaku di sesi baru,
     // dan buildEngine untuk seed baru bisa memakan beberapa detik.
     void markReady();
@@ -54,10 +55,11 @@ public:
     // ke sini, bukan ke snap.work.
     bool isCurrentJob(const std::string& id) const;
 
-    // Hidup berarti login sudah selesai. Koneksi plaintext tidak punya SSL*,
-    // jadi fd yang terbuka saja tidak cukup; dan saat reconnect fd bisa sudah
-    // terbuka sebelum TLS siap. Flag yang sama dipakai submit(), sehingga
-    // keduanya tidak bisa berbeda pendapat soal kesiapan koneksi.
+    // Hidup berarti sesi siap: login selesai dan work pertama sudah dibangun.
+    // Koneksi plaintext tidak punya SSL*, jadi fd yang terbuka saja tidak
+    // cukup; dan saat reconnect fd bisa sudah terbuka sebelum TLS siap. Flag
+    // yang sama dipakai submit(), sehingga keduanya tidak bisa berbeda
+    // pendapat soal kesiapan koneksi.
     bool alive() const { return m_ready.load(); }
     void close();
     const std::string& wallet() const { return m_wallet; }
