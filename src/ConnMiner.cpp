@@ -9,13 +9,16 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <mutex>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -577,12 +580,22 @@ struct ConnMiner::Impl {
             static int dumped = 0;
             if (dumped < 2) {
                 dumped++;
-                FILE* f = std::fopen("/tmp/conn-reject.hex", "w");
+                // /tmp bisa ditulisi proses lain: jangan pernah mengikuti
+                // symlink yang menunjuk file lain. O_NOFOLLOW membuat open
+                // gagal (ELOOP) kalau path-nya symlink; file ditulis 0600.
+                const int fd =
+                    ::open("/tmp/conn-reject.hex",
+                           O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+                FILE* f = fd >= 0 ? ::fdopen(fd, "w") : nullptr;
                 if (f) {
                     std::fputs(blockHex.c_str(), f);
                     std::fputc('\n', f);
                     std::fclose(f);
                     lg::warn("conn", "Blok ditolak disimpan ke /tmp/conn-reject.hex");
+                } else {
+                    if (fd >= 0) ::close(fd);
+                    lg::warn("conn", std::string("gagal menyimpan dump: ") +
+                                         std::strerror(errno));
                 }
             }
         }
