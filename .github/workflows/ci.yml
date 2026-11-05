@@ -189,14 +189,30 @@ jobs:
             ldd build/xcb | grep "librandomx_v2.so =>"
           '
 
+      - name: Stage artefak deploy
+        # upload-artifact v4+ mempertahankan direktori induk bersama dari daftar
+        # path. Kalau build/xcb dan VERSION di-upload langsung, binary masuk ke
+        # build/ di dalam artefak, sementara deploy.sh --from-ci mencari xcb di
+        # root artefak. Ratakan dulu ke dist/ supaya layout-nya sesuai kontrak.
+        run: |
+          mkdir -p dist
+          cp build/xcb build/librandomx_v2.so VERSION dist/
+          test -x dist/xcb
+          test -f dist/librandomx_v2.so
+          test -f dist/VERSION
+          # Manifest checksum per commit: deploy bisa memverifikasi isi artefak
+          # terhadap referensi ini, bukan menghitung ulang hash dari file yang
+          # sama lalu mencocokkannya dengan dirinya sendiri.
+          ( cd dist && sha256sum xcb librandomx_v2.so VERSION > SHA256SUMS )
+          test -f dist/SHA256SUMS
+          ls -l dist
+          cat dist/SHA256SUMS
+
       - name: Upload artefak deploy
         uses: actions/upload-artifact@v7
         with:
           name: xcb-2204
-          path: |
-            build/xcb
-            build/librandomx_v2.so
-            VERSION
+          path: dist/
           if-no-files-found: error
           retention-days: 14
 

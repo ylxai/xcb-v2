@@ -132,10 +132,19 @@ prepare_artifact() {
     [ -f "$FROM/librandomx_v2.so" ] || die "$FROM/librandomx_v2.so tidak ada"
 
     SHA_XCB=$(sha256sum "$FROM/xcb" | awk '{print $1}')
-    SHA_LIB=$(sha256sum "$FROM/librandomx_v2.so" | awk '{print $1}')
-    SHA256_LINES="$SHA_XCB $FROM/xcb
-$SHA_LIB $FROM/librandomx_v2.so"
-    sha256sum -c <<<"$SHA256_LINES" >/dev/null || die "checksum artefak lokal rusak"
+    if [ -f "$FROM/SHA256SUMS" ]; then
+        # Manifest dibuat step staging CI dan ikut di dalam artefak. Verifikasi
+        # terhadap referensi build-time ini, bukan terhadap hash yang baru saja
+        # dihitung dari file yang sama (itu hanya mendeteksi unduhan rusak).
+        grep -q ' xcb$' "$FROM/SHA256SUMS" || die "SHA256SUMS tidak memuat xcb"
+        grep -q ' librandomx_v2.so$' "$FROM/SHA256SUMS" ||
+            die "SHA256SUMS tidak memuat librandomx_v2.so"
+        ( cd "$FROM" && sha256sum -c SHA256SUMS >/dev/null ) ||
+            die "checksum artefak tidak cocok dengan SHA256SUMS"
+        log "checksum: cocok dengan SHA256SUMS"
+    else
+        log "SHA256SUMS tidak ada (build lokal); integritas tidak diverifikasi"
+    fi
     LOCAL_VER=$("$FROM/xcb" --version 2>&1 | head -1) ||
         die "artefak tidak bisa dijalankan di host ini (target glibc lebih baru?)"
     log "artefak: $LOCAL_VER"
