@@ -1,0 +1,8 @@
+# Salin ke ~/.config/xcb/fleet.hosts (jangan commit daftar asli — repo publik).
+# Format: nama=alamat
+#   alamat "local" = host tempat deploy.sh / watch.sh dijalankan.
+fl=local
+ai-workers-1=10.0.0.11
+ai-workers-2=10.0.0.12
+ai-workers-3=10.0.0.13
+ai-workers-4=10.0.0.14
