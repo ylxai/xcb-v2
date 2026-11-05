@@ -206,12 +206,11 @@ bool ConnPool::connectAndLogin(ConnPoolJob& first, std::string& err) {
                 return false;
             }
         }
-        // recv dikendalikan poll/SSL_read sendiri; lepas SO_RCVTIMEO agar
-        // tidak mengganggu kalkulasi timeout.
-        struct timeval zero;
-        zero.tv_sec = 0;
-        zero.tv_usec = 0;
-        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &zero, sizeof(zero));
+        // SO_RCVTIMEO 30 s dari socket() dibiarkan aktif. SSL_read pada socket
+        // blocking bisa menunggu sisa record TLS yang tidak pernah datang, dan
+        // karena m_ioMu juga dipakai submit(), stall itu akan membekukan semua
+        // worker. Timeout membuat kegagalan seperti itu berakhir sebagai error
+        // koneksi, bukan hang.
         {
             std::lock_guard<std::mutex> lock(m_ioMu);
             m_ctx = ctx;
@@ -252,13 +251,16 @@ bool ConnPool::connectAndLogin(ConnPoolJob& first, std::string& err) {
             err = "respons login bukan JSON: " + perr;
             return false;
         }
+        std::string loginId;
         if (const Json* result = doc.get("result"); result && result->isObj()) {
-            std::string id;
-            if (result->getStr("id", id)) m_loginId = id;
+            result->getStr("id", loginId);
         }
         if (!parseJobJson(line, first, err)) return false;
         {
+            // loginId dan m_ready dipublikasikan bersama: submit() membaca
+            // keduanya di bawah lock yang sama.
             std::lock_guard<std::mutex> lock(m_ioMu);
+            if (!loginId.empty()) m_loginId = loginId;
             m_ready = true;
         }
         return true;
