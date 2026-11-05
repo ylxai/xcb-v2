@@ -523,9 +523,24 @@ struct ConnMiner::Impl {
             // pool tetap menerima share lain untuk job yang sama sampai job baru
             // dikirim. Menandai done membuat semua worker berhenti dan hashrate
             // jatuh ke 0 sampai blok berikutnya.
+            //
+            // Saat reconnect belum ada sesi yang bisa menerima share; job lama
+            // pasti ditolak pool baru, jadi jangan dihitung sebagai rejected.
+            if (!pool || !pool->alive()) return;
+            // Job bisa sudah berganti saat worker masih memakai Work lama, dan
+            // buildEngine untuk seed baru berjalan sebelum snap.work berpindah.
+            // ConnPool tahu job terakhir yang diterima, jadi bandingkan ke sana:
+            // rplant menjawab share job lama sebagai [21, "stale share"].
+            if (!pool->isCurrentJob(w->poolJob.id)) {
+                stale.fetch_add(1);
+                return;
+            }
             std::lock_guard<std::mutex> lock(poolSendMu);
             std::string err;
             if (!pool || !pool->submit(w->poolJob, nonce, hash, err)) {
+                // close() bisa terjadi setelah cek alive() di atas; share ini
+                // tidak pernah sampai ke pool, jadi jangan dihitung rejected.
+                if (!pool || !pool->alive()) return;
                 rejected.fetch_add(1);
                 lg::warn("conn", "submit pool gagal: " + err);
             }
@@ -682,6 +697,10 @@ struct ConnMiner::Impl {
                     continue;
                 }
                 buildPoolWork(first);
+                // Baru sekarang sesi boleh menerima share. buildEngine bisa
+                // memakan beberapa detik untuk seed baru; selama itu worker
+                // masih memakai job sesi lama yang pasti ditolak pool ini.
+                pool->markReady();
             }
 
             ConnPoolJob j;
@@ -732,7 +751,8 @@ struct ConnMiner::Impl {
                 }
                 lg::info("conn", "HR " + std::to_string(static_cast<uint64_t>(hr)) + " H/s | A " +
                                      std::to_string(accepted.load()) + " R " +
-                                     std::to_string(rejected.load()) + " | pool height " +
+                                     std::to_string(rejected.load()) + " S " +
+                                     std::to_string(stale.load()) + " | pool height " +
                                      std::to_string(height) + " | found " +
                                      std::to_string(found.load()));
             }
@@ -827,6 +847,10 @@ bool ConnMiner::start(const ConnMinerConfig& cfg) {
                              std::to_string(cfg.poolPort) + (cfg.poolTls ? ", tls)" : ", plain)"));
         if (!m_impl->buildEngine(first.seedHex)) return false;
         if (!m_impl->buildPoolWork(first)) return false;
+        // Sesi pertama juga harus ditandai siap. Tanpa ini poolLoop melihat
+        // !alive() dan menutup sesi yang baru saja dipakai login, lalu login
+        // ulang — dua koneksi untuk satu sesi.
+        m_impl->pool->markReady();
 
         m_running.store(true);
         m_impl->run.store(true);

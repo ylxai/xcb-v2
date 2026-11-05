@@ -172,6 +172,11 @@ static int runSelftest() {
 int main(int argc, char* argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
+    // SSL_write memakai write() di dalam OpenSSL, jadi MSG_NOSIGNAL pada jalur
+    // plaintext tidak menolong: pool yang menutup koneksi saat worker menulis
+    // akan mematikan proses dengan SIGPIPE. Abaikan, biarkan SSL_write
+    // mengembalikan error dan poolLoop yang memutuskan reconnect.
+    signal(SIGPIPE, SIG_IGN);
 
     lg::init();
 

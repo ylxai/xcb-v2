@@ -1,6 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -41,17 +43,32 @@ public:
     bool submit(const ConnPoolJob& job, uint32_t nonce, const uint8_t hash[32],
                 std::string& err);
 
-    // Koneksi plaintext tidak punya SSL*, jadi fd yang terbuka juga berarti
-    // hidup. Tanpa ini pool non-TLS selalu dianggap mati dan failover tidak
-    // pernah berjalan.
-    bool alive() const { return m_ssl != nullptr || m_fd >= 0; }
+    // Dipanggil ConnMiner setelah work pertama sesi ini dibangun — dari
+    // start() untuk sesi awal dan dari poolLoop setelah reconnect. Sebelum ini
+    // submit() menolak menulis: job dari sesi lama tidak berlaku di sesi baru,
+    // dan buildEngine untuk seed baru bisa memakan beberapa detik.
+    void markReady();
+
+    // Job terakhir yang dikirim pool. Worker bisa masih memakai Work lama
+    // (pemeriksaan generasi hanya tiap 256 hash), dan buildEngine untuk seed
+    // baru berjalan sebelum snap.work berpindah — jadi submit() membandingkan
+    // ke sini, bukan ke snap.work.
+    bool isCurrentJob(const std::string& id) const;
+
+    // Hidup berarti sesi siap: login selesai dan work pertama sudah dibangun.
+    // Koneksi plaintext tidak punya SSL*, jadi fd yang terbuka saja tidak
+    // cukup; dan saat reconnect fd bisa sudah terbuka sebelum TLS siap. Flag
+    // yang sama dipakai submit(), sehingga keduanya tidak bisa berbeda
+    // pendapat soal kesiapan koneksi.
+    bool alive() const { return m_ready.load(); }
     void close();
     const std::string& wallet() const { return m_wallet; }
 
 private:
     bool sendLine(const std::string& line, std::string& err);
+    bool sendLineLocked(const std::string& line, std::string& err);
     bool recvLine(std::string& line, int timeoutMs, std::string& err);
-    bool parseJobJson(const std::string& line, ConnPoolJob& out, std::string& err);
+    void closeLocked();
 
     std::string m_host;
     int m_port;
@@ -59,10 +76,21 @@ private:
     std::string m_worker;
     bool m_tls;
 
+    // SSL* tidak boleh dipakai dua thread sekaligus. poolLoop memanggil
+    // SSL_read, worker memanggil SSL_write, dan poolLoop bisa SSL_free saat
+    // reconnect — semuanya lewat mutex ini. Poll menunggu data tetap di luar
+    // lock supaya submit tidak ikut tertahan sampai timeout.
+    mutable std::mutex m_ioMu;
+
     void* m_ctx = nullptr;  // SSL_CTX*
     void* m_ssl = nullptr;  // SSL*
     int m_fd = -1;
     std::string m_buf;
     std::string m_loginId;
+    std::string m_jobId;
     uint64_t m_msgId = 1;
+    // Sesi siap menerima share: login selesai dan work pertama sudah dibangun.
+    // Menutup celah reconnect, saat fd sudah terbuka tetapi TLS/job belum siap
+    // — submit lama akan mengirim plaintext atau job sesi sebelumnya.
+    std::atomic<bool> m_ready{false};
 };
