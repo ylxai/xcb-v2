@@ -513,11 +513,13 @@ struct ConnMiner::Impl {
     void submit(const std::shared_ptr<Work>& w, const uint8_t header[80], uint32_t nonce,
                 const uint8_t* hash) {
         found.fetch_add(1);
-        // Satu blok/share per work.
-        w->done.store(true, std::memory_order_relaxed);
 
         if (w->pool) {
             if (!hash) return;
+            // JANGAN menandai work selesai di sini. Satu share bukan akhir job:
+            // pool tetap menerima share lain untuk job yang sama sampai job baru
+            // dikirim. Menandai done membuat semua worker berhenti dan hashrate
+            // jatuh ke 0 sampai blok berikutnya.
             std::lock_guard<std::mutex> lock(poolSendMu);
             std::string err;
             if (!pool || !pool->submit(w->poolJob, nonce, hash, err)) {
@@ -526,6 +528,13 @@ struct ConnMiner::Impl {
             }
             return;
         }
+
+        // Solo: satu blok kandidat per template, jadi hentikan hashing selama
+        // blok diproses. `done` hanya final kalau blok diterima/inconclusive;
+        // kalau submit gagal atau blok ditolak, worker harus lanjut — templateLoop
+        // tidak membangun work baru selama tip belum berubah, sehingga done=true
+        // di sini berarti miner diam tanpa batas.
+        w->done.store(true, std::memory_order_relaxed);
         std::vector<uint8_t> block;
         block.insert(block.end(), header, header + 80);
         putVarint(block, 1 + w->txData.size());
@@ -544,6 +553,7 @@ struct ConnMiner::Impl {
         bool acc = false;
         if (!rpc->submitBlock(blockHex, reason, acc, err)) {
             rejected.fetch_add(1);
+            w->done.store(false, std::memory_order_relaxed);
             lg::warn("conn", "submitblock gagal: " + err);
             return;
         }
@@ -560,6 +570,7 @@ struct ConnMiner::Impl {
                                   std::to_string(w->height));
         } else {
             rejected.fetch_add(1);
+            w->done.store(false, std::memory_order_relaxed);
             lg::warn("conn", "Blok ditolak node: " + reason);
             // Diagnostik: simpan blok pertama yang ditolak agar bisa didekode
             // manual (mis. bad-cb-height) tanpa menebak.
