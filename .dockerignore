@@ -14,3 +14,10 @@ ops/
 .github/
 .entire/
 .opencode/
+.codebuddy/
+.idea/
+.vscode/
+AGENTS.md
+*.swp
+*.swo
+.DS_Store

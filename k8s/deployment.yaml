@@ -8,8 +8,11 @@
 #
 # Buat Secret lebih dulu (jangan simpan wallet di manifest):
 #   kubectl create namespace mining
+#   read -r -s -p "Wallet: " WALLET; echo
+#   printf '%s' "$WALLET" > /tmp/xcb-wallet.txt; unset WALLET
 #   kubectl -n mining create secret generic xcb-wallet \
-#     --from-literal=wallet=<alamat_wallet> --dry-run=client -o yaml | kubectl apply -f -
+#     --from-file=wallet=/tmp/xcb-wallet.txt
+#   rm -f /tmp/xcb-wallet.txt
 
 apiVersion: apps/v1
 kind: Deployment

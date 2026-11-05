@@ -22,8 +22,8 @@ Image resmi di **Docker Hub**: [`ylxai/xcb`](https://hub.docker.com/r/ylxai/xcb)
 ```bash
 docker pull ylxai/xcb:v1
 
-# Jalankan cepat (env dari image default: wallet + pool sg)
-docker run --rm ylxai/xcb:v1
+# WALLET wajib; pool default sg
+docker run --rm -e WALLET=<alamat_wallet> ylxai/xcb:v1
 
 # Jalankan dengan override penuh
 docker run --rm -d --name xcb \
@@ -34,6 +34,10 @@ docker run --rm -d --name xcb \
   ylxai/xcb:v1
 ```
 
+> **Wallet wajib di-set.** Image tidak punya wallet default; tanpa
+> `-e WALLET=<alamat>` miner berhenti dengan `No wallet configured`. Ini sengaja
+> agar image publik tidak pernah menambang ke alamat pembuat image.
+>
 > **Memori & huge pages: otomatis.** Miner membaca RAM tersedia (termasuk cgroup
 > limit container) dan jumlah huge page bebas, lalu memilih sendiri: `FULL_MEM=1`
 > kalau ada ≥3GB, `FULL_MEM=0` (light, ~256MB) kalau tidak; `LARGE_PAGES` hanya
@@ -49,7 +53,7 @@ Semua env vars dibaca langsung (precedence ≥ config file & CLI):
 
 | Variable | Default | Deskripsi |
 |----------|---------|-----------|
-| `WALLET` | *(dari image)* | Alamat wallet Core Coin (XCB) |
+| `WALLET` | — | Alamat wallet (wajib; tidak ada default di image) |
 | `POOL` | `sg.catchthatrabbit.com:8008` | Host pool `host:port` |
 | `WORKER` | `pool` | Nama worker (ditampilkan pool sebagai `wallet.worker`). `auto` = hostname mesin |
 | `THREADS` | *(kosong)* | Jumlah thread. **Kosong = auto (jumlah CPU cores)** |
@@ -63,7 +67,7 @@ Semua env vars dibaca langsung (precedence ≥ config file & CLI):
 
 ### Persyaratan
 - Linux x86_64 dengan **AES-NI + AVX2** (build memakai `-march=x86-64-v3`) atau aarch64 dengan crypto extensions
-- CMake ≥ 3.10 (versi sistem yang lebih baru lebih baik — CMake ≥ 3.16 disarankan)
+- CMake ≥ 3.12 (versi sistem yang lebih baru lebih baik — CMake ≥ 3.16 disarankan)
 - Compiler C++17 (g++ ≥ 8 atau clang ≥ 7)
 - OpenSSL dev headers (di-`find_package` oleh CMakeLists — wajib ada meski kode tidak memanggilnya)
 
@@ -75,7 +79,7 @@ git submodule update --init --recursive   # Wajib: tarik RandomY + FTXUI
 
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
+cmake --build build --parallel "$(nproc)"
 # Binary: build/xcb (stripped)
 ```
 
@@ -94,7 +98,7 @@ Build dengan anti-debugging + penyamaran proses:
 
 ```bash
 cmake .. -DCMAKE_BUILD_TYPE=Release -DENABLE_SELF_DEFENSE=ON
-make -j$(nproc)
+cmake --build build --parallel "$(nproc)"
 ```
 
 Yang aktif di binary hasil build ini:
@@ -197,8 +201,7 @@ Pilih backend lewat `-a`.
 ```bash
 # Pool stratum CONN (TLS)
 ./xcb -a conn --conn-pool eu.rplant.xyz:17194 \
-      -u cc1p2mf0hyvm86vglrx6j3sq0hcxn7y8k2lt2fu8fzguv825j6epskxqtx8cmn \
-      --worker "$(hostname)" -t 4
+      -u <alamat_wallet_conn> --worker "$(hostname)" -t 4
 
 # Solo lewat node lokal (cookie RPC dibaca otomatis)
 ./xcb -a conn -u cc1... -t 4
@@ -278,12 +281,13 @@ Secara default di terminal (TTY) miner menampilkan **dashboard FTXUI** full-scre
 cd xcb
 git submodule update --init --recursive
 docker build -t ylxai/xcb:v1 .
-docker run --rm ylxai/xcb:v1
+docker run --rm -e WALLET=<alamat_wallet> ylxai/xcb:v1
 ```
 
 Image docker **multi-stage** (builder → runtime minimal), jalan sebagai user non-root
 `sysd`, entrypoint `./xcb`. `pool.cfg` ikut di-copy ke `/etc/syscache/pool.cfg`
-sebagai fallback.
+sebagai fallback, tetapi wallet di file contoh sengaja kosong — isi dulu atau
+pakai `-e WALLET`.
 
 ---
 
@@ -358,8 +362,11 @@ deployment:
 Contoh lengkap ada di [`k8s/deployment.yaml`](k8s/deployment.yaml):
 ```bash
 kubectl create namespace mining
+read -r -s -p "Wallet: " WALLET; echo
+printf '%s' "$WALLET" > /tmp/xcb-wallet.txt; unset WALLET
 kubectl -n mining create secret generic xcb-wallet \
-  --from-literal=wallet=<alamat_wallet>
+  --from-file=wallet=/tmp/xcb-wallet.txt
+rm -f /tmp/xcb-wallet.txt
 kubectl apply -f k8s/deployment.yaml
 kubectl logs -n mining deploy/xcb-miner -f
 ```

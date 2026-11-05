@@ -18,4 +18,5 @@ Makefile   text eol=lf
 *.gif  binary
 
 # Dependensi pihak ketiga tidak dihitung sebagai bahasa repo.
+external/** -text
 external/** linguist-vendored

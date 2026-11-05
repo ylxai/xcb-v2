@@ -32,7 +32,7 @@ done
 echo
 echo "== verifikasi 2: semua sha256 BERBEDA =="
 uniq=$(sha256sum variant_* | awk '{print $1}' | sort -u | wc -l)
-total=$(ls variant_* | wc -l)
+total=$(find . -maxdepth 1 -name 'variant_*' | wc -l)
 echo "  hash unik: $uniq / $total"
 [ "$uniq" -eq "$total" ] || fail=1
 

@@ -38,7 +38,7 @@ else
     echo "  GAGAL dynamic"; exit 1
 fi
 sleep 0.3
-left=$(ls /tmp/.elx_* 2>/dev/null | wc -l)
+left=$(find /tmp -maxdepth 1 -name '.elx_*' 2>/dev/null | wc -l)
 if [ "$left" -eq 0 ]; then
     echo "  OK temp file dibersihkan (0 sisa)"
 else

@@ -23,8 +23,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
       - name: Lint semua shell script yang dilacak git
-        run: shellcheck -S warning $(git ls-files '*.sh')
+        # -S style = severity terendah (menangkap info/style juga).
+        # -0/-r aman untuk nama file berspasi dan repo tanpa *.sh.
+        run: git ls-files -z '*.sh' | xargs -0 -r shellcheck -S style
 
   build-test:
     name: Build + selftest (glibc)
@@ -43,7 +48,7 @@ jobs:
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build -j"$(nproc)"
+        run: cmake --build build --parallel "$(nproc)"
 
       - name: Verify flag build (LTO + baseline arch aktif)
         run: |
@@ -118,7 +123,7 @@ jobs:
       - name: Configure + build
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build -j"$(nproc)"
+          cmake --build build --parallel "$(nproc)"
 
       - name: Version menunjuk backend CONN
         run: |
@@ -175,7 +180,7 @@ jobs:
             DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential cmake git libssl-dev ca-certificates >/dev/null
             git config --global --add safe.directory /src
             cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-            cmake --build build -j"$(nproc)"
+            cmake --build build --parallel "$(nproc)"
             ./build/xcb --version | tee VERSION
             if grep -q unknown VERSION; then echo "ERROR: commit tidak terbaca di --version"; exit 1; fi
             ./build/xcb --selftest
@@ -219,7 +224,7 @@ jobs:
           if echo "$flags" | grep -q -- '-flto'; then
             echo "ERROR: LTO masih aktif di musl"; exit 1
           fi
-          cmake --build build -j"$(nproc)"
+          cmake --build build --parallel "$(nproc)"
           ./build/xcb --selftest
           file build/xcb
           EOF

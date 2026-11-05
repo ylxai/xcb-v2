@@ -18,7 +18,7 @@
 ./build.sh
 ./build/xcb --selftest
 (cd build && ctest --output-on-failure)
-shellcheck -S warning $(git ls-files '*.sh')
+git ls-files -z '*.sh' | xargs -0 -r shellcheck -S style
 ```
 
 ## Risiko & rollback

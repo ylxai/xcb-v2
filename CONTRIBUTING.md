@@ -21,7 +21,7 @@ repo ini supaya perubahan mudah ditinjau dan tidak merusak build/deploy.
 Untuk perubahan yang menyentuh deploy, uji juga:
 
 ```bash
-shellcheck -S warning $(git ls-files '*.sh')
+git ls-files -z '*.sh' | xargs -0 -r shellcheck -S style
 ```
 
 Artefak deploy fleet **wajib dibangun di Ubuntu 22.04** (glibc 2.35). Jangan

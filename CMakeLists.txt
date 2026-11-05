@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.12)
 option(NO_LTO "Disable LTO (musl alpine workaround)" OFF)
 option(ENABLE_SELF_DEFENSE "Aktifkan proteksi diri: anti-debugging (deteksi ptrace, dumpable=0, ptrace lock) + title spoof" OFF)
 

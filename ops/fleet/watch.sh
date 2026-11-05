@@ -106,8 +106,10 @@ resolve_hosts() {
             [ -f "$f" ] && { HOSTS_FILE="$f"; break; }
         done
     fi
-    [ -n "$HOSTS_FILE" ] && [ -f "$HOSTS_FILE" ] ||
-        { echo "hosts file tidak ditemukan; buat ~/.config/xcb/fleet.hosts (lihat hosts.conf.example)" >&2; exit 2; }
+    if [ -z "$HOSTS_FILE" ] || [ ! -f "$HOSTS_FILE" ]; then
+        echo "hosts file tidak ditemukan; buat ~/.config/xcb/fleet.hosts (lihat hosts.conf.example)" >&2
+        exit 2
+    fi
     mapfile -t HOSTS < <(grep -vE '^[[:space:]]*(#|$)' "$HOSTS_FILE")
     [ ${#HOSTS[@]} -gt 0 ] || { echo "hosts file kosong: $HOSTS_FILE" >&2; exit 2; }
     # Nama host juga menjadi nama file state; duplikat akan saling menabrak
@@ -122,6 +124,7 @@ resolve_hosts() {
     done
 }
 
+# shellcheck disable=SC2016  # PROBE sengaja single-quote: diekspansi di host remote
 PROBE='
 svc=$(systemctl is-active syscached 2>&1)
 hp_free=$(awk "/HugePages_Free/{print \$2}" /proc/meminfo)
