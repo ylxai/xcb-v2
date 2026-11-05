@@ -523,6 +523,10 @@ struct ConnMiner::Impl {
             // pool tetap menerima share lain untuk job yang sama sampai job baru
             // dikirim. Menandai done membuat semua worker berhenti dan hashrate
             // jatuh ke 0 sampai blok berikutnya.
+            //
+            // Saat reconnect belum ada sesi yang bisa menerima share; job lama
+            // pasti ditolak pool baru, jadi jangan dihitung sebagai rejected.
+            if (!pool || !pool->alive()) return;
             std::lock_guard<std::mutex> lock(poolSendMu);
             std::string err;
             if (!pool || !pool->submit(w->poolJob, nonce, hash, err)) {

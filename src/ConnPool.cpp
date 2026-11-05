@@ -64,6 +64,12 @@ ConnPool::ConnPool(std::string host, int port, std::string wallet, std::string w
 ConnPool::~ConnPool() { close(); }
 
 void ConnPool::close() {
+    std::lock_guard<std::mutex> lock(m_ioMu);
+    closeLocked();
+}
+
+void ConnPool::closeLocked() {
+    m_ready = false;
     if (m_ssl) {
         SSL_shutdown(static_cast<SSL*>(m_ssl));
         SSL_free(static_cast<SSL*>(m_ssl));
@@ -206,17 +212,27 @@ bool ConnPool::connectAndLogin(ConnPoolJob& first, std::string& err) {
         zero.tv_sec = 0;
         zero.tv_usec = 0;
         ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &zero, sizeof(zero));
-        m_ctx = ctx;
-        m_ssl = ssl;
+        {
+            std::lock_guard<std::mutex> lock(m_ioMu);
+            m_ctx = ctx;
+            m_ssl = ssl;
+        }
     }
-    m_fd = fd;
+    {
+        std::lock_guard<std::mutex> lock(m_ioMu);
+        m_fd = fd;
+    }
 
     // --- login ---
     const std::string who = m_worker.empty() ? m_wallet : (m_wallet + "." + m_worker);
-    const std::string login = "{\"id\":" + std::to_string(m_msgId++) +
-                              ",\"jsonrpc\":\"2.0\",\"method\":\"login\",\"params\":{"
-                              "\"login\":\"" + who + "\",\"pass\":\"x\",\"agent\":"
-                              "\"xcb-v2/1.0\",\"algo\":[\"rx/2b\"]}}";
+    std::string login;
+    {
+        std::lock_guard<std::mutex> lock(m_ioMu);
+        login = "{\"id\":" + std::to_string(m_msgId++) +
+                ",\"jsonrpc\":\"2.0\",\"method\":\"login\",\"params\":{"
+                "\"login\":\"" + who + "\",\"pass\":\"x\",\"agent\":"
+                "\"xcb-v2/1.0\",\"algo\":[\"rx/2b\"]}}";
+    }
     if (!sendLine(login, err)) return false;
 
     // Tunggu respons login (punya "result" berisi job).
@@ -240,13 +256,23 @@ bool ConnPool::connectAndLogin(ConnPoolJob& first, std::string& err) {
             std::string id;
             if (result->getStr("id", id)) m_loginId = id;
         }
-        return parseJobJson(line, first, err);
+        if (!parseJobJson(line, first, err)) return false;
+        {
+            std::lock_guard<std::mutex> lock(m_ioMu);
+            m_ready = true;
+        }
+        return true;
     }
     err = "login: tidak ada job dalam respons";
     return false;
 }
 
 bool ConnPool::sendLine(const std::string& line, std::string& err) {
+    std::lock_guard<std::mutex> lock(m_ioMu);
+    return sendLineLocked(line, err);
+}
+
+bool ConnPool::sendLineLocked(const std::string& line, std::string& err) {
     const std::string payload = line + "\n";
     if (m_ssl) {
         size_t off = 0;
@@ -297,20 +323,17 @@ bool ConnPool::recvLine(std::string& line, int timeoutMs, std::string& err) {
             }
             waitMs = static_cast<int>(left);
         }
-        if (!m_ssl) {
-            struct pollfd pfd = {m_fd, POLLIN, 0};
-            const int pr = ::poll(&pfd, 1, waitMs);
-            if (pr == 0) {
-                err = "timeout";
-                return false;
-            }
-            if (pr < 0) {
-                if (errno == EINTR) continue;
-                err = "poll gagal";
-                return false;
-            }
-        } else if (SSL_pending(static_cast<SSL*>(m_ssl)) == 0) {
-            struct pollfd pfd = {m_fd, POLLIN, 0};
+        // Menunggu data tidak perlu lock: hanya poolLoop yang membaca, dan
+        // menahan m_ioMu selama poll akan memblokir submit sampai timeout.
+        int fd;
+        bool pending = false;
+        {
+            std::lock_guard<std::mutex> lock(m_ioMu);
+            fd = m_fd;
+            pending = m_ssl && SSL_pending(static_cast<SSL*>(m_ssl)) > 0;
+        }
+        if (!pending) {
+            struct pollfd pfd = {fd, POLLIN, 0};
             const int pr = ::poll(&pfd, 1, waitMs);
             if (pr == 0) {
                 err = "timeout";
@@ -324,22 +347,26 @@ bool ConnPool::recvLine(std::string& line, int timeoutMs, std::string& err) {
         }
 
         char buf[8192];
-        int n;
-        if (m_ssl) {
-            n = SSL_read(static_cast<SSL*>(m_ssl), buf, sizeof(buf) - 1);
-            if (n <= 0) {
-                const int e = SSL_get_error(static_cast<SSL*>(m_ssl), n);
-                if (e == SSL_ERROR_WANT_READ) continue;
-                err = "SSL_read EOF/error";
-                return false;
+        int n = 0;
+        {
+            std::lock_guard<std::mutex> lock(m_ioMu);
+            if (m_ssl) {
+                const int r = SSL_read(static_cast<SSL*>(m_ssl), buf, sizeof(buf) - 1);
+                if (r <= 0) {
+                    const int e = SSL_get_error(static_cast<SSL*>(m_ssl), r);
+                    if (e == SSL_ERROR_WANT_READ) continue;
+                    err = "SSL_read EOF/error";
+                    return false;
+                }
+                n = r;
+            } else {
+                const ssize_t r = ::recv(m_fd, buf, sizeof(buf) - 1, 0);
+                if (r <= 0) {
+                    err = "recv EOF";
+                    return false;
+                }
+                n = static_cast<int>(r);
             }
-        } else {
-            const ssize_t r = ::recv(m_fd, buf, sizeof(buf) - 1, 0);
-            if (r <= 0) {
-                err = "recv EOF";
-                return false;
-            }
-            n = static_cast<int>(r);
         }
         buf[n] = '\0';
         if (m_buf.size() + static_cast<size_t>(n) > (1u << 20)) m_buf.clear();
@@ -447,7 +474,8 @@ ConnPool::Event ConnPool::poll(ConnPoolJob& job, int timeoutMs, std::string& det
 
 bool ConnPool::submit(const ConnPoolJob& job, uint32_t nonce, const uint8_t hash[32],
                       std::string& err) {
-    if (!m_ssl && m_fd < 0) {
+    std::lock_guard<std::mutex> lock(m_ioMu);
+    if (!m_ready) {
         err = "tidak terkoneksi";
         return false;
     }
@@ -462,5 +490,5 @@ bool ConnPool::submit(const ConnPoolJob& job, uint32_t nonce, const uint8_t hash
                             "\",\"nonce\":\"" + nonceHex + "\",\"result\":\"" + resultHex +
                             "\",\"algo\":\"" + (job.algo.empty() ? "rx/2b" : job.algo) +
                             "\"}}";
-    return sendLine(msg, err);
+    return sendLineLocked(msg, err);
 }
