@@ -36,7 +36,7 @@ memakai binary hasil build host 24.04 untuk worker 22.04 — lihat
 1. Buat branch dari `main` dengan nama yang menjelaskan perubahan:
    `feat/...`, `fix/...`, `ops/...`, atau `chore/...`.
 2. Jangan push langsung ke `main`. Semua perubahan lewat pull request.
-3. Pastikan CI hijau: glibc, CONN, Alpine/musl, Docker, artefak 22.04, dan
+3. Pastikan CI hijau: glibc, CONN, Alpine/musl, artefak 22.04, dan
    ShellCheck.
 4. Isi template PR: ringkasan, verifikasi, risiko, dan rollback.
 5. Merge dilakukan setelah review; branch yang sudah merged boleh dihapus.
@@ -59,7 +59,7 @@ memakai binary hasil build host 24.04 untuk worker 22.04 — lihat
 | `ops/fleet/` | deploy, rollback, monitoring fleet |
 | `ops/instabox/` | kontrol sandbox instabox |
 | `ops/systemd/` | unit systemd + contoh environment |
-| `k8s/`, `docs/` | contoh deployment & screenshot |
+| `docs/` | handoff repo & screenshot dashboard |
 
 ## Lisensi
 

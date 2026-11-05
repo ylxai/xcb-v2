@@ -3,7 +3,7 @@
 Dokumen ini merangkum kondisi repo, keputusan operasional, dan pekerjaan yang
 masih terbuka. Ini bukan pengganti `README.md`; baca juga:
 
-- [`README.md`](../README.md) — fitur miner, build, Docker, k8s.
+- [`README.md`](../README.md) — fitur miner, build, dan deploy.
 - [`CONTRIBUTING.md`](../CONTRIBUTING.md) — alur branch/PR dan gaya commit.
 - [`ops/fleet/README.md`](../ops/fleet/README.md) — deploy, rollback, monitoring.
 - [`ops/systemd/README.md`](../ops/systemd/README.md) — unit systemd + environment.
@@ -18,7 +18,7 @@ masih terbuka. Ini bukan pengganti `README.md`; baca juga:
 | Item | Kondisi |
 |---|---|
 | `main` lokal | `55f7207`, sinkron dengan `origin/main` |
-| CI `main` | Semua job hijau: glibc, CONN, musl, Docker, artefak 22.04, ShellCheck |
+| CI `main` | Semua job hijau: glibc, CONN, musl, artefak 22.04, ShellCheck |
 | PR #7 | **MERGED** (`chore: rapikan struktur repo, CI, dan konvensi kontribusi`) |
 | PR terbuka | #8 dan #9 (Dependabot, bump GitHub Actions) |
 | Branch `chore/repo-hygiene` | Sudah dihapus (lokal, remote, dan di vps1) |
@@ -75,10 +75,6 @@ masih terbuka. Ini bukan pengganti `README.md`; baca juga:
     memahami perilaku ini.
   - Unit systemd memakai flag `-u/--worker/-t` eksplisit karena `WALLET` saja
     tidak mengaktifkan jalur env untuk backend CONN.
-- **Docker:** image tidak punya wallet default. `docker run` wajib
-  `-e WALLET=<alamat>`; `POOL` punya default di image.
-- **Kubernetes:** wallet dibaca dari Secret `xcb-wallet`; manifest tidak
-  menyimpan Secret. Lihat [`k8s/deployment.yaml`](../k8s/deployment.yaml).
 
 ---
 
@@ -128,8 +124,7 @@ Job CI yang harus hijau:
 2. `Build + selftest (glibc)`
 3. `Build + selftest (CONN / RandomX V2)`
 4. `Build + selftest (Alpine/musl)`
-5. `Docker image + selftest`
-6. `Build + artefak deploy (Ubuntu 22.04 / glibc 2.35)`
+5. `Build + artefak deploy (Ubuntu 22.04 / glibc 2.35)`
 
 ---
 
@@ -239,13 +234,9 @@ Tag yang ada: `v0.1`, `archive/vps1-2026-10-25`.
    alert di `~/.config/xcb/watch.env`; uji dengan `--test-alert`.
 4. **Release pipeline.** Belum ada build tag + checksum + retensi artefak
    panjang. Artefak CI saat ini hanya disimpan 14 hari.
-5. **Docker image multi-arch (opsional).** CI saat ini hanya build satu
-   arsitektur, sedangkan komentar di `k8s/deployment.yaml` menyebut Docker Hub
-   multi-arch. Kalau multi-arch memang dibutuhkan, tambahkan
-   `docker/build-push-action`/buildx; kalau tidak, perbaiki komentar tersebut.
-6. **Housekeeping branch.** Hapus branch remote yang sudah merged/abandoned
+5. **Housekeeping branch.** Hapus branch remote yang sudah merged/abandoned
    setelah dipastikan tidak ada Trail yang masih membutuhkannya.
-7. **Entire checkpoint pertama.** Jika checkpoint ingin dipakai, mulai sesi
+6. **Entire checkpoint pertama.** Jika checkpoint ingin dipakai, mulai sesi
    OpenCode dari root repo, lakukan commit nyata, lalu tinjau checkpoint sebelum
    push (ingat repo publik).
 

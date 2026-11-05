@@ -7,7 +7,7 @@
 // - Timestamps, level filtering, optional ANSI colors.
 // - LOG_LEVEL  = debug | info | warn | error   (default: info)
 // - LOG_FORMAT = text | json                   (default: text; json => one
-//                JSON object per line, handy for docker/CI monitoring)
+//                JSON object per line, handy for CI monitoring)
 // - NO_COLOR=1 disables ANSI colors (auto-disabled when not a tty).
 
 namespace lg {

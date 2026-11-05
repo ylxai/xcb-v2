@@ -51,7 +51,7 @@ public:
     // Isi fullMem/largePages dari kondisi host untuk field yang masih "auto".
     static void autoDetect(MinerConfig& cfg);
     // CPU yang benar-benar boleh dipakai proses ini (sched_getaffinity), bukan
-    // semua CPU online. Di cpuset (docker --cpuset-cpus, k8s cpu pinning)
+    // semua CPU online. Di cpuset (cpuset / container CPU pinning)
     // _SC_NPROCESSORS_ONLN ikut menghitung CPU yang terlarang, sehingga
     // thread dibuat berlebih dan pinning-nya gagal dengan EINVAL.
     static std::vector<int> usableCpus();
