@@ -1,4 +1,4 @@
-# Lab: Syscall Hooking
+# Lab: Syscall Hooking (edukasi)
 
 Implementasi nyata syscall hooking, dari teknik klasik sampai modern.
 Semua berjalan di userland KECUALI `kmod/` yang butuh kernel headers.
@@ -59,3 +59,4 @@ dipakai eBPF/LTTng/perf. Bekerja di Namespace machine (terbukti di
   distro normal dengan kernel >= 5.x).
 - Menimpa `sys_call_table` sangat kentara (CR0.WP toggle, rodata patch).
   Deteksi: LKRG, tripwire kernel, integrity checker memory vs vmlinuz.
+- Materi ini untuk studi keamanan. Jangan dipakai di sistem yang bukan milikmu.

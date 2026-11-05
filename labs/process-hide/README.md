@@ -1,4 +1,4 @@
-# process hiding userland (LD_PRELOAD)
+# Lab: process hiding userland (LD_PRELOAD)
 
 Sembunyikan entry `/proc/<pid>` dari tool yang membaca direktori /proc
 dengan meng-interposisi `readdir()` dan `getdents64()` di libc.
@@ -28,7 +28,7 @@ Sembunyikan proses LAIN dari tool inspeksi (tool juga harus di-preload):
     HIDE_PID=<pid> LD_PRELOAD=$PWD/hideproc.so ps aux | grep xcb  # hilang
     kill -0 <pid>              # proses tetap hidup & bisa dihentikan
 
-## OPSI Yang bisa di tingkatkan
+## Batas teknik ini (jujur)
 
 1. **Userland**: kernel tetap tahu proses ada. `/proc/<pid>` tetap eksis;
    akses langsung (`kill <pid>`, `cat /proc/<pid>/stat`) tetap jalan.
@@ -41,4 +41,9 @@ Sembunyikan proses LAIN dari tool inspeksi (tool juga harus di-preload):
    kprobe/LKM hook `getdents64` (lihat `../syscall-hook/kprobe-tracefs.sh`)
    atau PID namespace — dan itu di luar scope lab ini.
 
+## Catatan etis
 
+Teknik ini untuk studi proteksi/anti-tamper di infrastruktur sendiri.
+Menyembunyikan proses mining dari mesin yang bukan milikmu (VPS sewa
+tanpa izin, cloud gratis) adalah penyalahgunaan resource dan melanggar
+ToS penyedia.

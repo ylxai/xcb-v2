@@ -1,0 +1,5 @@
+hello_static
+hello_dyn
+packed_*
+xcb_packed
+*.o

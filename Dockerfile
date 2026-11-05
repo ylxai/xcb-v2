@@ -39,6 +39,7 @@ WORKDIR /miner
 
 # Copy binary from builder
 COPY --from=builder /build/build/xcb .
+COPY --from=builder /build/build/external/randomx-v2/librandomx_v2.so .
 
 # Fallback config (multi-server failover) kalau env vars di-unset
 COPY pool.cfg /etc/syscache/pool.cfg

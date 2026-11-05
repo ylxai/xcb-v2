@@ -4,6 +4,18 @@ option(ENABLE_SELF_DEFENSE "Aktifkan proteksi diri: anti-debugging (deteksi ptra
 
 project(xcb VERSION 1.0.0 LANGUAGES CXX C ASM)
 
+# Versi + commit untuk --version. Di Docker build tanpa .git, fallback "unknown".
+execute_process(
+    COMMAND git rev-parse --short HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE XCB_GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT XCB_GIT_COMMIT)
+    set(XCB_GIT_COMMIT "unknown")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -46,6 +58,14 @@ add_subdirectory(external/RandomY EXCLUDE_FROM_ALL)
 include_directories(external/RandomY/src)
 
 # ============================================================
+# RandomX V2 (ConnectCoin) — vendor dari connectcoincrypto/connectcoin
+# (src/randomx). "V2" = program VM 384 instruksi, bukan RandomX standar.
+# Simbol library di-prefix rxv2_ (prefix_symbols.sh) supaya tidak bentrok
+# dengan RandomY yang mengekspor nama randomx_* yang sama.
+# ============================================================
+add_subdirectory(external/randomx-v2 EXCLUDE_FROM_ALL)
+
+# ============================================================
 # FTXUI - terminal TUI library (dashboard, dari submodule)
 # ============================================================
 set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -72,6 +92,10 @@ set(MINER_SOURCES
     src/main.cpp
     src/StratumClient.cpp
     src/Miner.cpp
+    src/ConnRpc.cpp
+    src/ConnPool.cpp
+    src/ConnMiner.cpp
+    src/Hashing/RandomXV2.cpp
     src/Config.cpp
     src/Log.cpp
     src/Stats.cpp
@@ -83,6 +107,10 @@ set(MINER_SOURCES
 set(MINER_HEADERS
     src/StratumClient.hpp
     src/Miner.hpp
+    src/ConnRpc.hpp
+    src/ConnPool.hpp
+    src/ConnMiner.hpp
+    src/Hashing/RandomXV2.hpp
     src/Config.hpp
     src/Log.hpp
     src/Stats.hpp
@@ -105,9 +133,19 @@ endif()
 # ============================================================
 add_executable(xcb ${MINER_SOURCES} ${MINER_HEADERS})
 
+# Runtime butuh librandomx_v2.so di direktori yang sama (RPATH $ORIGIN).
+# Salin ke samping binary supaya tes langsung dari build/ jalan tanpa
+# mengubah LD_LIBRARY_PATH; cmake --install tetap memasang keduanya di bin/.
+add_custom_command(TARGET xcb POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:randomx_v2> $<TARGET_FILE_DIR:xcb>
+    COMMENT "Copy librandomx_v2.so ke samping xcb"
+)
+
 target_link_libraries(xcb
     PRIVATE
-        randomx               # RandomY library
+        randomx               # RandomY library (Core Coin XCB)
+        randomx_v2            # RandomX V2 (ConnectCoin) — simbol rxv2_
         ftxui::ftxui          # FTXUI dashboard (TUI)
         Threads::Threads      # find_package(Threads) di atas — bukan -lpthread literal
         OpenSSL::SSL
@@ -145,6 +183,16 @@ target_link_options(xcb PRIVATE
 )
 
 install(TARGETS xcb DESTINATION bin)
+# librandomx_v2.so harus di direktori yang sama dengan xcb (RPATH $ORIGIN).
+install(TARGETS randomx_v2 LIBRARY DESTINATION bin)
+# Deploy: librandomx_v2.so diletakkan di samping biner.
+set_target_properties(xcb PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
+
+target_compile_definitions(xcb PRIVATE
+    XCB_VERSION="${PROJECT_VERSION}"
+    XCB_GIT_COMMIT="${XCB_GIT_COMMIT}"
+    XCB_WITH_CONN=1
+)
 
 if(ENABLE_SELF_DEFENSE)
     target_compile_definitions(xcb PRIVATE XCB_SELF_DEFENSE)
