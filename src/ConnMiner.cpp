@@ -527,6 +527,17 @@ struct ConnMiner::Impl {
             // Saat reconnect belum ada sesi yang bisa menerima share; job lama
             // pasti ditolak pool baru, jadi jangan dihitung sebagai rejected.
             if (!pool || !pool->alive()) return;
+            // Job bisa sudah berganti saat worker masih memakai Work lama:
+            // pemeriksaan generasi hanya tiap 256 hash. rplant menjawab share
+            // dengan job_id lama sebagai [21, "stale share"], jadi kirimannya
+            // pasti sia-sia — hitung stale, jangan kirim.
+            {
+                std::lock_guard<std::mutex> lock(mu);
+                if (!snap.work || snap.work->poolJob.id != w->poolJob.id) {
+                    stale.fetch_add(1);
+                    return;
+                }
+            }
             std::lock_guard<std::mutex> lock(poolSendMu);
             std::string err;
             if (!pool || !pool->submit(w->poolJob, nonce, hash, err)) {
