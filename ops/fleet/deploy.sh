@@ -30,6 +30,7 @@ DRY=0
 EXPECT=""
 DO_ROLLBACK=0
 ROLLBACK_STAMP=""
+REMOTE_DIR=""
 
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 die() { log "FATAL: $*" >&2; exit 1; }
@@ -160,30 +161,47 @@ ssh_run() {
 }
 
 stage() {
-    local addr=$1 dir=/tmp/xcb-fleet
+    local addr=$1
+    # mktemp -d: direktori staging tidak boleh punya nama tetap di /tmp yang
+    # bisa ditulisi siapa saja (symlink/hijack). Path-nya disimpan di
+    # REMOTE_DIR dan dipakai run_apply().
     if [ "$addr" = local ]; then
-        rm -rf "$dir" && mkdir -p "$dir"
-        cp apply.sh "$dir/"
-        [ "$DO_ROLLBACK" = 1 ] || cp "$FROM/xcb" "$FROM/librandomx_v2.so" "$dir/"
+        REMOTE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/xcb-fleet.XXXXXX") || return 1
+        cp apply.sh "$REMOTE_DIR/" || return 1
+        if [ "$DO_ROLLBACK" != 1 ]; then
+            cp "$FROM/xcb" "$FROM/librandomx_v2.so" "$REMOTE_DIR/" || return 1
+        fi
         return 0
     fi
-    ssh_run "$addr" "rm -rf $dir && mkdir -p $dir" || return 1
+    REMOTE_DIR=$(ssh_run "$addr" 'mktemp -d /tmp/xcb-fleet.XXXXXX') || return 1
+    [ -n "$REMOTE_DIR" ] || { log "$addr: mktemp tidak mengembalikan path"; return 1; }
     if [ "$DO_ROLLBACK" = 1 ]; then
-        scp -q -o BatchMode=yes -i "$SSH_KEY" apply.sh "$SSH_USER@$addr:$dir/" || return 1
+        scp -q -o BatchMode=yes -i "$SSH_KEY" apply.sh "$SSH_USER@$addr:$REMOTE_DIR/" || return 1
         return 0
     fi
     scp -q -o BatchMode=yes -i "$SSH_KEY" \
-        "$FROM/xcb" "$FROM/librandomx_v2.so" apply.sh "$SSH_USER@$addr:$dir/" || return 1
+        "$FROM/xcb" "$FROM/librandomx_v2.so" apply.sh "$SSH_USER@$addr:$REMOTE_DIR/" || return 1
     local rsha
-    rsha=$(ssh_run "$addr" "sha256sum $dir/xcb" | awk '{print $1}')
+    rsha=$(ssh_run "$addr" "sha256sum '$REMOTE_DIR/xcb'" | awk '{print $1}')
     [ "$rsha" = "$SHA_XCB" ] || { log "$addr: checksum xcb beda setelah scp"; return 1; }
     return 0
+}
+
+cleanup_stage() {
+    local addr=$1
+    [ -n "$REMOTE_DIR" ] || return 0
+    if [ "$addr" = local ]; then
+        rm -rf "$REMOTE_DIR"
+    else
+        ssh_run "$addr" "rm -rf '$REMOTE_DIR'" || true
+    fi
+    REMOTE_DIR=""
 }
 
 run_apply() {
     local addr=$1 cmd a
     shift
-    printf -v cmd 'SVC=%q WAIT_S=%q bash /tmp/xcb-fleet/apply.sh' "$SVC" "$WAIT_S"
+    printf -v cmd 'SVC=%q WAIT_S=%q bash %q' "$SVC" "$WAIT_S" "$REMOTE_DIR/apply.sh"
     for a in "$@"; do printf -v cmd '%s %q' "$cmd" "$a"; done
     if [ "$addr" = local ]; then
         bash -c "$cmd"
@@ -199,9 +217,14 @@ deploy_one() {
         return 0
     fi
     stage "$addr" || { log "$name: gagal menyiapkan file di host"; return 1; }
-    out=$(run_apply "$addr" install "$stamp" /tmp/xcb-fleet "$EXPECT" 2>&1)
+    out=$(run_apply "$addr" install "$stamp" "$REMOTE_DIR" "$EXPECT" 2>&1)
     printf '%s\n' "$out" | sed 's/^/  /'
-    printf '%s' "$out" | grep -q 'HASIL=OK'
+    if printf '%s' "$out" | grep -q 'HASIL=OK'; then
+        cleanup_stage "$addr"
+        return 0
+    fi
+    log "$name: staging ditinggal di $REMOTE_DIR untuk inspeksi"
+    return 1
 }
 
 rollback_one() {
@@ -213,7 +236,12 @@ rollback_one() {
     stage "$addr" || { log "$name: gagal menyiapkan file di host"; return 1; }
     out=$(run_apply "$addr" rollback "$ROLLBACK_STAMP" 2>&1)
     printf '%s\n' "$out" | sed 's/^/  /'
-    printf '%s' "$out" | grep -q 'svc=active'
+    if printf '%s' "$out" | grep -q 'svc=active'; then
+        cleanup_stage "$addr"
+        return 0
+    fi
+    log "$name: staging ditinggal di $REMOTE_DIR untuk inspeksi"
+    return 1
 }
 
 resolve_hosts
