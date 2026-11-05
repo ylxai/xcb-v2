@@ -6,12 +6,14 @@
 #   ./watch.sh --test-alert    # kirim satu pesan uji
 #
 # Alert channel (pilih salah satu / keduanya):
-#   ALERT_WEBHOOK           URL yang menerima JSON {"text": "..."} (Slack/Discord)
+#   ALERT_WEBHOOK           URL webhook (Discord memakai "content", Slack
+#                           memakai "text"; keduanya dikirim)
 #   ALERT_TELEGRAM_TOKEN    token bot Telegram
 #   ALERT_TELEGRAM_CHAT     chat_id tujuan
 #
-# Env lain: MIN_HR (default 400), MAX_REJECT_PCT (5), RECONNECT_LIMIT (3),
-#           ALERT_COOLDOWN (1800 detik), STATE_DIR (~/.local/state/xcb-watch).
+# Env lain: MIN_HR (default 400), MAX_REJECT_PCT (5), REJECT_MIN_DELTA (20),
+#           RECONNECT_LIMIT (3), ALERT_COOLDOWN (1800 detik),
+#           STATE_DIR (~/.local/state/xcb-watch).
 # Konfigurasi dibaca dari ~/.config/xcb/watch.env kalau ada.
 set -uo pipefail
 cd "$(dirname "$0")" || exit 1
@@ -25,6 +27,7 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_rsa}"
 HOSTS_FILE="${HOSTS_FILE:-}"
 MIN_HR="${MIN_HR:-400}"
 MAX_REJECT_PCT="${MAX_REJECT_PCT:-5}"
+REJECT_MIN_DELTA="${REJECT_MIN_DELTA:-20}"
 RECONNECT_LIMIT="${RECONNECT_LIMIT:-3}"
 ALERT_COOLDOWN="${ALERT_COOLDOWN:-1800}"
 STATE_DIR="${STATE_DIR:-$HOME/.local/state/xcb-watch}"
@@ -69,8 +72,12 @@ send_alert() {
         return 0
     fi
     if [ -n "${ALERT_WEBHOOK:-}" ]; then
+        # Discord membaca field "content", Slack membaca "text".
+        # Kirim keduanya supaya satu webhook generik cocok untuk dua-duanya.
+        local esc
+        esc=$(json_escape "$msg")
         if curl -fsS -m 10 -H 'Content-Type: application/json' \
-             --data "{\"text\":\"$(json_escape "$msg")\"}" "$ALERT_WEBHOOK" >/dev/null; then
+             --data "{\"content\":\"$esc\",\"text\":\"$esc\"}" "$ALERT_WEBHOOK" >/dev/null; then
             sent=1
         else
             echo "PERINGATAN: kirim ke ALERT_WEBHOOK gagal" >&2
@@ -84,7 +91,13 @@ send_alert() {
             echo "PERINGATAN: kirim ke Telegram gagal" >&2
         fi
     fi
-    [ "$sent" = 1 ] || echo "PERINGATAN: tidak ada channel alert (set ALERT_WEBHOOK atau ALERT_TELEGRAM_*)" >&2
+    # Kembalikan nonzero kalau tidak ada channel yang berhasil menerima, supaya
+    # pemanggil tidak menandai alert sebagai sudah terkirim.
+    if [ "$sent" = 1 ]; then
+        return 0
+    fi
+    echo "PERINGATAN: tidak ada channel alert yang berhasil menerima (set ALERT_WEBHOOK atau ALERT_TELEGRAM_*)" >&2
+    return 1
 }
 
 resolve_hosts() {
@@ -97,6 +110,16 @@ resolve_hosts() {
         { echo "hosts file tidak ditemukan; buat ~/.config/xcb/fleet.hosts (lihat hosts.conf.example)" >&2; exit 2; }
     mapfile -t HOSTS < <(grep -vE '^[[:space:]]*(#|$)' "$HOSTS_FILE")
     [ ${#HOSTS[@]} -gt 0 ] || { echo "hosts file kosong: $HOSTS_FILE" >&2; exit 2; }
+    # Nama host juga menjadi nama file state; duplikat akan saling menabrak
+    # cooldown antar-host. Tolak sejak awal.
+    local line nm seen=""
+    for line in "${HOSTS[@]}"; do
+        nm="${line%%=*}"
+        case " $seen " in
+            *" $nm "*) echo "nama host duplikat di $HOSTS_FILE: $nm" >&2; exit 2 ;;
+        esac
+        seen="$seen $nm"
+    done
 }
 
 PROBE='
@@ -128,8 +151,10 @@ val() {
 resolve_hosts
 
 if [ "$TEST_ALERT" = 1 ]; then
-    send_alert "xcb watch: pesan uji dari $(hostname) pada $(date '+%F %T')"
-    exit $?
+    if send_alert "xcb watch: pesan uji dari $(hostname) pada $(date '+%F %T')"; then
+        exit 0
+    fi
+    exit 1
 fi
 
 mkdir -p "$STATE_DIR"
@@ -163,6 +188,10 @@ regular=0"
     problems=()
     hr_num=""
     reject_pct=""
+    a=""
+    r=""
+    prev_a=""
+    prev_r=""
     if [ "$svc" != "active" ]; then
         problems+=("service=$svc")
     fi
@@ -173,11 +202,6 @@ regular=0"
         a=$(printf '%s' "$hr" | sed -nE 's/.*[| ]A ([0-9]+).*/\1/p' | head -1)
         r=$(printf '%s' "$hr" | sed -nE 's/.*[| ]R ([0-9]+).*/\1/p' | head -1)
         [ -n "$hr_num" ] && [ "$hr_num" -lt "$MIN_HR" ] && problems+=("HR ${hr_num} < ${MIN_HR}")
-        if [ -n "$a" ] && [ -n "$r" ] && [ $((a + r)) -ge 20 ]; then
-            reject_pct=$(( r * 100 / (a + r) ))
-            [ "$reject_pct" -gt "$MAX_REJECT_PCT" ] &&
-                problems+=("reject ${reject_pct}% (${r}/$((a + r)))")
-        fi
     fi
     [ "${tlsfail:-0}" -gt 0 ] && problems+=("TLS verifikasi gagal ${tlsfail}x/15m")
     [ "${reconn:-0}" -ge "$RECONNECT_LIMIT" ] && problems+=("reconnect ${reconn}x/15m")
@@ -191,6 +215,25 @@ regular=0"
         prev_status=${prev_status:-ok}
         prev_alert=$(sed -n 's/^alert=//p' "$sf" | tail -1)
         prev_alert=${prev_alert:-0}
+        prev_a=$(sed -n 's/^a=//p' "$sf" | tail -1)
+        prev_r=$(sed -n 's/^r=//p' "$sf" | tail -1)
+    fi
+
+    # Reject rate dihitung dari delta counter sejak run sebelumnya, bukan
+    # dari total seumur proses. Counter yang turun berarti miner restart,
+    # jadi jendelanya mulai dari counter saat ini.
+    if [ -n "$a" ] && [ -n "$r" ] && [ -n "$prev_a" ] && [ -n "$prev_r" ]; then
+        da=$((a - prev_a))
+        dr=$((r - prev_r))
+        if [ "$da" -lt 0 ] && [ "$dr" -lt 0 ]; then
+            da=$a
+            dr=$r
+        fi
+        if [ $((da + dr)) -ge "$REJECT_MIN_DELTA" ]; then
+            reject_pct=$(( dr * 100 / (da + dr) ))
+            [ "$reject_pct" -gt "$MAX_REJECT_PCT" ] &&
+                problems+=("reject ${reject_pct}% (${dr}/$((da + dr)) sejak cek sebelumnya)")
+        fi
     fi
 
     if [ ${#problems[@]} -gt 0 ]; then
@@ -200,20 +243,39 @@ regular=0"
             [ -n "$note" ] && note="$note; "
             note="$note$p"
         done
-        if [ "$prev_status" != "problem" ] || [ $((now - prev_alert)) -ge "$ALERT_COOLDOWN" ]; then
-            send_alert "🔴 ${name} (${addr}): ${note}"
-            prev_alert=$now
-        fi
         status=problem
+        if [ "$prev_status" != "problem" ] || [ $((now - prev_alert)) -ge "$ALERT_COOLDOWN" ]; then
+            # prev_alert hanya maju kalau operator benar-benar menerima pesan.
+            if [ "$DRY" = 1 ]; then
+                # tampilkan saja; cooldown tidak diubah pada mode dry-run
+                send_alert "🔴 ${name} (${addr}): ${note}"
+            elif send_alert "🔴 ${name} (${addr}): ${note}"; then
+                prev_alert=$now
+            else
+                # belum tersampaikan: run berikutnya langsung mencoba lagi
+                prev_alert=0
+            fi
+        fi
     else
         note="ok"
-        if [ "$prev_status" = "problem" ]; then
-            send_alert "🟢 ${name} (${addr}): pulih"
-        fi
         status=ok
-        prev_alert=0
+        if [ "$prev_status" = "problem" ]; then
+            if [ "$DRY" = 1 ]; then
+                send_alert "🟢 ${name} (${addr}): pulih"
+            elif send_alert "🟢 ${name} (${addr}): pulih"; then
+                prev_alert=0
+            else
+                # pesan pulih belum tersampaikan; status problem dipertahankan
+                status=problem
+                prev_alert=0
+            fi
+        else
+            prev_alert=0
+        fi
     fi
-    printf 'status=%s\nalert=%s\n' "$status" "$prev_alert" >"$sf"
+    if [ "$DRY" != 1 ]; then
+        printf 'status=%s\nalert=%s\na=%s\nr=%s\n' "$status" "$prev_alert" "${a:-}" "${r:-}" >"$sf"
+    fi
 
     printf "%-14s %-7s %-9s %-9s %-7s %-6s %s\n" \
         "$name" "$status" "${hr_num:-?}" "${reject_pct:-?}" "${reconn:-?}" "${hp_free:-?}" "$note"

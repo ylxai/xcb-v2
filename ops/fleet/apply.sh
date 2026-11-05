@@ -47,14 +47,13 @@ cmd_rollback() {
     binbak="${BIN}.bak-$stamp"
     libbak=$(lib_backup_for "$stamp")
     [ -f "$binbak" ] || die "backup $binbak tidak ada"
+    # Binary dan library adalah satu paket (RPATH $ORIGIN). Jangan pernah
+    # mengembalikan salah satunya saja: pasangan beda versi bisa gagal load.
+    [ -f "$libbak" ] || die "backup library $libbak tidak ada (rollback dibatalkan agar versi xcb dan library tetap sepasang)"
 
     sudo -n systemctl stop "$SVC" || true
     sudo -n install -m 755 "$binbak" "$BIN" || die "restore xcb gagal"
-    if [ -f "$libbak" ]; then
-        sudo -n install -m 644 "$libbak" "$LIB" || die "restore library gagal"
-    else
-        say "PERINGATAN: $libbak tidak ada, library lama dibiarkan"
-    fi
+    sudo -n install -m 644 "$libbak" "$LIB" || die "restore library gagal"
     sudo -n systemctl start "$SVC" || true
     sleep 2
     say "restored=$(basename "$binbak")"

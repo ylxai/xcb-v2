@@ -59,27 +59,34 @@ Cron tiap 5 menit:
 Konfigurasi `~/.config/xcb/watch.env` (lihat `watch.env.example`):
 
 ```sh
-ALERT_WEBHOOK="https://hooks.slack.com/services/..."
+ALERT_WEBHOOK="https://discord.com/api/webhooks/.../..."
 # atau Telegram:
 ALERT_TELEGRAM_TOKEN="123:abc"
 ALERT_TELEGRAM_CHAT="123456789"
 MIN_HR=400
 MAX_REJECT_PCT=5
+REJECT_MIN_DELTA=20
 RECONNECT_LIMIT=3
 ```
+
+Webhook menerima JSON `{"content": "...", "text": "..."}` — `content` untuk
+Discord, `text` untuk Slack.
 
 Yang dicek per host:
 
 - service `syscached` harus `active`;
 - ada log `HR` dalam 4 menit terakhir (mendeteksi miner hang);
 - HR di bawah `MIN_HR`;
-- reject rate di atas `MAX_REJECT_PCT` (minimal 20 share);
+- reject rate di atas `MAX_REJECT_PCT`, dihitung dari **delta counter A/R
+  sejak cek sebelumnya** (bukan total seumur proses), minimal
+  `REJECT_MIN_DELTA` share dalam jendela;
 - reconnect / login gagal lebih dari `RECONNECT_LIMIT` per 15 menit;
 - `TLS verifikasi gagal` (langsung alert);
 - fallback ke `regular pages` (hugepages tidak terpakai).
 
 Alert di-cooldown 30 menit per host, dan mengirim pesan "pulih" saat host
-kembali normal.
+kembali normal. Cooldown hanya maju bila pesan benar-benar terkirim;
+pengiriman yang gagal dicoba lagi pada run berikutnya.
 
 ## Troubleshooting
 
