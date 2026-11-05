@@ -462,6 +462,7 @@ xcb/
 │   └── systemd/             # unit systemd + contoh environment
 ├── labs/                    # Lab studi keamanan (rootkit, hook, packer)
 ├── docs/
+│   ├── HANDOFF.md           # Status repo & pekerjaan terbuka untuk agent berikutnya
 │   └── screenshots/         # Screenshot dashboard (README)
 ├── k8s/
 │   └── deployment.yaml      # Deployment contoh (wallet lewat Secret)
