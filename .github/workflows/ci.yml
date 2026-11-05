@@ -200,7 +200,13 @@ jobs:
           test -x dist/xcb
           test -f dist/librandomx_v2.so
           test -f dist/VERSION
+          # Manifest checksum per commit: deploy bisa memverifikasi isi artefak
+          # terhadap referensi ini, bukan menghitung ulang hash dari file yang
+          # sama lalu mencocokkannya dengan dirinya sendiri.
+          ( cd dist && sha256sum xcb librandomx_v2.so VERSION > SHA256SUMS )
+          test -f dist/SHA256SUMS
           ls -l dist
+          cat dist/SHA256SUMS
 
       - name: Upload artefak deploy
         uses: actions/upload-artifact@v7
