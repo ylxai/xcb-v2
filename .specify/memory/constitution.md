@@ -1,50 +1,73 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+# Konstitusi xcb
 
-## Core Principles
+## Prinsip Inti
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Integritas Wallet — Zero Dev Fee (NON-NEGOTIABLE)
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+Setiap hash yang dihitung miner harus masuk ke wallet yang dikonfigurasi pengguna. Tidak ada pengecualian.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+- Tidak boleh ada wallet default di binary, image Docker, atau manifest deploy. Tanpa `WALLET`, miner berhenti dengan `No wallet configured`.
+- Tidak boleh ada jalur kode yang mengalihkan share, mengganti alamat, atau memotong fee — tersembunyi maupun opsional.
+- Precedence konfigurasi tetap: **env vars > `pool.cfg` > flag CLI**. Mengubah urutan ini adalah perubahan breaking dan wajib lewat PR terpisah.
+- `pool.cfg` di repo memakai `wallet=` kosong; jangan pernah mengisinya dengan alamat nyata.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### II. Verifikasi Sebelum Dipercaya
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+Klaim "sudah benar" hanya sah kalau dibuktikan gate yang ada.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+- `./build/xcb --selftest` wajib lolos dan memverifikasi implementasi hashing (SHA3-512/keccak) sebelum mining.
+- `ctest --output-on-failure` wajib hijau.
+- Perubahan pada jalur hashing (`RandomY`, `external/randomx-v2`, `Sha3_512`, `Submitter`) wajib disertai bukti selftest dan benchmark smoke yang benar-benar menghitung hash.
+- Selftest harus tetap jalan dari direktori mana pun, termasuk tanpa `pool.cfg`.
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+### III. Build Portabel dan Dapat Direproduksi
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+- C++17, CMake ≥ 3.12, OpenSSL, pthread. Menaikkan standar bahasa butuh PR khusus.
+- Dua target libc wajib tetap build: glibc dan musl/Alpine. Di musl, LTO dimatikan otomatis.
+- Release glibc wajib memakai LTO dan baseline `-march=x86-64-v3`.
+- Artefak deploy wajib dibangun di Ubuntu 22.04 (glibc 2.35). Binary hasil host 24.04 tidak boleh dipakai di worker 22.04.
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+### IV. Gagal Keras, Jangan Diam
+
+- Deteksi otomatis hugepages/RAM harus memilih mode aman (`FULL_MEM=0`, `LARGE_PAGES=0`), bukan gagal alokasi.
+- Proses tidak boleh keluar dengan status 0 tanpa pernah menghitung satu hash.
+- Error konfigurasi, pool, dan kripto harus muncul eksplisit di log/stderr dengan konteks yang cukup untuk didiagnosis.
+
+### V. Dependensi Minimal
+
+- Dependensi eksternal hanya: RandomY (submodule), RandomX V2 (vendored), FTXUI (submodule), OpenSSL.
+- Menambah dependency baru wajib dijelaskan di PR: apa yang tidak bisa dicapai dengan yang sudah ada.
+- Kode runtime masuk `src/`; `labs/` adalah lab studi keamanan dan bukan bagian runtime.
+
+### VI. Keamanan dan Kebersihan Secret
+
+- Jangan commit secret, token, wallet, alamat host internal, SSH key, atau config lokal (`~/.config/xcb/`, `/etc/xcb/miner.env`).
+- `AGENTS.md` adalah file lokal: jangan di-commit, jangan dihapus.
+- Workflow CI memakai least privilege (`permissions: contents: read`); jangan menaikkannya tanpa alasan.
+- `ENABLE_SELF_DEFENSE` OFF secara default dan tidak boleh aktif diam-diam.
+
+## Batasan Teknis
+
+- Target: Linux x86_64 dengan AES-NI + AVX2, atau aarch64 dengan crypto extensions.
+- Satu binary, dua backend: `randomy` (XCB, default) dan `conn` (ConnectCoin, RandomX V2). Simbol RandomX V2 di-prefix `rxv2_` agar tidak bentrok dengan RandomY.
+- Mode memori: light (~256MB) dan full (~264MB); pilihan otomatis dari RAM tersedia / cgroup limit.
+- Dashboard TUI (FTXUI) tidak boleh menjadi ketergantungan wajib untuk mode headless.
+
+## Alur Kerja dan Quality Gate
+
+- Jangan push langsung ke `main`. Branch dari `main`, buka PR, tunggu CI hijau.
+- Nama branch: `feat/`, `fix/`, `ops/`, `chore/`.
+- Scope commit: `conn:`, `ops:`, `ci:`, `docs:`, `chore:`. Satu commit = satu perubahan logis.
+- Build dan test dijalankan di host build (vps1), bukan di laptop lokal.
+- Shell script wajib lolos `shellcheck -S style`.
+- CI wajib hijau untuk: ShellCheck, build+selftest glibc, CONN, musl, Docker, dan artefak 22.04.
+- Jangan mengganggu fleet produksi; hentikan service hanya sementara bila butuh CPU penuh untuk build.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+- Konstitusi ini mengikat semua perubahan. Bila bertentangan dengan dokumen lain, konstitusi yang menang.
+- Amandemen lewat PR yang menjelaskan alasan dan dampaknya; versi dan tanggal diperbarui.
+- Setiap PR harus diverifikasi terhadap prinsip di atas; kompleksitas tambahan wajib dibenarkan.
+- `README.md`, `CONTRIBUTING.md`, dan `docs/HANDOFF.md` tetap menjadi panduan operasional harian.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 1.0.0 | **Ratified**: 2026-11-06 | **Last Amended**: 2026-11-06
