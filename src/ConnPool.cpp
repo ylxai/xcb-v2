@@ -51,6 +51,9 @@ bool hexToBytes(const std::string& hex, std::vector<uint8_t>& out) {
     return true;
 }
 
+// Didefinisikan di bawah; connectAndLogin() memakainya lebih dulu.
+bool parseJobDoc(const Json& doc, ConnPoolJob& out, std::string& err);
+
 }  // namespace
 
 ConnPool::ConnPool(std::string host, int port, std::string wallet, std::string worker,
@@ -260,7 +263,7 @@ bool ConnPool::connectAndLogin(ConnPoolJob& first, std::string& err) {
         if (const Json* result = doc.get("result"); result && result->isObj()) {
             result->getStr("id", loginId);
         }
-        if (!parseJobJson(line, first, err)) return false;
+        if (!parseJobDoc(doc, first, err)) return false;
         {
             std::lock_guard<std::mutex> lock(m_ioMu);
             if (!loginId.empty()) m_loginId = loginId;
@@ -385,14 +388,10 @@ bool ConnPool::recvLine(std::string& line, int timeoutMs, std::string& err) {
     }
 }
 
-bool ConnPool::parseJobJson(const std::string& line, ConnPoolJob& out, std::string& err) {
-    std::string perr;
-    Json doc = parseJson(line, &perr);
-    if (!doc.isObj()) {
-        err = "job bukan JSON: " + perr;
-        return false;
-    }
+namespace {
 
+// Dipakai poll() dan connectAndLogin() supaya satu baris hanya diparse sekali.
+bool parseJobDoc(const Json& doc, ConnPoolJob& out, std::string& err) {
     // Job bisa berada di top-level params (notifikasi) atau result.job (login).
     const Json* job = doc.get("params");
     if (const Json* result = doc.get("result"); result && result->isObj()) {
@@ -440,6 +439,8 @@ bool ConnPool::parseJobJson(const std::string& line, ConnPoolJob& out, std::stri
     return true;
 }
 
+}  // namespace
+
 ConnPool::Event ConnPool::poll(ConnPoolJob& job, int timeoutMs, std::string& detail) {
     std::string line;
     detail.clear();
@@ -450,15 +451,21 @@ ConnPool::Event ConnPool::poll(ConnPoolJob& job, int timeoutMs, std::string& det
         return Event::Error;
     }
 
-    if (line.find("\"method\":\"job\"") != std::string::npos) {
-        if (!parseJobJson(line, job, detail)) return Event::Error;
-        return Event::Job;
-    }
-    if (line.find("\"method\":\"keepalived\"") != std::string::npos) return Event::None;
-
+    // Klasifikasi lewat JSON, bukan pencarian substring: pool boleh mengirim
+    // spasi atau urutan key berbeda, dan teks "method":"job" bisa muncul di
+    // dalam pesan lain. Satu baris cukup diparse sekali.
     std::string perr;
-    Json doc = parseJson(line, &perr);
+    const Json doc = parseJson(line, &perr);
     if (!doc.isObj()) return Event::None;
+
+    std::string method;
+    if (doc.getStr("method", method)) {
+        if (method == "job") {
+            if (!parseJobDoc(doc, job, detail)) return Event::Error;
+            return Event::Job;
+        }
+        if (method == "keepalived") return Event::None;
+    }
 
     if (const Json* errv = doc.get("error"); errv && !errv->isNull()) {
         // Sertakan respons mentah (dipotong): pesan error rplant kadang

@@ -60,7 +60,6 @@ private:
     bool sendLine(const std::string& line, std::string& err);
     bool sendLineLocked(const std::string& line, std::string& err);
     bool recvLine(std::string& line, int timeoutMs, std::string& err);
-    bool parseJobJson(const std::string& line, ConnPoolJob& out, std::string& err);
     void closeLocked();
 
     std::string m_host;
