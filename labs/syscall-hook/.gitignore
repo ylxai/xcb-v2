@@ -1,14 +1,5 @@
-# Artefak build lab — jangan commit binary
 ptrace-hook
 seccomp-notif
 victim
 preload-hide.so
-kmod/*.o
-kmod/*.ko
-kmod/*.mod
-kmod/*.mod.c
-kmod/.ko-*
-kmod/.module-*
-kmod/Module.symvers
-kmod/modules.order
-kmod/Module.markers
+modecheck

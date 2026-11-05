@@ -1,6 +1,6 @@
 # Makefile untuk LKM demo (jalankan di mesin dengan kernel headers)
 #
-#   make -C /lib/modules/$(uname -r)/build M=$(PWD) modules
+#   make -C /lib/modules/$(uname -r)/build M=$(CURDIR) modules
 #   sudo insmod hook_syscall.ko hide_mark=rahasia target_pid=<pid>
 #   sudo rmmod hook_syscall
 #
@@ -13,9 +13,9 @@ KVER ?= $(shell uname -r)
 KDIR ?= /lib/modules/$(KVER)/build
 
 all:
-	$(MAKE) -C $(KDIR) M=$(PWD) modules
+	$(MAKE) -C $(KDIR) M=$(CURDIR) modules
 
 clean:
-	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	$(MAKE) -C $(KDIR) M=$(CURDIR) clean
 
 .PHONY: all clean

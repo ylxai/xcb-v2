@@ -9,9 +9,9 @@ Hook via **ftrace IPMODIFY**, resolusi simbol via `kprobe(kallsyms_lookup_name)`
 |-------|-----------|-------|
 | Hide file/dir | filter `getdents64` by substring | `hide_prefix="rk_"` |
 | Hide proses | filter entry PID numerik di `/proc` bila comm mengandung prefix / PID match | `proc_prefix="rk_"`, `hide_pid=1234` |
-| Hide module | `list_del` (lsmod) + filter nama-modul di `getdents64` (`/sys/module`); sysfs tidak dihapus agar `rmmod` tetap jalan | `hide_module=1` |
+| Hide module | filter NAMA modul di `getdents64` (`/sys/module`). `module->list` **tidak** diubah → `lsmod` tetap menampilkan modul dan `rmmod` selalu bekerja | `hide_module=1` |
 | Privesc | `kill(<pid>, SIG_MAGIC)` → `commit_creds(root)` | `sig_magic=64` |
-| Anti-kill | `kill` ke PID proteksi (SIGKILL/SIGTERM/SIGSTOP) → `-EPERM` | `protect_pid`, `proc_prefix` |
+| Anti-kill | `kill`/`tgkill`/`tkill` ke PID proteksi (SIGKILL/SIGTERM/SIGSTOP) → `-EPERM` (pid negatif = group) | `protect_pid`, `proc_prefix` |
 
 ## Build (DI VPS, bukan lokal)
 
@@ -38,19 +38,24 @@ id                          # uid=0(root)
 # anti-kill (di shell rk_ atau PID proteksi):
 kill -9 <pid_protected>     # Operation not permitted
 
-# modul hilang:
-lsmod | grep rootkit        # kosong bila hide_module=1
+# nama modul hilang dari listing direktori (/sys/module):
+ls /sys/module | grep -x rootkit   # kosong bila hide_module=1
+# lsmod TETAP menampilkan modul (module->list tidak diubah — lihat Catatan)
+lsmod | grep rootkit
 
-# munculkan lagi WAJIB sebelum rmmod (modul yang ter-delist tidak bisa
-# di-rmmod by name — kernel mencari via list):
+# munculkan nama lagi (opsional, tidak diperlukan untuk rmmod):
 kill -63 1                  # sinyal unhide (sig_unhide, default 63)
-lsmod | grep rootkit        # terlihat lagi
-sudo rmmod rootkit
+sudo rmmod rootkit          # selalu bekerja
 ```
 
 ## Catatan
 
 - `hide_prefix=""` = matikan hide file. `proc_prefix=""` = matikan hide/proteksi proses.
-- `unhide` on rmmod best-effort untuk sysfs; `rmmod` tetap jalan via `delete_module`.
+- Modul TIDAK dihapus dari `module->list`. Versi lama memakai `list_del` tanpa
+  `module_mutex` (tidak diekspor ke LKM): race dengan `/proc/modules`, `prev_module`
+  bisa dangling (UAF), dan modul yang ter-delist tidak bisa di-`rmmod` karena
+  `delete_module` mencari lewat list. Sekarang biaya stealth-nya: `lsmod`
+  menampilkan modul.
+- `sig_magic` dan `sig_unhide` yang sama nilainya ditolak saat load.
 - Deteksi: `kallsyms_lookup_name` via kprobe + ftrace filter IP terlihat di `/sys/kernel/tracing/enabled_functions` dan `dmesg`. Ini lab, bukan stealth APT.
 - Beda dari `labs/syscall-hook/kmod`: yang lama menimpa tabel (kentara, rapuh di ≥5.3). Yang ini tidak menyentuh tabel sama sekali.

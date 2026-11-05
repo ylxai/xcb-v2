@@ -127,6 +127,10 @@ mengetahui prosesnya (root tetap bisa melihat/menghentikan). Build normal
 - `labs/polymorphic/` — generator polymorphic binary: tiap run menghasilkan
   varian dengan sha256 berbeda tapi fungsi identik (enkripsi key stream acak
   + stub assembly yang di-generate ulang: register/body/counter/NOP berbeda).
+- `labs/elfpack/` — ELF runtime packer gaya UPX untuk binary asli: mode
+  static (in-memory loader assembly: mmap/decode/mprotect/auxv rewrite/jmp)
+  dan mode dynamic (zlib + temp file + fork/execve, untuk xcb). xcb 830 KB
+  -> 352 KB, output & selftest identik. Batas tekniknya di README lab.
 
 `--selftest` wajib lolos sebelum mining: ia memverifikasi implementasi keccak
 hot-path (`len%72==71` dan kasus edge lain yang pernah salah di picosha3).
