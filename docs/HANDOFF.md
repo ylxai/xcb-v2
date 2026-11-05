@@ -65,9 +65,16 @@ masih terbuka. Ini bukan pengganti `README.md`; baca juga:
   `external/randomx-v2` adalah vendored source.
 - **Library runtime:** `librandomx_v2.so` harus berada di direktori yang sama
   dengan binary `xcb` karena RPATH `$ORIGIN`.
-- **Config precedence:** env `WALLET` + `POOL` (keduanya) > `pool.cfg` > CLI.
-  Perhatikan: `WALLET` saja **tidak** mengaktifkan jalur env; ia akan jatuh ke
-  `pool.cfg`. Unit systemd karena itu memakai flag `-u/--worker/-t` eksplisit.
+- **Config precedence (aktual):** **CLI > env `WALLET`+`POOL` > `pool.cfg`**.
+  - Jalur env hanya dipakai kalau `WALLET` **dan** `POOL` sama-sama tidak kosong;
+    kalau salah satu kosong/tidak ada, `pool.cfg` yang dimuat.
+  - CLI diproses terakhir: `-u` menimpa wallet, sedangkan `-o` **menambahkan**
+    pool baru (bukan mengganti pool yang sudah ada). Pool tambahan ikut failover
+    setelah sekitar 3 kegagalan; kalau wallet-nya tidak di-set, login pool itu
+    bisa gagal. Hindari mencampur `-o` dengan env/`pool.cfg` kecuali memang
+    memahami perilaku ini.
+  - Unit systemd memakai flag `-u/--worker/-t` eksplisit karena `WALLET` saja
+    tidak mengaktifkan jalur env untuk backend CONN.
 - **Docker:** image tidak punya wallet default. `docker run` wajib
   `-e WALLET=<alamat>`; `POOL` punya default di image.
 - **Kubernetes:** wallet dibaca dari Secret `xcb-wallet`; manifest tidak
@@ -77,18 +84,26 @@ masih terbuka. Ini bukan pengganti `README.md`; baca juga:
 
 ## 4. Build & test
 
-Di host build (vps1):
+Di host build (vps1). **Untuk memverifikasi PR, build commit PR — bukan `main`.**
+Ganti `<branch-pr>` dan `<PR-head-sha>` dengan nilai PR yang sedang diuji:
 
 ```bash
 git fetch origin --prune
-git switch main
+git switch <branch-pr>        # atau: git fetch origin pull/<N>/head:pr-<N> && git switch pr-<N>
 git pull --ff-only
+test "$(git rev-parse HEAD)" = "<PR-head-sha>" || { echo "SALAH COMMIT"; exit 1; }
 
 ./setup.sh                  # deps + submodule + build + selftest
 ./build.sh --clean --no-test -j4
 ./build/xcb --selftest
 (cd build && ctest --output-on-failure)
-./build/xcb --version
+./build/xcb --version       # commit di output harus sama dengan PR head
+```
+
+Untuk baseline `main` saja (bukan verifikasi PR):
+
+```bash
+git switch main && git pull --ff-only
 ```
 
 Cek tambahan:
@@ -224,8 +239,10 @@ Tag yang ada: `v0.1`, `archive/vps1-2026-10-25`.
    alert di `~/.config/xcb/watch.env`; uji dengan `--test-alert`.
 4. **Release pipeline.** Belum ada build tag + checksum + retensi artefak
    panjang. Artefak CI saat ini hanya disimpan 14 hari.
-5. **Docker multi-arch.** README menyebut multi-arch, tetapi CI masih build
-   satu arsitektur. Tambahkan `docker/build-push-action`/buildx bila diperlukan.
+5. **Docker image multi-arch (opsional).** CI saat ini hanya build satu
+   arsitektur, sedangkan komentar di `k8s/deployment.yaml` menyebut Docker Hub
+   multi-arch. Kalau multi-arch memang dibutuhkan, tambahkan
+   `docker/build-push-action`/buildx; kalau tidak, perbaiki komentar tersebut.
 6. **Housekeeping branch.** Hapus branch remote yang sudah merged/abandoned
    setelah dipastikan tidak ada Trail yang masih membutuhkannya.
 7. **Entire checkpoint pertama.** Jika checkpoint ingin dipakai, mulai sesi
@@ -240,7 +257,7 @@ Tag yang ada: `v0.1`, `archive/vps1-2026-10-25`.
 - [ ] `git status` bersih; tidak ada file lokal/`AGENTS.md` yang ikut ter-commit.
 - [ ] `shellcheck -S style` bersih.
 - [ ] Build + `--selftest` + `ctest` lolos di host build.
-- [ ] CI PR hijau (6 job + ShellCheck).
+- [ ] CI PR hijau: 6 job, termasuk ShellCheck.
 - [ ] Tidak ada wallet/secret/IP internal baru di diff.
 - [ ] Dokumentasi/README diperbarui bila perilaku berubah.
 - [ ] PR body berisi ringkasan, verifikasi, risiko, dan rollback.
