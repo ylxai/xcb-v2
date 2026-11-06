@@ -293,6 +293,11 @@ struct ConnMiner::Impl {
         {
             std::lock_guard<std::mutex> lock(mu);
             old = std::move(snap.engine);
+            // curKey harus selalu menyebut engine yang benar-benar terpasang.
+            // Kalau alokasi di bawah gagal, engine kosong tetapi curKey masih
+            // menunjuk seed lama — job dengan seed lama itu lalu dianggap
+            // "tidak berubah", buildEngine dilewati, dan worker diam.
+            curKey.clear();
             engineGen.fetch_add(1, std::memory_order_release);
         }
         if (old) {
