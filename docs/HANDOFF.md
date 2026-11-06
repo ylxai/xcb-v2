@@ -8,6 +8,8 @@ masih terbuka. Ini bukan pengganti `README.md`; baca juga:
 - [`ops/fleet/README.md`](../ops/fleet/README.md) — deploy, rollback, monitoring.
 - [`ops/systemd/README.md`](../ops/systemd/README.md) — unit systemd + environment.
 - [`ops/instabox/README.md`](../ops/instabox/README.md) — deployment sandbox.
+- [`docs/FLEET-TOPOLOGY.md`](FLEET-TOPOLOGY.md) — peran `fl` dan `security-learning`,
+  host di baliknya, dan aturan build di `fl` (bukan lokal).
 
 **Status terakhir:** 2026-11-06, `main` = `870433f` (merge PR #17).
 
