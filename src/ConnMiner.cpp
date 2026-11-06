@@ -238,6 +238,9 @@ struct ConnMiner::Impl {
 
     std::mutex mu;
     Snapshot snap;
+    // Dinaikkan setiap engine dilepas. Worker memeriksanya di tengah batch
+    // supaya berhenti memakai dataset lama cepat, bukan menunggu 4096 hash.
+    std::atomic<uint64_t> engineGen{0};
     uint64_t genCounter = 0;
     std::string curKey;
     std::string curPrev;
@@ -280,6 +283,39 @@ struct ConnMiner::Impl {
             lg::error("conn", "randomxkey bukan 32 byte");
             return false;
         }
+        // Lepas engine lama sebelum mengalokasi dataset baru. Dataset 2 GiB
+        // memegang ~1044 dari 1200 hugepage, dan pool itu tidak cukup untuk dua
+        // dataset — kalau engine lama masih terpetakan, alokasi large page
+        // gagal dan miner jatuh ke 4K page (~20-25% hashrate) sampai seed
+        // berikutnya. Share dari job lama tetap ditolak pool, jadi jeda ini
+        // tidak menghilangkan share yang sah.
+        std::shared_ptr<Engine> old;
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            old = std::move(snap.engine);
+            // curKey harus selalu menyebut engine yang benar-benar terpasang.
+            // Kalau alokasi di bawah gagal, engine kosong tetapi curKey masih
+            // menunjuk seed lama — job dengan seed lama itu lalu dianggap
+            // "tidak berubah", buildEngine dilewati, dan worker diam.
+            curKey.clear();
+            engineGen.fetch_add(1, std::memory_order_release);
+        }
+        if (old) {
+            // Worker melepas salinannya paling lambat satu siklus 256 hash;
+            // batas waktu menjaga miner tidak macet kalau ada worker yang
+            // tertahan di submit().
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (old.use_count() > 1 && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            if (old.use_count() > 1) {
+                lg::warn("conn", "engine lama belum dilepas worker; dataset baru bisa jatuh ke 4K page");
+            }
+            // Referensi kita sendiri juga harus dilepas: selama `old` hidup,
+            // dataset 2 GiB-nya tetap terpetakan dan hugepage pool tetap penuh.
+            old.reset();
+        }
+
         std::shared_ptr<rxv2::Context> ctx;
         if (cfg.fastMem) {
             lg::info("conn", "RandomX V2 dataset FAST (~2 GiB) init dengan " +
@@ -288,6 +324,10 @@ struct ConnMiner::Impl {
             if (!ctx->ok()) {
                 lg::warn("conn", "FAST gagal (" + ctx->error() + "), fallback LIGHT");
                 ctx = std::make_shared<rxv2::Context>(key.data(), false, false, 1);
+            }
+            // Sebelumnya fallback ini tidak meninggalkan jejak sama sekali.
+            if (ctx->ok() && ctx->fast() && cfg.largePages && !ctx->usesLargePages()) {
+                lg::warn("conn", "dataset RandomX jatuh ke 4K page (hugepages tidak tersedia)");
             }
         } else {
             ctx = std::make_shared<rxv2::Context>(key.data(), false, cfg.largePages, 1);
@@ -620,11 +660,13 @@ struct ConnMiner::Impl {
         std::shared_ptr<Engine> engine;
         std::shared_ptr<Work> work;
         uint64_t seenGen = 0;
+        uint64_t seenEngineGen = 0;
         while (run.load()) {
             {
                 std::lock_guard<std::mutex> lock(mu);
                 engine = snap.engine;
                 work = snap.work;
+                seenEngineGen = engineGen.load(std::memory_order_acquire);
             }
             if (!engine || !work) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -662,12 +704,16 @@ struct ConnMiner::Impl {
                     break;
                 }
                 if ((i & 255) == 0) {
-                    uint64_t g;
+                    uint64_t g, eg;
                     {
                         std::lock_guard<std::mutex> lock(mu);
                         g = snap.work ? snap.work->gen : 0;
+                        eg = engineGen.load(std::memory_order_acquire);
                     }
-                    if (g != seenGen) break;
+                    // Engine yang dilepas untuk ganti seed juga harus
+                    // menghentikan batch: tanpa ini worker menahan dataset lama
+                    // sampai 4096 hash selesai.
+                    if (g != seenGen || eg != seenEngineGen) break;
                 }
             }
         }
