@@ -9,7 +9,7 @@ masih terbuka. Ini bukan pengganti `README.md`; baca juga:
 - [`ops/systemd/README.md`](../ops/systemd/README.md) — unit systemd + environment.
 - [`ops/instabox/README.md`](../ops/instabox/README.md) — deployment sandbox.
 
-**Status terakhir:** 2026-11-05, `main` = `55f7207` (merge PR #7).
+**Status terakhir:** 2026-11-06, `main` = `870433f` (merge PR #17).
 
 ---
 
@@ -17,14 +17,14 @@ masih terbuka. Ini bukan pengganti `README.md`; baca juga:
 
 | Item | Kondisi |
 |---|---|
-| `main` lokal | `55f7207`, sinkron dengan `origin/main` |
-| CI `main` | Semua job hijau: glibc, CONN, musl, artefak 22.04, ShellCheck |
-| PR #7 | **MERGED** (`chore: rapikan struktur repo, CI, dan konvensi kontribusi`) |
-| PR terbuka | #8 dan #9 (Dependabot, bump GitHub Actions) |
+| `main` lokal | `870433f`, sinkron dengan `origin/main` |
+| CI `main` | Semua job hijau: glibc, CONN, musl, artefak 22.04, ShellCheck (run `42162993415`) |
+| PR #8–#17 | **MERGED** — Dependabot #8/#9, Spec Kit #11, audit #12–#16, page-mode #17 |
+| PR terbuka | Tidak ada |
 | Branch `chore/repo-hygiene` | Sudah dihapus (lokal, remote, dan di vps1) |
 | Entire | Checkpoint tracking aktif; **0 checkpoint**; semua gate dinonaktifkan |
-| Fleet produksi | Semua host `active`; jangan diubah tanpa alasan operasional |
-| Host build/test | vps1, fetch-only (`push` URL sengaja dimatikan) |
+| Fleet produksi | 6 host `active`. `fl` menjalankan build page-mode `e9fd6e2`; 5 host lain build 2026-10-25. Rollout ditahan sampai observasi `fl` selesai |
+| Host build/test | `fl` (`~/xcb-build`) untuk build + `ctest`; vps1 tetap fetch-only (`push` URL sengaja dimatikan) |
 
 ---
 
@@ -139,6 +139,9 @@ Job CI yang harus hijau:
   bila gagal.
 - Backup tersimpan di samping binary: `xcb.bak-STAMP` dan
   `librandomx_v2.so.bak-STAMP`.
+- Kondisi 2026-11-06: `fl` menjalankan build page-mode `e9fd6e2` (lokal, sebelum
+  PR #17 merged). Build `870433f` sudah dibuat di `~/xcb-build/build` tetapi
+  **belum dipasang**; lima worker lain masih build 2026-10-25.
 - Contoh:
 
   ```bash
@@ -206,18 +209,28 @@ Remote branches:
 
 | Branch | Status |
 |---|---|
-| `main` | aktif, `55f7207` |
-| `dependabot/github_actions/actions/checkout-7` | PR #8, terbuka |
-| `dependabot/github_actions/actions/upload-artifact-7` | PR #9, terbuka |
+| `main` | aktif, `870433f` |
 | `feat/yespower-ratr` | eksperimen, sengaja belum di-merge |
 | `fix/src-runtime-hardening` | PR #1 sudah ditutup; branch lama |
-| `ops/fleet-deploy-watch` | sudah merged ke `main` via PR #5 |
-| `setup/entire-base` | sudah merged ke `main` via PR #6 |
+| `ops/fleet-deploy-watch` | sudah merged ke `main` via PR #5; branch remote masih ada |
+| `setup/entire-base` | sudah merged ke `main` via PR #6; branch remote masih ada |
 
-Local clone masih menyimpan beberapa branch lama (`feat/conn-randomx-v2`,
-`merge/fleet-main`, `ops/fleet-deploy-watch`, dan lainnya). Jangan hapus branch
-yang belum dipastikan merged; gunakan `git branch -d` (bukan `-D`) setelah
-memeriksa.
+Branch dependabot (`actions/checkout-7`, `actions/upload-artifact-7`) sudah
+dihapus setelah PR #8/#9 merged.
+
+Local clone masih menyimpan beberapa branch lama:
+
+| Branch lokal | Status |
+|---|---|
+| `feat/config-parser-tests` | Spec Kit 001, paused, belum di-push |
+| `feat/conn-address-required` | Spec Kit 002, paused, belum di-push |
+| `feat/conn-randomx-v2` | upstream sudah hilang |
+| `fix/conn-ssl-io-mutex` | sudah merged via PR #16, upstream sudah hilang |
+| `merge/fleet-main` | tertinggal 73 commit dari `main` |
+| `ops/fleet-deploy-watch` | sinkron dengan remote |
+
+Jangan hapus branch yang belum dipastikan merged; gunakan `git branch -d`
+(bukan `-D`) setelah memeriksa.
 
 Tag yang ada: `v0.1`, `archive/vps1-2026-10-25`.
 
@@ -225,20 +238,36 @@ Tag yang ada: `v0.1`, `archive/vps1-2026-10-25`.
 
 ## 8. Pekerjaan berikutnya (prioritas)
 
-1. **Review Dependabot PR #8 dan #9.** Cek release notes `actions/checkout` dan
-   `actions/upload-artifact`, pastikan runner/Node compatibility, lalu tunggu
-   CI hijau sebelum merge.
-2. **Tambah unit test nyata.** `ctest` baru membungkus `--selftest`; belum ada
-   test untuk parser `pool.cfg`/env, validasi wallet, dan parsing stratum.
-3. **Aktifkan monitoring produksi.** Pasang cron `watch.sh` dan isi channel
+1. **Verifikasi ganti seed page-mode di `fl`.** PR #17 (merged `870433f`) baru
+   terbukti lewat harness. Pada ganti seed berikutnya log harus tetap
+   `RandomX V2 siap (FAST, hugepages)`, tanpa `jatuh ke 4K page`, dan
+   `HugePages_Free` kembali ke ~156 — bukan melompat ke 1200. Ganti seed
+   mengikuti tinggi blok ≡ 64 (mod 12288), kira-kira tiap 34 jam.
+2. **Deploy `870433f` ke lima worker lain.** Masih build 2026-10-25 (tanpa kolom
+   `S`, `stale share` ~8,5%). Rollout ditahan selama `fl` diamati. Jalur deploy
+   harus dari jump host: `fleet.hosts` di `fl` masih menunjuk `ai-workers-1..4`
+   yang sudah mati, dan key `fl` tidak diotorisasi di worker.
+3. **H4 — TLS untuk `StratumClient`.** Backend XCB masih `connect()` polos dan
+   mengirim wallet dalam cleartext. Butuh keputusan: implementasi TLS atau catat
+   sebagai risiko yang diterima.
+4. **systemd hardening.** `ops/systemd/syscached.service` belum punya `User=`,
+   jadi miner jalan sebagai root di 6 host. Perlu uji per host karena
+   menyangkut `/etc/xcb/miner.env`, `LD_PRELOAD`, dan akses hugepage.
+5. **`deploy.sh` — deteksi sukses.** `ops/fleet/deploy.sh:222` masih menyimpulkan
+   sukses dari `grep -q 'HASIL=OK'` atas stdout+stderr, bukan exit code
+   `apply.sh`.
+6. **Tambah unit test nyata.** `ctest` baru membungkus `--selftest`. Spec Kit 001
+   (parser config) dan 002 (alamat CONN wajib) ada di branch lokal dan belum
+   di-push; konflik test keduanya belum diselesaikan.
+7. **Aktifkan monitoring produksi.** Pasang cron `watch.sh` dan isi channel
    alert di `~/.config/xcb/watch.env`; uji dengan `--test-alert`.
-4. **Release pipeline.** Belum ada build tag + checksum + retensi artefak
+8. **Release pipeline.** Belum ada build tag + checksum + retensi artefak
    panjang. Artefak CI saat ini hanya disimpan 14 hari.
-5. **Housekeeping branch.** Hapus branch remote yang sudah merged/abandoned
+9. **Housekeeping branch.** Hapus branch remote yang sudah merged/abandoned
    setelah dipastikan tidak ada Trail yang masih membutuhkannya.
-6. **Entire checkpoint pertama.** Jika checkpoint ingin dipakai, mulai sesi
-   OpenCode dari root repo, lakukan commit nyata, lalu tinjau checkpoint sebelum
-   push (ingat repo publik).
+10. **Entire checkpoint pertama.** Jika checkpoint ingin dipakai, mulai sesi
+    OpenCode dari root repo, lakukan commit nyata, lalu tinjau checkpoint sebelum
+    push (ingat repo publik).
 
 ---
 
@@ -248,7 +277,7 @@ Tag yang ada: `v0.1`, `archive/vps1-2026-10-25`.
 - [ ] `git status` bersih; tidak ada file lokal/`AGENTS.md` yang ikut ter-commit.
 - [ ] `shellcheck -S style` bersih.
 - [ ] Build + `--selftest` + `ctest` lolos di host build.
-- [ ] CI PR hijau: 6 job, termasuk ShellCheck.
+- [ ] CI PR hijau: 5 job build/selftest + ShellCheck (bot review berjalan di sampingnya).
 - [ ] Tidak ada wallet/secret/IP internal baru di diff.
 - [ ] Dokumentasi/README diperbarui bila perilaku berubah.
 - [ ] PR body berisi ringkasan, verifikasi, risiko, dan rollback.

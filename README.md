@@ -17,7 +17,8 @@ dependensi eksternal hanya RandomY, RandomX V2 (vendored), FTXUI, dan OpenSSL.
 
 ## Environment Variables
 
-Semua env vars dibaca langsung (precedence ≥ config file & CLI):
+Semua env vars dibaca langsung. Precedence: **CLI flags > env vars > `pool.cfg`**
+(env menimpa nilai dari file, flag CLI menimpa keduanya):
 
 | Variable | Default | Deskripsi |
 |----------|---------|-----------|
@@ -158,7 +159,7 @@ maksimal 32 char, dan jatuh ke `worker` bila tidak ada karakter yang sah. Nilai
 > **Wallet wajib diisi.** `pool.cfg` di repo sengaja memakai `wallet=` kosong;
 > isi dengan alamat Anda atau lewatkan `-u <alamat>` saat menjalankan miner.
 >
-> Precedence: **env vars > pool.cfg > CLI flags**. `WALLET`+`POOL` env aktif = pool.cfg diabaikan.
+> Precedence: **CLI flags > env vars > pool.cfg**. `WALLET`+`POOL` env aktif = pool.cfg diabaikan.
 > Commands flag: `-o host:port`, `-u wallet[.worker]`, `-p password`, `-t N`, `--light`, `--no-jit`, `--ui=MODE`, `-h`.
 
 ---
