@@ -47,7 +47,7 @@ struct MinerConfig {
 class Config {
 public:
     static MinerConfig parse(int argc, char* argv[]);
-    static MinerConfig loadFile(const std::string& path);
+    static MinerConfig loadFile(const std::string& path, bool* opened = nullptr);
     // Isi fullMem/largePages dari kondisi host untuk field yang masih "auto".
     static void autoDetect(MinerConfig& cfg);
     // CPU yang benar-benar boleh dipakai proses ini (sched_getaffinity), bukan

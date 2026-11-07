@@ -119,14 +119,16 @@ static long long numOr(const std::string& s, long long fallback, long long min, 
     return v;
 }
 
-MinerConfig Config::loadFile(const std::string& path) {
+MinerConfig Config::loadFile(const std::string& path, bool* opened) {
     MinerConfig cfg;
+    if (opened) *opened = false;
     std::string expanded = expandHome(path);
     std::ifstream file(expanded);
     if (!file.is_open()) {
         std::cerr << "[Config] Cannot open: " << expanded << std::endl;
         return cfg;
     }
+    if (opened) *opened = true;
     
     std::cout << "[Config] Loading: " << expanded << std::endl;
     PoolConfig pool;
@@ -315,9 +317,17 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                   << std::endl;
     } else {
         // 2. Try loading pool.cfg (skipped when env WALLET+POOL are set)
-        cfg = loadFile("pool.cfg");
-        if (cfg.pools.empty()) cfg = loadFile("/etc/syscache/pool.cfg");
-        if (cfg.pools.empty()) cfg = loadFile("~/xcb/pool.cfg");
+        // Fallback hanya kalau file sebelumnya tidak ada / tidak berisi apa pun
+        // yang bisa dipakai. Syarat lama (cfg.pools kosong saja) membuang
+        // konfigurasi CONN-only — algo=conn + conn_address tanpa server[N] —
+        // lalu menggantinya dengan default dari kandidat berikutnya, sehingga
+        // alamat reward hilang.
+        bool opened = false;
+        cfg = loadFile("pool.cfg", &opened);
+        if (!opened || (cfg.pools.empty() && cfg.connAddress.empty()))
+            cfg = loadFile("/etc/syscache/pool.cfg", &opened);
+        if (!opened || (cfg.pools.empty() && cfg.connAddress.empty()))
+            cfg = loadFile("~/xcb/pool.cfg", &opened);
         
         // 3. Apply env overrides on top of the file (precedence: file < env < CLI).
         applyEnvFlags();
