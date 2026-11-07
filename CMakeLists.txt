@@ -149,6 +149,11 @@ if(BUILD_TESTING)
     add_executable(hostport-test tests/hostport_test.cpp)
     target_include_directories(hostport-test PRIVATE src)
     add_test(NAME xcb-hostport COMMAND hostport-test)
+
+    # Presedensi file parsial + fallback (wallet/worker/threads/light).
+    add_executable(config-merge-test tests/config_merge_test.cpp)
+    target_include_directories(config-merge-test PRIVATE src)
+    add_test(NAME xcb-config-merge COMMAND config-merge-test)
 endif()
 
 # Runtime butuh librandomx_v2.so di direktori yang sama (RPATH $ORIGIN).

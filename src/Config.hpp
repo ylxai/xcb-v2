@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -55,7 +56,8 @@ class Config {
 public:
     static MinerConfig parse(int argc, char* argv[]);
     static MinerConfig loadFile(const std::string& path, bool* opened = nullptr,
-                                bool* parsedAny = nullptr);
+                                bool* parsedAny = nullptr,
+                                std::set<std::string>* keys = nullptr);
     // Isi fullMem/largePages dari kondisi host untuk field yang masih "auto".
     static void autoDetect(MinerConfig& cfg);
     // CPU yang benar-benar boleh dipakai proses ini (sched_getaffinity), bukan

@@ -1,5 +1,6 @@
 #include "Config.hpp"
 #include "Hashing/RandomXV2.hpp"
+#include "ConfigMerge.hpp"
 #include "HostPort.hpp"
 #include <algorithm>
 #include <cctype>
@@ -131,10 +132,12 @@ static void parseHostPort(const std::string& v, std::string& host, int& port, in
                   << port << std::endl;
 }
 
-MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsedAny) {
+MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsedAny,
+                             std::set<std::string>* keys) {
     MinerConfig cfg;
     if (opened) *opened = false;
     if (parsedAny) *parsedAny = false;
+    if (keys) keys->clear();
     std::string expanded = expandHome(path);
     std::ifstream file(expanded);
     if (!file.is_open()) {
@@ -168,15 +171,18 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsed
         if (val.size() >= 2 && val.front() == '"' && val.back() == '"')
             val = val.substr(1, val.size() - 2);
 
-        // Catat apakah file menentukan backend/tujuan. Fallback antar-file
-        // tidak boleh berhenti karena key tuning saja (threads/worker/light):
-        // file seperti itu tidak bisa menambang, jadi kandidat berikutnya
-        // masih harus dicoba. Konfigurasi CONN-only tetap dihitung lewat
-        // conn_rpc/conn_address walau tanpa server[N].
-        const bool definesBackend =
-            key == "algo" || key == "conn_rpc" || key == "conn_address" ||
-            (key.compare(0, 6, "server") == 0 && key.back() == ']') ||
-            (key.compare(0, 4, "port") == 0 && key.back() == ']');
+        // Catat key yang benar-benar muncul di file. Fallback butuh ini untuk
+        // membedakan "file tidak menyinggung field ini" dari "file menulis
+        // nilai default", dan untuk tahu apakah file hanya berisi key tuning
+        // (threads/worker/light): file seperti itu belum punya backend.
+        std::string normKey = key;
+        if (key.compare(0, 6, "server") == 0 && key.back() == ']') normKey = "server";
+        else if (key.compare(0, 4, "port") == 0 && key.back() == ']') normKey = "port";
+        if (keys) keys->insert(normKey);
+
+        const bool definesBackend = normKey == "algo" || normKey == "conn_rpc" ||
+                                    normKey == "conn_address" || normKey == "server" ||
+                                    normKey == "port";
         if (definesBackend && parsedAny) *parsedAny = true;
 
         if (key == "wallet") {
@@ -357,36 +363,32 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     } else {
         // 2. Try loading pool.cfg (skipped when env WALLET+POOL are set)
         // Kandidat pertama yang punya key backend menang. File yang terbuka
-        // tetapi hanya berisi key tuning (threads/worker/wallet) tidak dibuang:
-        // key backend kandidat berikutnya digabung ke file itu, sisanya
-        // dipertahankan. Tanpa ini `wallet=`/`conn_nonce_offset=` dari file
-        // lokal hilang begitu fallback dipakai.
+        // tetapi hanya berisi key tuning (threads/worker/wallet) tidak
+        // dibuang: key yang benar-benar ditulis file itu ditimpakan ke
+        // kandidat backend, sisanya dari kandidat. Tanpa ini file lokal
+        // kehilangan isinya atau default-nya mengalahkan nilai eksplisit
+        // kandidat.
         const char* candidates[] = {"pool.cfg", "/etc/syscache/pool.cfg", "~/xcb/pool.cfg"};
         MinerConfig partial;
+        std::set<std::string> partialKeys;
         MinerConfig last;
         bool havePartial = false;
         bool haveBackend = false;
         for (const char* path : candidates) {
             bool opened = false;
             bool parsed = false;
-            MinerConfig cand = loadFile(path, &opened, &parsed);
+            std::set<std::string> keys;
+            MinerConfig cand = loadFile(path, &opened, &parsed, &keys);
             last = cand;
             if (parsed) {
-                if (havePartial) {
-                    // Backend dari kandidat, tuning dari file lokal.
-                    partial.algo = cand.algo;
-                    partial.connRpc = cand.connRpc;
-                    partial.connAddress = cand.connAddress;
-                    partial.pools = cand.pools;
-                    cfg = partial;
-                } else {
-                    cfg = cand;
-                }
+                cfg = cand;
+                if (havePartial) applyFileOverlay(cfg, partial, partialKeys);
                 haveBackend = true;
                 break;
             }
             if (opened && !havePartial) {
                 partial = cand;
+                partialKeys = keys;
                 havePartial = true;
             }
         }
@@ -401,6 +403,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     //    (e.g. when WALLET/POOL come from environment).
     bool cliWorkerSet = false;  // --worker eksplisit menang atas suffix -u
     std::string cliWallet;      // -u, diterapkan setelah semua pool terkumpul
+    std::string cliWorkerSuffix;  // suffix .worker dari -u
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         
@@ -434,8 +437,10 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                 // disimpan sendiri; kalau tidak, worker jatuh ke default "xcb".
                 // CLI > env: suffix -u menimpa WORKER dari env, tetapi
                 // --worker eksplisit tetap yang tertinggi.
-                if (!cliWorkerSet && dot + 1 < s.size())
+                if (!cliWorkerSet && dot + 1 < s.size()) {
                     cfg.connPoolWorker = s.substr(dot + 1);
+                    cliWorkerSuffix = s.substr(dot + 1);
+                }
                 for (auto& p : cfg.pools) {
                     p.wallet = s.substr(0, dot);
                     p.worker = s.substr(dot + 1);
@@ -557,14 +562,19 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         }
     }
     
-    // -u berlaku untuk semua pool, termasuk yang dibuat -o setelah -u.
-    // Tanpa -u, wallet= dari pool.cfg mengisi pool yang belum punya wallet
-    // (mis. pool.cfg hanya berisi wallet, host dari -o).
+    // -u dan --worker berlaku untuk semua pool, termasuk yang dibuat -o
+    // setelahnya; tanpa ini urutan argumen mengubah hasil. Wallet dari file
+    // hanya mengisi pool yang belum punya wallet sendiri.
     if (!cliWallet.empty()) {
         for (auto& p : cfg.pools) p.wallet = cliWallet;
     } else if (!cfg.wallet.empty()) {
         for (auto& p : cfg.pools)
             if (p.wallet.empty()) p.wallet = cfg.wallet;
+    }
+    if (cliWorkerSet) {
+        for (auto& p : cfg.pools) p.worker = cfg.connPoolWorker;
+    } else if (!cliWorkerSuffix.empty()) {
+        for (auto& p : cfg.pools) p.worker = cliWorkerSuffix;
     }
 
     // Apply wallet from file if CLI didn't override
