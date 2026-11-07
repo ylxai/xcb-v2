@@ -9,9 +9,10 @@
 // external/randomx-v2/rxv2_api.h + prefix_symbols.sh).
 #include "../../external/randomx-v2/rxv2_api.h"
 #include "../../external/randomx-v2/src/randomx.h"
-// configuration.h tidak punya include guard dan berbeda dari RandomY, jadi
-// hanya di-include di sini — bukan di Config.cpp yang sudah memuat versi
-// RandomY.
+// configuration.h RandomX V2 dan RandomY mendefinisikan makro dengan nama sama
+// tetapi nilai berbeda (RANDOMX_ARGON_MEMORY, ukuran dataset), jadi keduanya
+// tidak boleh berada di satu translation unit. Karena itu include ini hanya
+// ada di sini, bukan di Config.cpp yang sudah memuat versi RandomY.
 #include "../../external/randomx-v2/src/configuration.h"
 
 namespace rxv2 {

@@ -34,7 +34,9 @@ std::vector<int> Config::usableCpus() {
         // Fallback: kernel tanpa sched_getaffinity yang bisa dibaca.
         long n = sysconf(_SC_NPROCESSORS_ONLN);
         if (n < 1) n = 1;
-        for (long i = 0; i < n; i++) cpus.push_back(static_cast<int>(i));
+        // CPU_SET() menulis ke cpu_set_t berukuran CPU_SETSIZE; index di atas
+        // itu akan merusak stack. Clamp supaya fallback tetap aman.
+        for (long i = 0; i < n && i < CPU_SETSIZE; i++) cpus.push_back(static_cast<int>(i));
     }
     return cpus;
 }
@@ -119,9 +121,24 @@ static long long numOr(const std::string& s, long long fallback, long long min, 
     return v;
 }
 
-MinerConfig Config::loadFile(const std::string& path, bool* opened) {
+// "host[:port]" -> host + port. Port dipertahankan bila tidak ada suffix,
+// dipakai bersama oleh --conn-pool dan CONN_POOL.
+static void parseHostPort(const std::string& v, std::string& host, int& port, int defaultPort,
+                          const char* what) {
+    const auto colon = v.rfind(':');
+    if (colon != std::string::npos && colon + 1 < v.size() &&
+        v.find_first_not_of("0123456789", colon + 1) == std::string::npos) {
+        host = v.substr(0, colon);
+        port = static_cast<int>(numOr(v.substr(colon + 1), defaultPort, 1, 65535, what));
+    } else {
+        host = v;
+    }
+}
+
+MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsedAny) {
     MinerConfig cfg;
     if (opened) *opened = false;
+    if (parsedAny) *parsedAny = false;
     std::string expanded = expandHome(path);
     std::ifstream file(expanded);
     if (!file.is_open()) {
@@ -154,7 +171,18 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened) {
         // Remove surrounding quotes
         if (val.size() >= 2 && val.front() == '"' && val.back() == '"')
             val = val.substr(1, val.size() - 2);
-        
+
+        // Catat apakah file berisi key yang dikenal. Fallback antar-file tidak
+        // boleh mengganti file yang sudah valid hanya karena tidak punya
+        // server[N] (konfigurasi CONN) atau karena alamat datang dari env.
+        const bool known =
+            key == "wallet" || key == "worker" || key == "threads" || key == "no_jit" ||
+            key == "light" || key == "no_aes" || key == "algo" || key == "conn_rpc" ||
+            key == "conn_cookie" || key == "conn_address" ||
+            (key.compare(0, 6, "server") == 0 && key.back() == ']') ||
+            (key.compare(0, 4, "port") == 0 && key.back() == ']');
+        if (known && parsedAny) *parsedAny = true;
+
         if (key == "wallet") {
             // Pool config uses single wallet for all servers
             if (cfg.pools.empty()) {
@@ -164,6 +192,10 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened) {
             }
         } else if (key == "worker") {
             pool.worker = val;
+            // Jalur CONN menyimpan worker di luar PoolConfig, dan file
+            // CONN-only tidak pernah push pool. Simpan juga di sini supaya
+            // worker=dev1 / worker=auto berlaku untuk pool CONN.
+            cfg.connPoolWorker = val;
         } else if (key.compare(0, 6, "server") == 0 && key.back() == ']') {
             // server[N]=host — push previous pool if exists
             if (!pool.host.empty()) {
@@ -287,7 +319,9 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                 cfg.connAddress.resize(dot);
             }
         }
-        if (envConnPool && envConnPool[0] != '\0') cfg.connPoolHost = envConnPool;
+        if (envConnPool && envConnPool[0] != '\0')
+            parseHostPort(envConnPool, cfg.connPoolHost, cfg.connPoolPort, 17194,
+                          "CONN_POOL port");
         if (envWorker && envWorker[0] != '\0') cfg.connPoolWorker = envWorker;
         if (envThreads && envThreads[0] != '\0')
             cfg.threads = static_cast<int>(numOr(envThreads, 0, 0, 4096, "THREADS"));
@@ -321,17 +355,15 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                   << std::endl;
     } else {
         // 2. Try loading pool.cfg (skipped when env WALLET+POOL are set)
-        // Fallback hanya kalau file sebelumnya tidak ada / tidak berisi apa pun
-        // yang bisa dipakai. Syarat lama (cfg.pools kosong saja) membuang
-        // konfigurasi CONN-only — algo=conn + conn_address tanpa server[N] —
-        // lalu menggantinya dengan default dari kandidat berikutnya, sehingga
-        // alamat reward hilang.
+        // Fallback hanya kalau file sebelumnya tidak ada / tidak berisi satu
+        // pun key yang dikenal. Syarat lama (cfg.pools kosong) membuang
+        // konfigurasi CONN-only — algo=conn + conn_rpc tanpa server[N] — dan
+        // juga menimpa file yang alamatnya datang dari env.
         bool opened = false;
-        cfg = loadFile("pool.cfg", &opened);
-        if (!opened || (cfg.pools.empty() && cfg.connAddress.empty()))
-            cfg = loadFile("/etc/syscache/pool.cfg", &opened);
-        if (!opened || (cfg.pools.empty() && cfg.connAddress.empty()))
-            cfg = loadFile("~/xcb/pool.cfg", &opened);
+        bool parsed = false;
+        cfg = loadFile("pool.cfg", &opened, &parsed);
+        if (!opened || !parsed) cfg = loadFile("/etc/syscache/pool.cfg", &opened, &parsed);
+        if (!opened || !parsed) cfg = loadFile("~/xcb/pool.cfg", &opened, &parsed);
         
         // 3. Apply env overrides on top of the file (precedence: file < env < CLI).
         applyEnvFlags();
@@ -340,6 +372,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     // 4. Parse CLI args (override file & env). Always runs, even with env
     //    pools, so flags like --selftest/--benchmark/-t/--light still work
     //    (e.g. when WALLET/POOL come from environment).
+    bool cliWorkerSet = false;  // --worker eksplisit menang atas suffix -u
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         
@@ -369,7 +402,9 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                 cfg.connAddress = s.substr(0, dot);
                 // Jalur CONN tidak punya PoolConfig, jadi suffix harus
                 // disimpan sendiri; kalau tidak, worker jatuh ke default "xcb".
-                if (cfg.connPoolWorker.empty() && dot + 1 < s.size())
+                // CLI > env: suffix -u menimpa WORKER dari env, tetapi
+                // --worker eksplisit tetap yang tertinggi.
+                if (!cliWorkerSet && dot + 1 < s.size())
                     cfg.connPoolWorker = s.substr(dot + 1);
                 for (auto& p : cfg.pools) {
                     p.wallet = s.substr(0, dot);
@@ -426,17 +461,8 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             cfg.connAddress = argv[++i];
 
         } else if (arg == "--conn-pool" && i + 1 < argc) {
-            // HOST[:PORT]
-            std::string v = argv[++i];
-            auto colon = v.rfind(':');
-            if (colon != std::string::npos && colon + 1 < v.size() &&
-                v.find_first_not_of("0123456789", colon + 1) == std::string::npos) {
-                cfg.connPoolHost = v.substr(0, colon);
-                cfg.connPoolPort = static_cast<int>(
-                    numOr(v.substr(colon + 1), 17194, 1, 65535, "--conn-pool port"));
-            } else {
-                cfg.connPoolHost = v;
-            }
+            parseHostPort(argv[++i], cfg.connPoolHost, cfg.connPoolPort, 17194,
+                          "--conn-pool port");
 
         } else if (arg == "--conn-pool-plain") {
             cfg.connPoolTls = false;
@@ -447,6 +473,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
 
         } else if (arg == "--worker" && i + 1 < argc) {
             cfg.connPoolWorker = argv[++i];
+            cliWorkerSet = true;
 
         } else if (arg == "-R" || arg == "--report-hashrate") {
             cfg.reportHashrate = true;

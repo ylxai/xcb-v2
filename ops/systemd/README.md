@@ -31,9 +31,10 @@ ldd /usr/local/bin/xcb | grep librandomx_v2
 - Flag `--conn-pool`, `-u`, `--worker`, `-t` di `ExecStart` **sengaja
   eksplisit**. Binary baru sudah membaca `WALLET`/`WORKER`/`THREADS` dari
   environment pada jalur CONN, tetapi flag ini dipertahankan agar unit tetap
-  benar di binary lama yang belum membacanya — selama fleet belum seragam,
-  jangan hapus. `CONN_POOL` hanya mengisi nama host; kalau nilainya memuat
-  `:port`, bagian port tidak dipisah dan port tetap default 17194.
+  benar di binary lama — selama fleet belum seragam, jangan hapus. `-u` adalah
+  CLI dan menang atas env: `WALLET` harus berisi alamat reward yang sama dengan
+  `CONN_ADDRESS`. Kalau keduanya berbeda, hapus `-u` (hanya aman untuk binary
+  baru). `CONN_POOL` menerima `host[:port]` seperti `--conn-pool`.
 - Nama unit `syscached` dipertahankan karena `ops/fleet/deploy.sh` dan
   `apply.sh` memakai `SVC=syscached` secara default.
 - Binary dan `librandomx_v2.so` harus berada di direktori yang sama
