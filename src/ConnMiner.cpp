@@ -1,5 +1,6 @@
 #include "ConnMiner.hpp"
 
+#include "Config.hpp"
 #include "ConnPool.hpp"
 #include "ConnRpc.hpp"
 #include "Hashing/RandomXV2.hpp"
@@ -17,6 +18,9 @@
 #include <cstring>
 #include <fcntl.h>
 #include <mutex>
+#include <pthread.h>
+#include <sched.h>
+#include <sys/resource.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -484,6 +488,7 @@ struct ConnMiner::Impl {
 
         // --- header 80-byte ---
         auto work = std::make_shared<Work>();
+        work->nonce.store(cfg.nonceOffset, std::memory_order_relaxed);
         work->height = t.height;
         memcpy(work->targetLE, targetLE, 32);
         {
@@ -522,6 +527,7 @@ struct ConnMiner::Impl {
 
     bool buildPoolWork(const ConnPoolJob& j) {
         auto work = std::make_shared<Work>();
+        work->nonce.store(cfg.nonceOffset, std::memory_order_relaxed);
         work->pool = true;
         work->height = static_cast<int>(j.height);
         work->target64 = j.target;
@@ -657,6 +663,22 @@ struct ConnMiner::Impl {
     }
 
     void workerLoop(int id) {
+        // Pin ke CPU yang benar-benar diizinkan dan naikkan prioritas, sama
+        // seperti jalur RandomY (Miner.cpp). Tanpa ini thread CONN bebas
+        // bermigrasi antar core dan kehilangan cache dataset.
+        static const std::vector<int> cpus = Config::usableCpus();
+        if (!cpus.empty()) {
+            cpu_set_t set;
+            CPU_ZERO(&set);
+            const int cpu = cpus[static_cast<size_t>(id) % cpus.size()];
+            CPU_SET(cpu, &set);
+            const int rc = pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+            if (rc != 0)
+                lg::warn("conn", "W" + std::to_string(id) + ": gagal pin ke CPU " +
+                                     std::to_string(cpu) + " (" + std::strerror(rc) + ")");
+        }
+        setpriority(PRIO_PROCESS, 0, -10);
+
         std::shared_ptr<Engine> engine;
         std::shared_ptr<Work> work;
         uint64_t seenGen = 0;

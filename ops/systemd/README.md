@@ -29,9 +29,12 @@ ldd /usr/local/bin/xcb | grep librandomx_v2
 - `EnvironmentFile=/etc/xcb/miner.env` wajib ada (tanpa prefix `-`), supaya
   kesalahan konfigurasi terlihat saat start, bukan diam-diam memakai default.
 - Flag `--conn-pool`, `-u`, `--worker`, `-t` di `ExecStart` **sengaja
-  eksplisit**. `Config.cpp` belum membaca `WALLET`/`WORKER`/`THREADS` dari
-  environment pada jalur CONN, dan `CONN_POOL` hanya dipakai utuh sebagai
-  `host:port`. Jangan hapus flag ini saat menyederhanakan unit.
+  eksplisit**. Binary baru sudah membaca `WALLET`/`WORKER`/`THREADS` dari
+  environment pada jalur CONN, tetapi flag ini dipertahankan agar unit tetap
+  benar di binary lama — selama fleet belum seragam, jangan hapus. `-u` adalah
+  CLI dan menang atas env: `WALLET` harus berisi alamat reward yang sama dengan
+  `CONN_ADDRESS`. Kalau keduanya berbeda, hapus `-u` (hanya aman untuk binary
+  baru). `CONN_POOL` menerima `host[:port]` seperti `--conn-pool`.
 - Nama unit `syscached` dipertahankan karena `ops/fleet/deploy.sh` dan
   `apply.sh` memakai `SVC=syscached` secara default.
 - Binary dan `librandomx_v2.so` harus berada di direktori yang sama

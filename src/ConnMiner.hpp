@@ -32,6 +32,10 @@ struct ConnMinerConfig {
     int poolPort = 17194;
     bool poolTls = true;
     std::string poolWorker = "xcb";
+    // Awal ruang nonce (32-bit). Beberapa mesin yang menambang solo ke node
+    // yang sama harus memakai offset berbeda supaya tidak menghitung nonce
+    // yang sama.
+    uint32_t nonceOffset = 0;
 };
 
 class ConnMiner {

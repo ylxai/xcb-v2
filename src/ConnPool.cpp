@@ -1,6 +1,7 @@
 #include "ConnPool.hpp"
 
 #include "ConnRpc.hpp"  // Json + parseJson
+#include "JsonUtil.hpp"
 #include "Log.hpp"
 
 #include <openssl/err.h>
@@ -243,7 +244,7 @@ bool ConnPool::connectAndLogin(ConnPoolJob& first, std::string& err) {
         std::lock_guard<std::mutex> lock(m_ioMu);
         login = "{\"id\":" + std::to_string(m_msgId++) +
                 ",\"jsonrpc\":\"2.0\",\"method\":\"login\",\"params\":{"
-                "\"login\":\"" + who + "\",\"pass\":\"x\",\"agent\":"
+                "\"login\":\"" + json_escape(who) + "\",\"pass\":\"x\",\"agent\":"
                 "\"xcb-v2/1.0\",\"algo\":[\"rx/2b\"]}}";
     }
     if (!sendLine(login, err)) return false;
@@ -521,9 +522,10 @@ bool ConnPool::submit(const ConnPoolJob& job, uint32_t nonce, const uint8_t hash
     const std::string resultHex = toHex(hash, 32);
     const std::string msg = "{\"id\":" + std::to_string(m_msgId++) +
                             ",\"jsonrpc\":\"2.0\",\"method\":\"submit\",\"params\":{"
-                            "\"id\":\"" + m_loginId + "\",\"job_id\":\"" + job.id +
+                            "\"id\":\"" + json_escape(m_loginId) + "\",\"job_id\":\"" +
+                            json_escape(job.id) +
                             "\",\"nonce\":\"" + nonceHex + "\",\"result\":\"" + resultHex +
-                            "\",\"algo\":\"" + (job.algo.empty() ? "rx/2b" : job.algo) +
+                            "\",\"algo\":\"" + json_escape(job.algo.empty() ? "rx/2b" : job.algo) +
                             "\"}}";
     return sendLineLocked(msg, err);
 }

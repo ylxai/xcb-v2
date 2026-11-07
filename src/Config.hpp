@@ -42,12 +42,17 @@ struct MinerConfig {
     int connPoolPort = 17194;
     bool connPoolTls = true;
     std::string connPoolWorker;  // label worker yang dikirim ke pool
+    // Awal ruang nonce untuk algo=conn. Wajib berbeda per mesin saat beberapa
+    // miner menambang solo ke node yang sama; tanpa ini semuanya menghitung
+    // nonce 0.. dan menduplikasi pekerjaan.
+    uint32_t nonceOffset = 0;
 };
 
 class Config {
 public:
     static MinerConfig parse(int argc, char* argv[]);
-    static MinerConfig loadFile(const std::string& path);
+    static MinerConfig loadFile(const std::string& path, bool* opened = nullptr,
+                                bool* parsedAny = nullptr);
     // Isi fullMem/largePages dari kondisi host untuk field yang masih "auto".
     static void autoDetect(MinerConfig& cfg);
     // CPU yang benar-benar boleh dipakai proses ini (sched_getaffinity), bukan

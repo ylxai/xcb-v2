@@ -187,6 +187,7 @@ Pilih backend lewat `-a`.
 | `--conn-rpc URL` | RPC `connectcoind` untuk mode solo (default `http://127.0.0.1:48172`) |
 | `--conn-user` / `--conn-pass` | kredensial RPC kalau tidak memakai cookie |
 | `--conn-cookie PATH` | cookie RPC (default `~/.connectcoin/.cookie`) |
+| `--nonce-offset N` / `CONN_NONCE_OFFSET` | awal nonce 32-bit (0..2^32-1, default 0) |
 | `CONN_TLS_INSECURE=1` | matikan verifikasi sertifikat pool (self-signed) |
 
 Catatan operasional:
@@ -199,6 +200,9 @@ Catatan operasional:
   koneksi tidak memicu reconnect loop tiap 2 detik.
 - DNS dicoba berurutan (IPv6/IPv4); kalau hasil pertama tidak reachable,
   miner lanjut ke hasil berikutnya.
+- Beberapa host solo ke node yang sama sebaiknya diberi `--nonce-offset`
+  berbeda (atau `conn_nonce_offset` di `pool.cfg`) supaya rentang nonce tidak
+  tumpang tindih. Default 0 berarti semua host mulai dari nonce yang sama.
 - Binary membutuhkan **`librandomx_v2.so` di direktori yang sama** (RPATH
   `$ORIGIN`). `cmake --install` menaruh `xcb` + library di `bin/`.
 - Dataset FAST butuh ~2 GiB RAM per proses (bukan per thread); `--light`
