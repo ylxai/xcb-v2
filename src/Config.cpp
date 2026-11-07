@@ -266,17 +266,25 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         if (envConnUser && envConnUser[0] != '\0') cfg.connUser = envConnUser;
         if (envConnPass && envConnPass[0] != '\0') cfg.connPass = envConnPass;
         if (envConnCookie && envConnCookie[0] != '\0') cfg.connCookie = envConnCookie;
-        if (envConnAddress && envConnAddress[0] != '\0') cfg.connAddress = envConnAddress;
-        if (envConnPool && envConnPool[0] != '\0') cfg.connPoolHost = envConnPool;
-        // WALLET/WORKER/THREADS juga berlaku di jalur CONN, yang tidak punya
-        // POOL. Sebelumnya ketiganya hanya dibaca di cabang env POOL, jadi unit
-        // systemd harus menulis -u/--worker/-t di ExecStart.
-        if (envWallet && envWallet[0] != '\0') {
+        if (envConnAddress && envConnAddress[0] != '\0') {
+            // CONN_ADDRESS lebih spesifik daripada WALLET: kalau keduanya
+            // di-set, yang khusus CONN menang.
+            cfg.connAddress = envConnAddress;
+        } else if (envWallet && envWallet[0] != '\0') {
+            // WALLET hanya fallback. Berlaku juga di jalur CONN, yang tidak
+            // punya POOL; sebelumnya ketiganya hanya dibaca di cabang env POOL,
+            // jadi unit systemd harus menulis -u/--worker/-t di ExecStart.
             cfg.connAddress = envWallet;
-            // Sama seperti -u: "alamat.worker" hanya alamat yang dipakai.
+            // Sama seperti -u: "alamat.worker" -> alamat, suffix jadi worker
+            // bila WORKER tidak di-set terpisah.
             const auto dot = cfg.connAddress.find('.');
-            if (dot != std::string::npos) cfg.connAddress.resize(dot);
+            if (dot != std::string::npos) {
+                if (cfg.connPoolWorker.empty() && dot + 1 < cfg.connAddress.size())
+                    cfg.connPoolWorker = cfg.connAddress.substr(dot + 1);
+                cfg.connAddress.resize(dot);
+            }
         }
+        if (envConnPool && envConnPool[0] != '\0') cfg.connPoolHost = envConnPool;
         if (envWorker && envWorker[0] != '\0') cfg.connPoolWorker = envWorker;
         if (envThreads && envThreads[0] != '\0')
             cfg.threads = static_cast<int>(numOr(envThreads, 0, 0, 4096, "THREADS"));
@@ -345,6 +353,10 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             if (dot != std::string::npos) {
                 // wallet.worker format
                 cfg.connAddress = s.substr(0, dot);
+                // Jalur CONN tidak punya PoolConfig, jadi suffix harus
+                // disimpan sendiri; kalau tidak, worker jatuh ke default "xcb".
+                if (cfg.connPoolWorker.empty() && dot + 1 < s.size())
+                    cfg.connPoolWorker = s.substr(dot + 1);
                 for (auto& p : cfg.pools) {
                     p.wallet = s.substr(0, dot);
                     p.worker = s.substr(dot + 1);
@@ -454,7 +466,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  -V, --version         Print version and exit\n"
                       << "  --ui=MODE             Display: auto|ftxui|ansi|log (default auto)\n"
                       << "  --light               Force light dataset (~256MB)\n"
-                      << "  --full-mem            Force full dataset (~264MB)\n"
+                      << "  --full-mem            Force full dataset (~264MB randomy, ~2080MB conn)\n"
                       << "  --large-pages         Force hugepages on\n"
                       << "  --no-large-pages      Force hugepages off\n"
                       << "  --no-jit              Disable JIT\n"
@@ -462,7 +474,8 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  dari RAM tersedia / cgroup limit / hugepages bebas.\n"
                       << "  Config file: pool.cfg\n"
                       << "  Env: WALLET POOL WORKER THREADS FULL_MEM LARGE_PAGES LOG_LEVEL\n"
-                      << "       LOG_FORMAT REPORT_HASHRATE POLL_MS BENCHMARK\n";
+                      << "       LOG_FORMAT REPORT_HASHRATE POLL_MS BENCHMARK ALGO\n"
+                      << "       CONN_RPC CONN_USER CONN_PASS CONN_COOKIE CONN_ADDRESS CONN_POOL\n";
             exit(0);
         }
     }
@@ -481,6 +494,13 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             if (p.worker != "auto") continue;
             if (hostName.empty()) hostName = hostWorkerName();
             p.worker = hostName;
+        }
+        // Worker CONN disimpan di luar cfg.pools, jadi "auto" dari env WORKER
+        // atau --worker auto harus diresolusi di sini juga. Tanpa ini pool
+        // menerima literal "alamat.auto".
+        if (cfg.connPoolWorker == "auto") {
+            if (hostName.empty()) hostName = hostWorkerName();
+            cfg.connPoolWorker = hostName;
         }
         if (!hostName.empty())
             std::cout << "[Config] worker=auto -> \"" << hostName << "\" (hostname mesin)"
