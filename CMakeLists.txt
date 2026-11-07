@@ -115,6 +115,7 @@ set(MINER_HEADERS
     src/ConnMiner.hpp
     src/Hashing/RandomXV2.hpp
     src/Config.hpp
+    src/JsonUtil.hpp
     src/Log.hpp
     src/Stats.hpp
     src/Submitter.hpp

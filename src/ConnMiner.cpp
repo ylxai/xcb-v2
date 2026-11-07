@@ -488,6 +488,7 @@ struct ConnMiner::Impl {
 
         // --- header 80-byte ---
         auto work = std::make_shared<Work>();
+        work->nonce.store(cfg.nonceOffset, std::memory_order_relaxed);
         work->height = t.height;
         memcpy(work->targetLE, targetLE, 32);
         {
@@ -526,6 +527,7 @@ struct ConnMiner::Impl {
 
     bool buildPoolWork(const ConnPoolJob& j) {
         auto work = std::make_shared<Work>();
+        work->nonce.store(cfg.nonceOffset, std::memory_order_relaxed);
         work->pool = true;
         work->height = static_cast<int>(j.height);
         work->target64 = j.target;

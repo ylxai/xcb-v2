@@ -241,6 +241,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     const char* envConnCookie = getenv("CONN_COOKIE");
     const char* envConnAddress = getenv("CONN_ADDRESS");
     const char* envConnPool = getenv("CONN_POOL");
+    const char* envNonceOffset = getenv("CONN_NONCE_OFFSET");
 
     // Env feature flags, applied in both the env-pool and file-pool paths.
     auto applyEnvFlags = [&]() {
@@ -290,6 +291,9 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         if (envWorker && envWorker[0] != '\0') cfg.connPoolWorker = envWorker;
         if (envThreads && envThreads[0] != '\0')
             cfg.threads = static_cast<int>(numOr(envThreads, 0, 0, 4096, "THREADS"));
+        if (envNonceOffset && envNonceOffset[0] != '\0')
+            cfg.nonceOffset = static_cast<uint32_t>(
+                numOr(envNonceOffset, 0, 0, 4294967295LL, "CONN_NONCE_OFFSET"));
     };
 
     if (envWallet && envPool) {
@@ -437,6 +441,10 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         } else if (arg == "--conn-pool-plain") {
             cfg.connPoolTls = false;
 
+        } else if (arg == "--nonce-offset" && i + 1 < argc) {
+            cfg.nonceOffset = static_cast<uint32_t>(
+                numOr(argv[++i], 0, 0, 4294967295LL, "--nonce-offset"));
+
         } else if (arg == "--worker" && i + 1 < argc) {
             cfg.connPoolWorker = argv[++i];
 
@@ -470,6 +478,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  --address ADDR        Alamat reward CONN (atau pakai -u)\n"
                       << "  --conn-pool HOST[:PORT] Mining pool rplant rx/2b (default port 17194)\n"
                       << "  --conn-pool-plain     Pool tanpa TLS (default TLS)\n"
+                      << "  --nonce-offset N      Awal nonce 32-bit algo conn (default 0)\n"
                       << "  -R, --report-hashrate Submit hashrate to pool every 60s\n"
                       << "  --benchmark N         Benchmark N nonces (no pool)\n"
                       << "  --selftest            Verify SHA3-512 implementation, then exit\n"
@@ -485,7 +494,8 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  Config file: pool.cfg\n"
                       << "  Env: WALLET POOL WORKER THREADS FULL_MEM LARGE_PAGES LOG_LEVEL\n"
                       << "       LOG_FORMAT REPORT_HASHRATE POLL_MS BENCHMARK ALGO\n"
-                      << "       CONN_RPC CONN_USER CONN_PASS CONN_COOKIE CONN_ADDRESS CONN_POOL\n";
+                      << "       CONN_RPC CONN_USER CONN_PASS CONN_COOKIE CONN_ADDRESS CONN_POOL\n"
+                      << "       CONN_NONCE_OFFSET\n";
             exit(0);
         }
     }

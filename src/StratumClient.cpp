@@ -1,5 +1,6 @@
 #include "StratumClient.hpp"
 
+#include "JsonUtil.hpp"
 #include "Log.hpp"
 
 #include <algorithm>
@@ -14,16 +15,6 @@
 // ------------------------------------------------------------
 // Minimal JSON helpers (no external deps).
 // ------------------------------------------------------------
-static std::string json_escape(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 8);
-    for (char c : s) {
-        if (c == '"' || c == '\\') out += '\\';
-        out += c;
-    }
-    return out;
-}
-
 static std::string json_find_str(const std::string& json, const std::string& key) {
     auto pos = json.find('"' + key + '"');
     if (pos == std::string::npos) return "";

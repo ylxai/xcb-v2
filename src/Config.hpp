@@ -42,6 +42,10 @@ struct MinerConfig {
     int connPoolPort = 17194;
     bool connPoolTls = true;
     std::string connPoolWorker;  // label worker yang dikirim ke pool
+    // Awal ruang nonce untuk algo=conn. Wajib berbeda per mesin saat beberapa
+    // miner menambang solo ke node yang sama; tanpa ini semuanya menghitung
+    // nonce 0.. dan menduplikasi pekerjaan.
+    uint32_t nonceOffset = 0;
 };
 
 class Config {
