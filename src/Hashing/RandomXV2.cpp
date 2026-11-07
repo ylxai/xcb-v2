@@ -9,8 +9,21 @@
 // external/randomx-v2/rxv2_api.h + prefix_symbols.sh).
 #include "../../external/randomx-v2/rxv2_api.h"
 #include "../../external/randomx-v2/src/randomx.h"
+// configuration.h tidak punya include guard dan berbeda dari RandomY, jadi
+// hanya di-include di sini — bukan di Config.cpp yang sudah memuat versi
+// RandomY.
+#include "../../external/randomx-v2/src/configuration.h"
 
 namespace rxv2 {
+
+MemNeed memNeed() {
+    const long long datasetBytes =
+        static_cast<long long>(RANDOMX_DATASET_BASE_SIZE) + RANDOMX_DATASET_EXTRA_SIZE;
+    // Bulatkan ke atas: 2181038016 byte = 2079,99 MiB, dan memakai 2079 akan
+    // meloloskan host yang sebenarnya kurang 1 MB.
+    const long long mib = 1024 * 1024;
+    return {static_cast<long>((datasetBytes + mib - 1) / mib), RANDOMX_ARGON_MEMORY / 1024};
+}
 
 namespace {
 

@@ -9,8 +9,9 @@ Type=simple
 EnvironmentFile=/etc/xcb/miner.env
 # Tolak placeholder/kosong. Tanpa ini service "hidup" dengan wallet invalid.
 ExecStartPre=/bin/sh -c 'test -n "${WALLET}" && [ "${WALLET}" != "ISI_WALLET_CONN" ] && test -n "${WORKER}" && [ "${WORKER}" != "CHANGE_ME" ] && test -n "${CONN_POOL}"'
-# Flag -u/--worker/-t sengaja eksplisit: Config.cpp belum membaca WALLET/
-# WORKER/THREADS dari env pada jalur CONN (tanpa POOL). Jangan dihapus.
+# Flag -u/--worker/-t eksplisit agar unit tetap benar di binary lama yang
+# belum membaca WALLET/WORKER/THREADS dari env pada jalur CONN. Binary baru
+# membaca ketiganya dari EnvironmentFile; flag ini menimpa dengan nilai sama.
 ExecStart=/usr/local/bin/xcb -a conn --conn-pool ${CONN_POOL} -u ${WALLET} --worker ${WORKER} -t ${THREADS} --ui=log
 Restart=always
 RestartSec=10

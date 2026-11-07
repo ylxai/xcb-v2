@@ -1,4 +1,5 @@
 #include "Config.hpp"
+#include "Hashing/RandomXV2.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -9,10 +10,11 @@
 #include <sstream>
 #include <unistd.h>
 
-// Ambang memori auto-detect harus ikut parameter RandomY yang sebenarnya
-// dikompilasi, bukan angka yang disalin dari RandomX. randomx.h memberi
+// Ambang memori auto-detect dihitung dari parameter PoW yang sebenarnya
+// dikompilasi, per algo — bukan angka yang disalin. randomx.h memberi
 // RANDOMX_DATASET_ITEM_SIZE + randomx_dataset_item_count(), configuration.h
-// memberi RANDOMX_ARGON_MEMORY (ukuran cache, dalam KiB).
+// memberi RANDOMX_ARGON_MEMORY (ukuran cache, dalam KiB) untuk RandomY;
+// RandomX V2 melaporkan kebutuhannya lewat rxv2::memNeed().
 #include <configuration.h>
 #include <randomx.h>
 
@@ -69,7 +71,14 @@ std::string Config::hostWorkerName() {
 static std::string expandHome(const std::string& path) {
     if (path.empty() || path[0] != '~') return path;
     const char* home = getenv("HOME");
-    if (!home) home = getpwuid(getuid())->pw_dir;
+    if (!home) {
+        // UID tanpa entry passwd (container, user namespace) membuat getpwuid
+        // mengembalikan null. Kembalikan path apa adanya: pemanggil akan
+        // gagal membuka file dan melaporkannya, bukan crash.
+        const passwd* pw = getpwuid(getuid());
+        if (pw) home = pw->pw_dir;
+    }
+    if (!home || !home[0]) return path;
     return std::string(home) + path.substr(1);
 }
 
@@ -259,6 +268,18 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         if (envConnCookie && envConnCookie[0] != '\0') cfg.connCookie = envConnCookie;
         if (envConnAddress && envConnAddress[0] != '\0') cfg.connAddress = envConnAddress;
         if (envConnPool && envConnPool[0] != '\0') cfg.connPoolHost = envConnPool;
+        // WALLET/WORKER/THREADS juga berlaku di jalur CONN, yang tidak punya
+        // POOL. Sebelumnya ketiganya hanya dibaca di cabang env POOL, jadi unit
+        // systemd harus menulis -u/--worker/-t di ExecStart.
+        if (envWallet && envWallet[0] != '\0') {
+            cfg.connAddress = envWallet;
+            // Sama seperti -u: "alamat.worker" hanya alamat yang dipakai.
+            const auto dot = cfg.connAddress.find('.');
+            if (dot != std::string::npos) cfg.connAddress.resize(dot);
+        }
+        if (envWorker && envWorker[0] != '\0') cfg.connPoolWorker = envWorker;
+        if (envThreads && envThreads[0] != '\0')
+            cfg.threads = static_cast<int>(numOr(envThreads, 0, 0, 4096, "THREADS"));
     };
 
     if (envWallet && envPool) {
@@ -414,7 +435,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             cfg.ui = argv[++i];
             
         } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: rk_sysd [options]\n"
+            std::cout << "Usage: xcb [options]\n"
                       << "  -o host:port          Pool address\n"
                       << "  -u wallet[.worker]    Wallet address (worker 'auto' = hostname)\n"
                       << "  -p password           Pool password\n"
@@ -583,6 +604,22 @@ static long cgroupLimitMb() {
     return -1;
 }
 
+// Kebutuhan dataset + cache per algo, dalam MB. RandomY memakai dataset
+// 256 MiB + 8 MiB (RandomX standar: 2 GiB + 32 MiB); CONN memakai RandomX V2
+// dengan dataset 2 GiB + 32 MiB. Keduanya dihitung dari parameter yang benar-
+// benar dikompilasi, bukan angka yang disalin.
+static void algoMemNeed(const std::string& algo, long& datasetMb, long& cacheMb) {
+    if (algo == "conn") {
+        const rxv2::MemNeed need = rxv2::memNeed();
+        datasetMb = need.datasetMb;
+        cacheMb = need.cacheMb;
+        return;
+    }
+    datasetMb =
+        (long)((randomx_dataset_item_count() * RANDOMX_DATASET_ITEM_SIZE) / (1024 * 1024));
+    cacheMb = RANDOMX_ARGON_MEMORY / 1024;
+}
+
 void Config::autoDetect(MinerConfig& cfg) {
     // Selftest tidak mengalokasi dataset sama sekali — jangan buang waktu probe.
     if (cfg.selftest) {
@@ -604,22 +641,20 @@ void Config::autoDetect(MinerConfig& cfg) {
     long hpSizeKb = readMeminfoKb("Hugepagesize");
     if (hpSizeKb <= 0) hpSizeKb = 2048;
 
+    // Dataset dan cache berbeda per algo: RandomY 264 MB + 256 MB, CONN
+    // (RandomX V2) 2080 MB + 256 MB. Memakai angka RandomY untuk CONN membuat
+    // ambang 776 MB — mesin 1 GB memilih FAST 2 GiB lalu OOM, dan hugepages
+    // 520-2336 MB dianggap cukup.
+    long datasetMb = 0;
+    long cacheMb = 0;
+    algoMemNeed(cfg.algo, datasetMb, cacheMb);
+
     if (cfg.fullMemAuto) {
-        // Ambang harus diturunkan dari parameter RandomY yang SEDANG dipakai,
-        // bukan angka RandomX. Fork core-coin memakai DATASET_BASE_SIZE
-        // 256MiB + EXTRA 8MiB (RandomX: 2GiB + 32MiB), jadi dataset di sini
-        // 264MB — delapan kali lebih kecil. Ambang lama 3072MB adalah angka
-        // RandomX dan memaksa light mode di mesin 576MB-2GB yang sebenarnya
-        // sanggup full mode; terukur 400 H/s vs 1.20 kH/s, kehilangan 3x.
-        //
         // Cache dan dataset hidup bersamaan selama init (cache baru dilepas
         // setelah randomx_init_dataset selesai), jadi puncaknya jumlah keduanya.
-        // Diukur di devbox: RSS puncak 524MB rata dari 1 sampai 8 thread —
-        // scratchpad RandomY hanya 128KiB per VM, jadi thread tidak menambah.
+        // Diukur di devbox untuk RandomY: RSS puncak 524MB rata dari 1 sampai 8
+        // thread — scratchpad hanya 128KiB per VM, jadi thread tidak menambah.
         // Lantai OOM dengan swap dimatikan ada di antara 512MB dan 576MB.
-        const long datasetMb =
-            (long)((randomx_dataset_item_count() * RANDOMX_DATASET_ITEM_SIZE) / (1024 * 1024));
-        const long cacheMb = RANDOMX_ARGON_MEMORY / 1024;
         // Sisa untuk biner, stack, kode hasil JIT, buffer stratum, dan
         // optimisme MemAvailable/proses lain di mesin yang sama.
         const long kInitOverheadMb = 256;
@@ -636,10 +671,6 @@ void Config::autoDetect(MinerConfig& cfg) {
         // Butuh hugepages yang sudah dialokasikan host DAN cukup untuk mode yang
         // dipilih. Kalau nol (default hampir semua distro, container, CI runner),
         // langsung matikan supaya tidak ada alloc gagal + fallback.
-        // Angkanya juga diturunkan dari parameter nyata, bukan 2560MB RandomX.
-        const long datasetMb =
-            (long)((randomx_dataset_item_count() * RANDOMX_DATASET_ITEM_SIZE) / (1024 * 1024));
-        const long cacheMb = RANDOMX_ARGON_MEMORY / 1024;
         const long needMb = cfg.fullMem ? datasetMb + cacheMb : cacheMb;
         const long freeMb = (hpFree > 0) ? (hpFree * hpSizeKb) / 1024 : 0;
         cfg.largePages = (freeMb >= needMb);
