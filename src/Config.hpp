@@ -13,6 +13,9 @@ struct PoolConfig {
 
 struct MinerConfig {
     std::vector<PoolConfig> pools;
+    // wallet= dari pool.cfg. Disimpan terpisah supaya file yang hanya berisi
+    // wallet (tanpa server[N]) tetap berguna untuk pool yang dibuat -o.
+    std::string wallet;
     int threads = 0;          // 0 = auto (CPU cores)
     bool useJIT = true;
     bool fullMem = true;
