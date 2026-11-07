@@ -178,7 +178,7 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsed
         const bool known =
             key == "wallet" || key == "worker" || key == "threads" || key == "no_jit" ||
             key == "light" || key == "no_aes" || key == "algo" || key == "conn_rpc" ||
-            key == "conn_cookie" || key == "conn_address" ||
+            key == "conn_cookie" || key == "conn_address" || key == "conn_nonce_offset" ||
             (key.compare(0, 6, "server") == 0 && key.back() == ']') ||
             (key.compare(0, 4, "port") == 0 && key.back() == ']');
         if (known && parsedAny) *parsedAny = true;
@@ -227,6 +227,9 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsed
             cfg.connCookie = val;
         } else if (key == "conn_address") {
             cfg.connAddress = val;
+        } else if (key == "conn_nonce_offset") {
+            cfg.nonceOffset = static_cast<uint32_t>(
+                numOr(val, 0, 0, 4294967295LL, "conn_nonce_offset"));
         }
     }
     

@@ -139,6 +139,11 @@ add_executable(xcb ${MINER_SOURCES} ${MINER_HEADERS})
 
 if(BUILD_TESTING)
     add_test(NAME xcb-selftest COMMAND xcb --selftest)
+
+    # json_escape() header-only: cukup satu TU tanpa link ke binary miner.
+    add_executable(json-escape-test tests/json_escape_test.cpp)
+    target_include_directories(json-escape-test PRIVATE src)
+    add_test(NAME xcb-json-escape COMMAND json-escape-test)
 endif()
 
 # Runtime butuh librandomx_v2.so di direktori yang sama (RPATH $ORIGIN).
