@@ -1,5 +1,6 @@
 #include "Config.hpp"
 #include "Hashing/RandomXV2.hpp"
+#include "HostPort.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -121,18 +122,13 @@ static long long numOr(const std::string& s, long long fallback, long long min, 
     return v;
 }
 
-// "host[:port]" -> host + port. Port dipertahankan bila tidak ada suffix,
-// dipakai bersama oleh --conn-pool dan CONN_POOL.
+// "host[:port]" -> host + port, dipakai bersama oleh --conn-pool dan
+// CONN_POOL. Aturan parsing ada di HostPort.hpp supaya bisa diuji ctest.
 static void parseHostPort(const std::string& v, std::string& host, int& port, int defaultPort,
                           const char* what) {
-    const auto colon = v.rfind(':');
-    if (colon != std::string::npos && colon + 1 < v.size() &&
-        v.find_first_not_of("0123456789", colon + 1) == std::string::npos) {
-        host = v.substr(0, colon);
-        port = static_cast<int>(numOr(v.substr(colon + 1), defaultPort, 1, 65535, what));
-    } else {
-        host = v;
-    }
+    if (!splitHostPort(v, host, port, defaultPort))
+        std::cerr << "[Config] " << what << " tidak valid ('" << v << "'), pakai " << host << ":"
+                  << port << std::endl;
 }
 
 MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsedAny) {
@@ -172,16 +168,16 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsed
         if (val.size() >= 2 && val.front() == '"' && val.back() == '"')
             val = val.substr(1, val.size() - 2);
 
-        // Catat apakah file berisi key yang dikenal. Fallback antar-file tidak
-        // boleh mengganti file yang sudah valid hanya karena tidak punya
-        // server[N] (konfigurasi CONN) atau karena alamat datang dari env.
-        const bool known =
-            key == "wallet" || key == "worker" || key == "threads" || key == "no_jit" ||
-            key == "light" || key == "no_aes" || key == "algo" || key == "conn_rpc" ||
-            key == "conn_cookie" || key == "conn_address" || key == "conn_nonce_offset" ||
+        // Catat apakah file menentukan backend/tujuan. Fallback antar-file
+        // tidak boleh berhenti karena key tuning saja (threads/worker/light):
+        // file seperti itu tidak bisa menambang, jadi kandidat berikutnya
+        // masih harus dicoba. Konfigurasi CONN-only tetap dihitung lewat
+        // conn_rpc/conn_address walau tanpa server[N].
+        const bool definesBackend =
+            key == "algo" || key == "conn_rpc" || key == "conn_address" ||
             (key.compare(0, 6, "server") == 0 && key.back() == ']') ||
             (key.compare(0, 4, "port") == 0 && key.back() == ']');
-        if (known && parsedAny) *parsedAny = true;
+        if (definesBackend && parsedAny) *parsedAny = true;
 
         if (key == "wallet") {
             // Pool config uses single wallet for all servers
@@ -313,11 +309,12 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             // punya POOL; sebelumnya ketiganya hanya dibaca di cabang env POOL,
             // jadi unit systemd harus menulis -u/--worker/-t di ExecStart.
             cfg.connAddress = envWallet;
-            // Sama seperti -u: "alamat.worker" -> alamat, suffix jadi worker
-            // bila WORKER tidak di-set terpisah.
+            // Sama seperti -u: "alamat.worker" -> alamat, suffix jadi worker.
+            // Env > file: suffix ini menimpa worker= dari pool.cfg. WORKER
+            // eksplisit tetap menang karena diterapkan setelah blok ini.
             const auto dot = cfg.connAddress.find('.');
             if (dot != std::string::npos) {
-                if (cfg.connPoolWorker.empty() && dot + 1 < cfg.connAddress.size())
+                if (dot + 1 < cfg.connAddress.size())
                     cfg.connPoolWorker = cfg.connAddress.substr(dot + 1);
                 cfg.connAddress.resize(dot);
             }

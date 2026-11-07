@@ -144,6 +144,11 @@ if(BUILD_TESTING)
     add_executable(json-escape-test tests/json_escape_test.cpp)
     target_include_directories(json-escape-test PRIVATE src)
     add_test(NAME xcb-json-escape COMMAND json-escape-test)
+
+    # Parser host:port / IPv6 yang dipakai --conn-pool dan CONN_POOL.
+    add_executable(hostport-test tests/hostport_test.cpp)
+    target_include_directories(hostport-test PRIVATE src)
+    add_test(NAME xcb-hostport COMMAND hostport-test)
 endif()
 
 # Runtime butuh librandomx_v2.so di direktori yang sama (RPATH $ORIGIN).
