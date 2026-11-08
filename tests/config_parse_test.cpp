@@ -100,32 +100,42 @@ int main() {
         (void)rc;
     }
 
-    // 2. server[1]= kosong di file lokal tidak menutup fallback ~/xcb/pool.cfg.
+    // 2. server[1]= kosong di file lokal tidak menutup fallback. Kandidat
+    // diberikan eksplisit supaya test tidak bergantung pada /etc atau $HOME.
     {
         const std::string root = makeRoot();
-        const std::string cwd = root + "/cwd";
-        const std::string home = root + "/home";
-        mkdir(cwd.c_str(), 0700);
-        mkdir(home.c_str(), 0700);
-        mkdir((home + "/xcb").c_str(), 0700);
-        writeFile(cwd + "/pool.cfg", "server[1]=\n");
-        writeFile(home + "/xcb/pool.cfg",
-                  "server[1]=127.0.0.1\nport[1]=17194\nwallet=fbwallet\n");
-        enter(cwd);
-        clearEnv();
-        setenv("HOME", home.c_str(), 1);
-        if (access("/etc/syscache/pool.cfg", F_OK) == 0) {
-            std::printf("SKIP fallback: /etc/syscache/pool.cfg ada di mesin ini\n");
-        } else {
-            char a0[] = "xcb", a1[] = "--ui=log";
-            char* argv[] = {a0, a1, nullptr};
-            MinerConfig cfg = Config::parse(2, argv);
-            expectInt("fallback pools", static_cast<long>(cfg.pools.size()), 1);
-            if (!cfg.pools.empty()) {
-                expectStr("fallback host", cfg.pools[0].host, "127.0.0.1");
-                expectStr("fallback wallet", cfg.pools[0].wallet, "fbwallet");
-            }
+        const std::string local = root + "/pool.cfg";
+        const std::string missing = root + "/tidak-ada.cfg";
+        const std::string fallback = root + "/fallback.cfg";
+        writeFile(local, "server[1]=\n");
+        writeFile(fallback, "server[1]=127.0.0.1\nport[1]=17194\nwallet=fbwallet\n");
+        MinerConfig cfg = Config::loadChain({local, missing, fallback});
+        expectInt("fallback pools", static_cast<long>(cfg.pools.size()), 1);
+        if (!cfg.pools.empty()) {
+            expectStr("fallback host", cfg.pools[0].host, "127.0.0.1");
+            expectStr("fallback wallet", cfg.pools[0].wallet, "fbwallet");
         }
+        const int rc = std::system(("rm -rf " + root).c_str());
+        (void)rc;
+    }
+
+    // 2b. Placeholder kosong (threads=, light=, conn_nonce_offset=,
+    // conn_cookie=) tidak boleh menimpa nilai fallback.
+    {
+        const std::string root = makeRoot();
+        const std::string local = root + "/pool.cfg";
+        const std::string fallback = root + "/fallback.cfg";
+        writeFile(local, "threads=\nlight=\nconn_nonce_offset=\nconn_cookie=\n");
+        writeFile(fallback,
+                  "server[1]=127.0.0.1\nport[1]=17194\nwallet=fbwallet\n"
+                  "threads=4\nlight=false\nconn_nonce_offset=7\n"
+                  "conn_cookie=/tmp/fb-cookie\n");
+        MinerConfig cfg = Config::loadChain({local, root + "/tidak-ada.cfg", fallback});
+        expectInt("placeholder threads", cfg.threads, 4);
+        expectBool("placeholder fullMem", cfg.fullMem, true);
+        expectBool("placeholder fullMemAuto", cfg.fullMemAuto, false);
+        expectInt("placeholder nonce", static_cast<long>(cfg.nonceOffset), 7);
+        expectStr("placeholder cookie", cfg.connCookie, "/tmp/fb-cookie");
         const int rc = std::system(("rm -rf " + root).c_str());
         (void)rc;
     }

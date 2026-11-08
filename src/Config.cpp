@@ -179,7 +179,10 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsed
         std::string normKey = key;
         if (key.compare(0, 6, "server") == 0 && key.back() == ']') normKey = "server";
         else if (key.compare(0, 4, "port") == 0 && key.back() == ']') normKey = "port";
-        if (keys) keys->insert(normKey);
+        // Catat key yang benar-benar di-set. Nilai kosong (placeholder
+        // `wallet=`, `threads=`, `conn_cookie=`, ...) tidak dicatat: overlay
+        // tidak boleh menganggapnya sebagai override eksplisit.
+        if (keys && !val.empty()) keys->insert(normKey);
 
         // port[N] sendirian bukan backend: tanpa server[N] tidak ada pool.
         // Nilai kosong (server[1]=, algo=, conn_rpc=, conn_address=) juga
@@ -266,6 +269,39 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsed
         std::cerr << "[Config] " << path << ": port[N] tanpa server[N] diabaikan" << std::endl;
     }
     
+    return cfg;
+}
+
+MinerConfig Config::loadChain(const std::vector<std::string>& candidates) {
+    std::vector<FilePartial> partials;
+    MinerConfig last;
+    bool haveBackend = false;
+    MinerConfig cfg;
+    for (const auto& path : candidates) {
+        bool opened = false;
+        bool parsed = false;
+        std::set<std::string> keys;
+        MinerConfig cand = loadFile(path, &opened, &parsed, &keys);
+        last = cand;
+        if (parsed) {
+            cfg = cand;
+            applyPartials(cfg, partials);
+            haveBackend = true;
+            break;
+        }
+        // Semua file yang terbuka ikut dipertahankan: file lokal kosong
+        // tidak boleh menyembunyikan tuning dari /etc atau ~/xcb.
+        if (opened && !keys.empty()) partials.push_back({cand, keys});
+    }
+    if (!haveBackend) {
+        if (!partials.empty()) {
+            cfg = partials.back().cfg;
+            partials.pop_back();
+            applyPartials(cfg, partials);
+        } else {
+            cfg = last;
+        }
+    }
     return cfg;
 }
 
@@ -377,33 +413,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         // ditimpakan ke kandidat backend sesuai prioritas (lokal > /etc >
         // ~/xcb). File lokal yang kosong tidak boleh menyembunyikan tuning
         // atau wallet dari file berikutnya.
-        const char* candidates[] = {"pool.cfg", "/etc/syscache/pool.cfg", "~/xcb/pool.cfg"};
-        std::vector<FilePartial> partials;
-        MinerConfig last;
-        bool haveBackend = false;
-        for (const char* path : candidates) {
-            bool opened = false;
-            bool parsed = false;
-            std::set<std::string> keys;
-            MinerConfig cand = loadFile(path, &opened, &parsed, &keys);
-            last = cand;
-            if (parsed) {
-                cfg = cand;
-                applyPartials(cfg, partials);
-                haveBackend = true;
-                break;
-            }
-            if (opened && !keys.empty()) partials.push_back({cand, keys});
-        }
-        if (!haveBackend) {
-            if (!partials.empty()) {
-                cfg = partials.back().cfg;
-                partials.pop_back();
-                applyPartials(cfg, partials);
-            } else {
-                cfg = last;
-            }
-        }
+        cfg = loadChain({"pool.cfg", "/etc/syscache/pool.cfg", "~/xcb/pool.cfg"});
         
         // 3. Apply env overrides on top of the file (precedence: file < env < CLI).
         applyEnvFlags();

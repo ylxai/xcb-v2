@@ -58,6 +58,10 @@ public:
     static MinerConfig loadFile(const std::string& path, bool* opened = nullptr,
                                 bool* parsedAny = nullptr,
                                 std::set<std::string>* keys = nullptr);
+    // Muat rantai kandidat config: file pertama yang punya key backend menang,
+    // semua file yang terbuka tanpa backend digabung sebagai partial. Dipisah
+    // dari parse() supaya urutan kandidat bisa diuji tanpa path tetap.
+    static MinerConfig loadChain(const std::vector<std::string>& candidates);
     // Isi fullMem/largePages dari kondisi host untuk field yang masih "auto".
     static void autoDetect(MinerConfig& cfg);
     // CPU yang benar-benar boleh dipakai proses ini (sched_getaffinity), bukan
