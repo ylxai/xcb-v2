@@ -127,14 +127,10 @@ static long long numOr(const std::string& s, long long fallback, long long min, 
 // CONN_POOL. Aturan parsing ada di HostPort.hpp supaya bisa diuji ctest.
 static void parseHostPort(const std::string& v, std::string& host, int& port, int defaultPort,
                           const char* what) {
-    if (!splitHostPort(v, host, port, defaultPort)) {
-        if (host.empty())
-            std::cerr << "[Config] " << what << " tidak valid ('" << v
-                      << "'), host kosong diabaikan" << std::endl;
-        else
-            std::cerr << "[Config] " << what << " tidak valid ('" << v << "'), pakai " << host
-                      << ":" << port << std::endl;
-    }
+    // Nilai invalid tidak boleh menghapus host/port yang sudah valid dari
+    // env atau file (mis. CONN_POOL=host:port lalu --conn-pool :17194).
+    if (!applyHostPort(v, host, port, defaultPort))
+        std::cerr << "[Config] " << what << " tidak valid ('" << v << "'), diabaikan" << std::endl;
 }
 
 MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsedAny,
@@ -186,7 +182,9 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsed
         if (keys) keys->insert(normKey);
 
         // port[N] sendirian bukan backend: tanpa server[N] tidak ada pool.
-        if (isBackendKey(normKey) && parsedAny) *parsedAny = true;
+        // Nilai kosong (server[1]=, algo=, conn_rpc=, conn_address=) juga
+        // berarti "tidak di-set", bukan backend yang valid.
+        if (!val.empty() && isBackendKey(normKey) && parsedAny) *parsedAny = true;
 
         if (key == "wallet") {
             // Pool config uses single wallet for all servers
@@ -197,11 +195,13 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsed
                 for (auto& p : cfg.pools) p.wallet = val;
             }
         } else if (key == "worker") {
-            pool.worker = val;
-            // Jalur CONN menyimpan worker di luar PoolConfig, dan file
-            // CONN-only tidak pernah push pool. Simpan juga di sini supaya
-            // worker=dev1 / worker=auto berlaku untuk pool CONN.
-            cfg.connPoolWorker = val;
+            if (!val.empty()) {
+                pool.worker = val;
+                // Jalur CONN menyimpan worker di luar PoolConfig, dan file
+                // CONN-only tidak pernah push pool. Simpan juga di sini supaya
+                // worker=dev1 / worker=auto berlaku untuk pool CONN.
+                cfg.connPoolWorker = val;
+            }
         } else if (key.compare(0, 6, "server") == 0 && key.back() == ']') {
             // server[N]=host — push previous pool if exists
             if (!pool.host.empty()) {
@@ -226,13 +226,13 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsed
         } else if (key == "no_aes") {
             cfg.hardAES = (val != "true" && val != "1" && val != "yes");
         } else if (key == "algo") {
-            cfg.algo = val;
+            if (!val.empty()) cfg.algo = val;
         } else if (key == "conn_rpc") {
-            cfg.connRpc = val;
+            if (!val.empty()) cfg.connRpc = val;
         } else if (key == "conn_cookie") {
-            cfg.connCookie = val;
+            if (!val.empty()) cfg.connCookie = val;
         } else if (key == "conn_address") {
-            cfg.connAddress = val;
+            if (!val.empty()) cfg.connAddress = val;
         } else if (key == "conn_nonce_offset") {
             cfg.nonceOffset = static_cast<uint32_t>(
                 numOr(val, 0, 0, 4294967295LL, "conn_nonce_offset"));

@@ -41,6 +41,21 @@ int main() {
     expect("port negatif", "host:-1", "host", 17194, false);
     expect("port kosong", "host:", "host", 17194, true);
 
+    // applyHostPort: nilai invalid tidak menghapus host/port yang sudah ada.
+    {
+        std::string host = "envhost";
+        int port = 17194;
+        if (applyHostPort(":17194", host, port, 17194) || host != "envhost" || port != 17194) {
+            std::fprintf(stderr, "FAIL apply invalid: host=[%s] port=%d\n", host.c_str(), port);
+            ++g_fail;
+        }
+        if (!applyHostPort("newhost:3333", host, port, 17194) || host != "newhost" ||
+            port != 3333) {
+            std::fprintf(stderr, "FAIL apply valid: host=[%s] port=%d\n", host.c_str(), port);
+            ++g_fail;
+        }
+    }
+
     if (g_fail) {
         std::fprintf(stderr, "%d kasus gagal\n", g_fail);
         return 1;

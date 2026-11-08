@@ -154,6 +154,12 @@ if(BUILD_TESTING)
     add_executable(config-merge-test tests/config_merge_test.cpp)
     target_include_directories(config-merge-test PRIVATE src)
     add_test(NAME xcb-config-merge COMMAND config-merge-test)
+
+    # Config::parse/loadFile: env vs CLI invalid, backend kosong, fallback.
+    # Config.cpp ditautkan langsung; rxv2::memNeed() distub di test.
+    add_executable(config-parse-test tests/config_parse_test.cpp src/Config.cpp)
+    target_include_directories(config-parse-test PRIVATE src)
+    add_test(NAME xcb-config-parse COMMAND config-parse-test)
 endif()
 
 # Runtime butuh librandomx_v2.so di direktori yang sama (RPATH $ORIGIN).

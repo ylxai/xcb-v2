@@ -41,3 +41,15 @@ inline bool splitHostPort(const std::string& v, std::string& host, int& port, in
     if (host.empty()) return false;  // ":17194"
     return parsePort(v.substr(colon + 1));
 }
+
+// Parse v lalu commit ke host/port hanya bila valid. Nilai yang gagal tidak
+// boleh menghapus host/port yang sudah di-set (mis. CONN_POOL dari env yang
+// ditimpa --conn-pool invalid).
+inline bool applyHostPort(const std::string& v, std::string& host, int& port, int defaultPort) {
+    std::string h;
+    int p = defaultPort;
+    if (!splitHostPort(v, h, p, defaultPort)) return false;
+    host = h;
+    port = p;
+    return true;
+}
