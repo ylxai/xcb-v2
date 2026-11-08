@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 # Least privilege: the workflow only reads the repo.
@@ -246,3 +247,51 @@ jobs:
           ./build/xcb --selftest
           file build/xcb
           EOF
+
+  release:
+    name: GitHub Release (tag)
+    # Hanya pada tag v*, dan hanya kalau artefak deploy sudah lolos.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-2204
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Unduh artefak deploy
+        uses: actions/download-artifact@v4
+        with:
+          name: xcb-2204
+          path: dist
+
+      - name: Verifikasi checksum artefak
+        run: ( cd dist && sha256sum -c SHA256SUMS )
+
+      - name: Paket tarball rilis
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME}"
+          mkdir -p pkg
+          cp dist/xcb dist/librandomx_v2.so dist/VERSION dist/SHA256SUMS pkg/
+          cp ops/fleet/install.sh pkg/install.sh
+          cp ops/systemd/syscached.service ops/systemd/miner.env.example pkg/
+          chmod 0755 pkg/install.sh
+          tar -czf "xcb-${V}-linux-x86_64.tar.gz" -C pkg .
+          sha256sum "xcb-${V}-linux-x86_64.tar.gz" > "xcb-${V}-linux-x86_64.tar.gz.sha256"
+          cat "xcb-${V}-linux-x86_64.tar.gz.sha256"
+
+      - name: Terbitkan release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME}"
+          gh release create "$V" \
+            "xcb-${V}-linux-x86_64.tar.gz" \
+            "xcb-${V}-linux-x86_64.tar.gz.sha256" \
+            --verify-tag \
+            --title "$V" \
+            --generate-notes
