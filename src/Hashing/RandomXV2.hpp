@@ -20,6 +20,15 @@ namespace rxv2 {
 
 constexpr size_t HEADER_SIZE = 80;
 
+// Kebutuhan memori mode FAST dalam MB, dihitung dari parameter RandomX V2
+// yang benar-benar dikompilasi. Dipakai auto-detect di Config supaya ambang
+// memori tidak memakai angka RandomY (dataset 264 MB) untuk CONN.
+struct MemNeed {
+    long datasetMb;
+    long cacheMb;
+};
+MemNeed memNeed();
+
 class Context {
 public:
     // key = 32 byte dari getblocktemplate "randomxkey" (bootstrap key selama

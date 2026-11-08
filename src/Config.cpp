@@ -1,4 +1,7 @@
 #include "Config.hpp"
+#include "Hashing/RandomXV2.hpp"
+#include "ConfigMerge.hpp"
+#include "HostPort.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -9,10 +12,11 @@
 #include <sstream>
 #include <unistd.h>
 
-// Ambang memori auto-detect harus ikut parameter RandomY yang sebenarnya
-// dikompilasi, bukan angka yang disalin dari RandomX. randomx.h memberi
+// Ambang memori auto-detect dihitung dari parameter PoW yang sebenarnya
+// dikompilasi, per algo — bukan angka yang disalin. randomx.h memberi
 // RANDOMX_DATASET_ITEM_SIZE + randomx_dataset_item_count(), configuration.h
-// memberi RANDOMX_ARGON_MEMORY (ukuran cache, dalam KiB).
+// memberi RANDOMX_ARGON_MEMORY (ukuran cache, dalam KiB) untuk RandomY;
+// RandomX V2 melaporkan kebutuhannya lewat rxv2::memNeed().
 #include <configuration.h>
 #include <randomx.h>
 
@@ -32,7 +36,9 @@ std::vector<int> Config::usableCpus() {
         // Fallback: kernel tanpa sched_getaffinity yang bisa dibaca.
         long n = sysconf(_SC_NPROCESSORS_ONLN);
         if (n < 1) n = 1;
-        for (long i = 0; i < n; i++) cpus.push_back(static_cast<int>(i));
+        // CPU_SET() menulis ke cpu_set_t berukuran CPU_SETSIZE; index di atas
+        // itu akan merusak stack. Clamp supaya fallback tetap aman.
+        for (long i = 0; i < n && i < CPU_SETSIZE; i++) cpus.push_back(static_cast<int>(i));
     }
     return cpus;
 }
@@ -69,7 +75,14 @@ std::string Config::hostWorkerName() {
 static std::string expandHome(const std::string& path) {
     if (path.empty() || path[0] != '~') return path;
     const char* home = getenv("HOME");
-    if (!home) home = getpwuid(getuid())->pw_dir;
+    if (!home) {
+        // UID tanpa entry passwd (container, user namespace) membuat getpwuid
+        // mengembalikan null. Kembalikan path apa adanya: pemanggil akan
+        // gagal membuka file dan melaporkannya, bukan crash.
+        const passwd* pw = getpwuid(getuid());
+        if (pw) home = pw->pw_dir;
+    }
+    if (!home || !home[0]) return path;
     return std::string(home) + path.substr(1);
 }
 
@@ -110,14 +123,29 @@ static long long numOr(const std::string& s, long long fallback, long long min, 
     return v;
 }
 
-MinerConfig Config::loadFile(const std::string& path) {
+// "host[:port]" -> host + port, dipakai bersama oleh --conn-pool dan
+// CONN_POOL. Aturan parsing ada di HostPort.hpp supaya bisa diuji ctest.
+static void parseHostPort(const std::string& v, std::string& host, int& port, int defaultPort,
+                          const char* what) {
+    // Nilai invalid tidak boleh menghapus host/port yang sudah valid dari
+    // env atau file (mis. CONN_POOL=host:port lalu --conn-pool :17194).
+    if (!applyHostPort(v, host, port, defaultPort))
+        std::cerr << "[Config] " << what << " tidak valid ('" << v << "'), diabaikan" << std::endl;
+}
+
+MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsedAny,
+                             std::set<std::string>* keys) {
     MinerConfig cfg;
+    if (opened) *opened = false;
+    if (parsedAny) *parsedAny = false;
+    if (keys) keys->clear();
     std::string expanded = expandHome(path);
     std::ifstream file(expanded);
     if (!file.is_open()) {
         std::cerr << "[Config] Cannot open: " << expanded << std::endl;
         return cfg;
     }
+    if (opened) *opened = true;
     
     std::cout << "[Config] Loading: " << expanded << std::endl;
     PoolConfig pool;
@@ -143,16 +171,40 @@ MinerConfig Config::loadFile(const std::string& path) {
         // Remove surrounding quotes
         if (val.size() >= 2 && val.front() == '"' && val.back() == '"')
             val = val.substr(1, val.size() - 2);
-        
+
+        // Catat key yang benar-benar muncul di file. Fallback butuh ini untuk
+        // membedakan "file tidak menyinggung field ini" dari "file menulis
+        // nilai default", dan untuk tahu apakah file hanya berisi key tuning
+        // (threads/worker/light): file seperti itu belum punya backend.
+        std::string normKey = key;
+        if (key.compare(0, 6, "server") == 0 && key.back() == ']') normKey = "server";
+        else if (key.compare(0, 4, "port") == 0 && key.back() == ']') normKey = "port";
+        // Catat key yang benar-benar di-set. Nilai kosong (placeholder
+        // `wallet=`, `threads=`, `conn_cookie=`, ...) tidak dicatat: overlay
+        // tidak boleh menganggapnya sebagai override eksplisit.
+        if (keys && !val.empty()) keys->insert(normKey);
+
+        // port[N] sendirian bukan backend: tanpa server[N] tidak ada pool.
+        // Nilai kosong (server[1]=, algo=, conn_rpc=, conn_address=) juga
+        // berarti "tidak di-set", bukan backend yang valid.
+        if (!val.empty() && isBackendKey(normKey) && parsedAny) *parsedAny = true;
+
         if (key == "wallet") {
             // Pool config uses single wallet for all servers
+            cfg.wallet = val;
             if (cfg.pools.empty()) {
                 pool.wallet = val;
             } else {
                 for (auto& p : cfg.pools) p.wallet = val;
             }
         } else if (key == "worker") {
-            pool.worker = val;
+            if (!val.empty()) {
+                pool.worker = val;
+                // Jalur CONN menyimpan worker di luar PoolConfig, dan file
+                // CONN-only tidak pernah push pool. Simpan juga di sini supaya
+                // worker=dev1 / worker=auto berlaku untuk pool CONN.
+                cfg.connPoolWorker = val;
+            }
         } else if (key.compare(0, 6, "server") == 0 && key.back() == ']') {
             // server[N]=host — push previous pool if exists
             if (!pool.host.empty()) {
@@ -177,13 +229,16 @@ MinerConfig Config::loadFile(const std::string& path) {
         } else if (key == "no_aes") {
             cfg.hardAES = (val != "true" && val != "1" && val != "yes");
         } else if (key == "algo") {
-            cfg.algo = val;
+            if (!val.empty()) cfg.algo = val;
         } else if (key == "conn_rpc") {
-            cfg.connRpc = val;
+            if (!val.empty()) cfg.connRpc = val;
         } else if (key == "conn_cookie") {
-            cfg.connCookie = val;
+            if (!val.empty()) cfg.connCookie = val;
         } else if (key == "conn_address") {
-            cfg.connAddress = val;
+            if (!val.empty()) cfg.connAddress = val;
+        } else if (key == "conn_nonce_offset") {
+            cfg.nonceOffset = static_cast<uint32_t>(
+                numOr(val, 0, 0, 4294967295LL, "conn_nonce_offset"));
         }
     }
     
@@ -206,7 +261,47 @@ MinerConfig Config::loadFile(const std::string& path) {
             }
         }
     }
+
+    // port[N] tanpa server[N] tidak membentuk pool. Jangan biarkan file
+    // seperti itu dianggap backend; beri tahu juga supaya nilainya tidak
+    // hilang diam-diam.
+    if (keys && keys->count("port") && !keys->count("server")) {
+        std::cerr << "[Config] " << path << ": port[N] tanpa server[N] diabaikan" << std::endl;
+    }
     
+    return cfg;
+}
+
+MinerConfig Config::loadChain(const std::vector<std::string>& candidates) {
+    std::vector<FilePartial> partials;
+    MinerConfig last;
+    bool haveBackend = false;
+    MinerConfig cfg;
+    for (const auto& path : candidates) {
+        bool opened = false;
+        bool parsed = false;
+        std::set<std::string> keys;
+        MinerConfig cand = loadFile(path, &opened, &parsed, &keys);
+        last = cand;
+        if (parsed) {
+            cfg = cand;
+            applyPartials(cfg, partials);
+            haveBackend = true;
+            break;
+        }
+        // Semua file yang terbuka ikut dipertahankan: file lokal kosong
+        // tidak boleh menyembunyikan tuning dari /etc atau ~/xcb.
+        if (opened && !keys.empty()) partials.push_back({cand, keys});
+    }
+    if (!haveBackend) {
+        if (!partials.empty()) {
+            cfg = partials.back().cfg;
+            partials.pop_back();
+            applyPartials(cfg, partials);
+        } else {
+            cfg = last;
+        }
+    }
     return cfg;
 }
 
@@ -230,6 +325,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     const char* envConnCookie = getenv("CONN_COOKIE");
     const char* envConnAddress = getenv("CONN_ADDRESS");
     const char* envConnPool = getenv("CONN_POOL");
+    const char* envNonceOffset = getenv("CONN_NONCE_OFFSET");
 
     // Env feature flags, applied in both the env-pool and file-pool paths.
     auto applyEnvFlags = [&]() {
@@ -257,8 +353,34 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         if (envConnUser && envConnUser[0] != '\0') cfg.connUser = envConnUser;
         if (envConnPass && envConnPass[0] != '\0') cfg.connPass = envConnPass;
         if (envConnCookie && envConnCookie[0] != '\0') cfg.connCookie = envConnCookie;
-        if (envConnAddress && envConnAddress[0] != '\0') cfg.connAddress = envConnAddress;
-        if (envConnPool && envConnPool[0] != '\0') cfg.connPoolHost = envConnPool;
+        if (envConnAddress && envConnAddress[0] != '\0') {
+            // CONN_ADDRESS lebih spesifik daripada WALLET: kalau keduanya
+            // di-set, yang khusus CONN menang.
+            cfg.connAddress = envConnAddress;
+        } else if (envWallet && envWallet[0] != '\0') {
+            // WALLET hanya fallback. Berlaku juga di jalur CONN, yang tidak
+            // punya POOL; sebelumnya ketiganya hanya dibaca di cabang env POOL,
+            // jadi unit systemd harus menulis -u/--worker/-t di ExecStart.
+            cfg.connAddress = envWallet;
+            // Sama seperti -u: "alamat.worker" -> alamat, suffix jadi worker.
+            // Env > file: suffix ini menimpa worker= dari pool.cfg. WORKER
+            // eksplisit tetap menang karena diterapkan setelah blok ini.
+            const auto dot = cfg.connAddress.find('.');
+            if (dot != std::string::npos) {
+                if (dot + 1 < cfg.connAddress.size())
+                    cfg.connPoolWorker = cfg.connAddress.substr(dot + 1);
+                cfg.connAddress.resize(dot);
+            }
+        }
+        if (envConnPool && envConnPool[0] != '\0')
+            parseHostPort(envConnPool, cfg.connPoolHost, cfg.connPoolPort, 17194,
+                          "CONN_POOL port");
+        if (envWorker && envWorker[0] != '\0') cfg.connPoolWorker = envWorker;
+        if (envThreads && envThreads[0] != '\0')
+            cfg.threads = static_cast<int>(numOr(envThreads, 0, 0, 4096, "THREADS"));
+        if (envNonceOffset && envNonceOffset[0] != '\0')
+            cfg.nonceOffset = static_cast<uint32_t>(
+                numOr(envNonceOffset, 0, 0, 4294967295LL, "CONN_NONCE_OFFSET"));
     };
 
     if (envWallet && envPool) {
@@ -286,9 +408,12 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                   << std::endl;
     } else {
         // 2. Try loading pool.cfg (skipped when env WALLET+POOL are set)
-        cfg = loadFile("pool.cfg");
-        if (cfg.pools.empty()) cfg = loadFile("/etc/syscache/pool.cfg");
-        if (cfg.pools.empty()) cfg = loadFile("~/xcb/pool.cfg");
+        // Kandidat pertama yang punya key backend menang. Semua file yang
+        // terbuka tetapi belum punya backend disimpan sebagai partial dan
+        // ditimpakan ke kandidat backend sesuai prioritas (lokal > /etc >
+        // ~/xcb). File lokal yang kosong tidak boleh menyembunyikan tuning
+        // atau wallet dari file berikutnya.
+        cfg = loadChain({"pool.cfg", "/etc/syscache/pool.cfg", "~/xcb/pool.cfg"});
         
         // 3. Apply env overrides on top of the file (precedence: file < env < CLI).
         applyEnvFlags();
@@ -297,6 +422,9 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     // 4. Parse CLI args (override file & env). Always runs, even with env
     //    pools, so flags like --selftest/--benchmark/-t/--light still work
     //    (e.g. when WALLET/POOL come from environment).
+    bool cliWorkerSet = false;  // --worker eksplisit menang atas suffix -u
+    std::string cliWallet;      // -u, diterapkan setelah semua pool terkumpul
+    std::string cliWorkerSuffix;  // suffix .worker dari -u
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         
@@ -320,10 +448,20 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             // ada pool, jadi cfg.pools kosong dan nilai ini tidak akan
             // tersimpan di PoolConfig.
             cfg.connAddress = s;
+            cliWallet = s;
             auto dot = s.find('.');
             if (dot != std::string::npos) {
                 // wallet.worker format
                 cfg.connAddress = s.substr(0, dot);
+                cliWallet = s.substr(0, dot);
+                // Jalur CONN tidak punya PoolConfig, jadi suffix harus
+                // disimpan sendiri; kalau tidak, worker jatuh ke default "xcb".
+                // CLI > env: suffix -u menimpa WORKER dari env, tetapi
+                // --worker eksplisit tetap yang tertinggi.
+                if (!cliWorkerSet && dot + 1 < s.size()) {
+                    cfg.connPoolWorker = s.substr(dot + 1);
+                    cliWorkerSuffix = s.substr(dot + 1);
+                }
                 for (auto& p : cfg.pools) {
                     p.wallet = s.substr(0, dot);
                     p.worker = s.substr(dot + 1);
@@ -379,23 +517,19 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             cfg.connAddress = argv[++i];
 
         } else if (arg == "--conn-pool" && i + 1 < argc) {
-            // HOST[:PORT]
-            std::string v = argv[++i];
-            auto colon = v.rfind(':');
-            if (colon != std::string::npos && colon + 1 < v.size() &&
-                v.find_first_not_of("0123456789", colon + 1) == std::string::npos) {
-                cfg.connPoolHost = v.substr(0, colon);
-                cfg.connPoolPort = static_cast<int>(
-                    numOr(v.substr(colon + 1), 17194, 1, 65535, "--conn-pool port"));
-            } else {
-                cfg.connPoolHost = v;
-            }
+            parseHostPort(argv[++i], cfg.connPoolHost, cfg.connPoolPort, 17194,
+                          "--conn-pool port");
 
         } else if (arg == "--conn-pool-plain") {
             cfg.connPoolTls = false;
 
+        } else if (arg == "--nonce-offset" && i + 1 < argc) {
+            cfg.nonceOffset = static_cast<uint32_t>(
+                numOr(argv[++i], 0, 0, 4294967295LL, "--nonce-offset"));
+
         } else if (arg == "--worker" && i + 1 < argc) {
             cfg.connPoolWorker = argv[++i];
+            cliWorkerSet = true;
 
         } else if (arg == "-R" || arg == "--report-hashrate") {
             cfg.reportHashrate = true;
@@ -414,7 +548,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             cfg.ui = argv[++i];
             
         } else if (arg == "--help" || arg == "-h") {
-            std::cout << "Usage: rk_sysd [options]\n"
+            std::cout << "Usage: xcb [options]\n"
                       << "  -o host:port          Pool address\n"
                       << "  -u wallet[.worker]    Wallet address (worker 'auto' = hostname)\n"
                       << "  -p password           Pool password\n"
@@ -427,13 +561,14 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  --address ADDR        Alamat reward CONN (atau pakai -u)\n"
                       << "  --conn-pool HOST[:PORT] Mining pool rplant rx/2b (default port 17194)\n"
                       << "  --conn-pool-plain     Pool tanpa TLS (default TLS)\n"
+                      << "  --nonce-offset N      Awal nonce 32-bit algo conn (default 0)\n"
                       << "  -R, --report-hashrate Submit hashrate to pool every 60s\n"
                       << "  --benchmark N         Benchmark N nonces (no pool)\n"
                       << "  --selftest            Verify SHA3-512 implementation, then exit\n"
                       << "  -V, --version         Print version and exit\n"
                       << "  --ui=MODE             Display: auto|ftxui|ansi|log (default auto)\n"
                       << "  --light               Force light dataset (~256MB)\n"
-                      << "  --full-mem            Force full dataset (~264MB)\n"
+                      << "  --full-mem            Force full dataset (~264MB randomy, ~2080MB conn)\n"
                       << "  --large-pages         Force hugepages on\n"
                       << "  --no-large-pages      Force hugepages off\n"
                       << "  --no-jit              Disable JIT\n"
@@ -441,11 +576,18 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  dari RAM tersedia / cgroup limit / hugepages bebas.\n"
                       << "  Config file: pool.cfg\n"
                       << "  Env: WALLET POOL WORKER THREADS FULL_MEM LARGE_PAGES LOG_LEVEL\n"
-                      << "       LOG_FORMAT REPORT_HASHRATE POLL_MS BENCHMARK\n";
+                      << "       LOG_FORMAT REPORT_HASHRATE POLL_MS BENCHMARK ALGO\n"
+                      << "       CONN_RPC CONN_USER CONN_PASS CONN_COOKIE CONN_ADDRESS CONN_POOL\n"
+                      << "       CONN_NONCE_OFFSET\n";
             exit(0);
         }
     }
     
+    // -u dan --worker berlaku untuk semua pool, termasuk yang dibuat -o
+    // setelahnya; tanpa ini urutan argumen mengubah hasil. Wallet/worker dari
+    // file atau env hanya mengisi pool yang belum punya nilai sendiri.
+    applyCliPoolDefaults(cfg, cliWallet, cliWorkerSuffix, cliWorkerSet);
+
     // Apply wallet from file if CLI didn't override
     // (already done in loadFile)
 
@@ -460,6 +602,13 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             if (p.worker != "auto") continue;
             if (hostName.empty()) hostName = hostWorkerName();
             p.worker = hostName;
+        }
+        // Worker CONN disimpan di luar cfg.pools, jadi "auto" dari env WORKER
+        // atau --worker auto harus diresolusi di sini juga. Tanpa ini pool
+        // menerima literal "alamat.auto".
+        if (cfg.connPoolWorker == "auto") {
+            if (hostName.empty()) hostName = hostWorkerName();
+            cfg.connPoolWorker = hostName;
         }
         if (!hostName.empty())
             std::cout << "[Config] worker=auto -> \"" << hostName << "\" (hostname mesin)"
@@ -583,6 +732,22 @@ static long cgroupLimitMb() {
     return -1;
 }
 
+// Kebutuhan dataset + cache per algo, dalam MB. RandomY memakai dataset
+// 256 MiB + 8 MiB (RandomX standar: 2 GiB + 32 MiB); CONN memakai RandomX V2
+// dengan dataset 2 GiB + 32 MiB. Keduanya dihitung dari parameter yang benar-
+// benar dikompilasi, bukan angka yang disalin.
+static void algoMemNeed(const std::string& algo, long& datasetMb, long& cacheMb) {
+    if (algo == "conn") {
+        const rxv2::MemNeed need = rxv2::memNeed();
+        datasetMb = need.datasetMb;
+        cacheMb = need.cacheMb;
+        return;
+    }
+    datasetMb =
+        (long)((randomx_dataset_item_count() * RANDOMX_DATASET_ITEM_SIZE) / (1024 * 1024));
+    cacheMb = RANDOMX_ARGON_MEMORY / 1024;
+}
+
 void Config::autoDetect(MinerConfig& cfg) {
     // Selftest tidak mengalokasi dataset sama sekali — jangan buang waktu probe.
     if (cfg.selftest) {
@@ -604,22 +769,20 @@ void Config::autoDetect(MinerConfig& cfg) {
     long hpSizeKb = readMeminfoKb("Hugepagesize");
     if (hpSizeKb <= 0) hpSizeKb = 2048;
 
+    // Dataset dan cache berbeda per algo: RandomY 264 MB + 256 MB, CONN
+    // (RandomX V2) 2080 MB + 256 MB. Memakai angka RandomY untuk CONN membuat
+    // ambang 776 MB — mesin 1 GB memilih FAST 2 GiB lalu OOM, dan hugepages
+    // 520-2336 MB dianggap cukup.
+    long datasetMb = 0;
+    long cacheMb = 0;
+    algoMemNeed(cfg.algo, datasetMb, cacheMb);
+
     if (cfg.fullMemAuto) {
-        // Ambang harus diturunkan dari parameter RandomY yang SEDANG dipakai,
-        // bukan angka RandomX. Fork core-coin memakai DATASET_BASE_SIZE
-        // 256MiB + EXTRA 8MiB (RandomX: 2GiB + 32MiB), jadi dataset di sini
-        // 264MB — delapan kali lebih kecil. Ambang lama 3072MB adalah angka
-        // RandomX dan memaksa light mode di mesin 576MB-2GB yang sebenarnya
-        // sanggup full mode; terukur 400 H/s vs 1.20 kH/s, kehilangan 3x.
-        //
         // Cache dan dataset hidup bersamaan selama init (cache baru dilepas
         // setelah randomx_init_dataset selesai), jadi puncaknya jumlah keduanya.
-        // Diukur di devbox: RSS puncak 524MB rata dari 1 sampai 8 thread —
-        // scratchpad RandomY hanya 128KiB per VM, jadi thread tidak menambah.
+        // Diukur di devbox untuk RandomY: RSS puncak 524MB rata dari 1 sampai 8
+        // thread — scratchpad hanya 128KiB per VM, jadi thread tidak menambah.
         // Lantai OOM dengan swap dimatikan ada di antara 512MB dan 576MB.
-        const long datasetMb =
-            (long)((randomx_dataset_item_count() * RANDOMX_DATASET_ITEM_SIZE) / (1024 * 1024));
-        const long cacheMb = RANDOMX_ARGON_MEMORY / 1024;
         // Sisa untuk biner, stack, kode hasil JIT, buffer stratum, dan
         // optimisme MemAvailable/proses lain di mesin yang sama.
         const long kInitOverheadMb = 256;
@@ -636,10 +799,6 @@ void Config::autoDetect(MinerConfig& cfg) {
         // Butuh hugepages yang sudah dialokasikan host DAN cukup untuk mode yang
         // dipilih. Kalau nol (default hampir semua distro, container, CI runner),
         // langsung matikan supaya tidak ada alloc gagal + fallback.
-        // Angkanya juga diturunkan dari parameter nyata, bukan 2560MB RandomX.
-        const long datasetMb =
-            (long)((randomx_dataset_item_count() * RANDOMX_DATASET_ITEM_SIZE) / (1024 * 1024));
-        const long cacheMb = RANDOMX_ARGON_MEMORY / 1024;
         const long needMb = cfg.fullMem ? datasetMb + cacheMb : cacheMb;
         const long freeMb = (hpFree > 0) ? (hpFree * hpSizeKb) / 1024 : 0;
         cfg.largePages = (freeMb >= needMb);

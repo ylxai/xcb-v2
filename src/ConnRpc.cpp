@@ -1,5 +1,6 @@
 #include "ConnRpc.hpp"
 
+#include "JsonUtil.hpp"
 #include "Log.hpp"
 
 #include <cerrno>
@@ -330,24 +331,32 @@ bool ConnRpc::httpPost(const std::string& body, std::string& response, std::stri
         if (res) ::freeaddrinfo(res);
         return false;
     }
-    int fd = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (fd < 0) {
-        ::freeaddrinfo(res);
-        err = "socket() gagal";
-        return false;
-    }
+    // Coba setiap hasil DNS, bukan hanya yang pertama: host dengan AAAA dan
+    // A record bisa gagal di IPv6 walau IPv4 hidup.
+    int fd = -1;
+    int lastErr = 0;
+    for (struct addrinfo* ai = res; ai != nullptr; ai = ai->ai_next) {
+        fd = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) {
+            lastErr = errno;
+            continue;
+        }
 
-    struct timeval tv {};
-    tv.tv_sec = 30;
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    if (::connect(fd, res->ai_addr, res->ai_addrlen) != 0) {
-        err = "connect ke " + m_host + ":" + port + " gagal: " + std::strerror(errno);
-        ::freeaddrinfo(res);
+        struct timeval tv {};
+        tv.tv_sec = 30;
+        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        if (::connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
+        lastErr = errno;
         ::close(fd);
-        return false;
+        fd = -1;
     }
     ::freeaddrinfo(res);
+    if (fd < 0) {
+        err = "connect ke " + m_host + ":" + port + " gagal: " +
+              std::strerror(lastErr ? lastErr : ECONNREFUSED);
+        return false;
+    }
 
     std::string req;
     req += "POST " + m_path + " HTTP/1.1\r\n";
@@ -518,7 +527,8 @@ bool ConnRpc::submitBlock(const std::string& blockHex, std::string& reason, bool
     Json result, error;
     accepted = false;
     reason.clear();
-    if (!call("submitblock", "[\"" + blockHex + "\"]", result, error, err)) return false;
+    if (!call("submitblock", "[\"" + json_escape(blockHex) + "\"]", result, error, err))
+        return false;
     if (result.isNull()) {
         accepted = true;
         return true;
@@ -536,11 +546,12 @@ bool ConnRpc::submitBlock(const std::string& blockHex, std::string& reason, bool
 bool ConnRpc::getAddressScript(const std::string& address, std::string& scriptHex,
                                std::string& err) {
     Json result, error;
-    if (!call("getaddressinfo", "[\"" + address + "\"]", result, error, err)) {
+    if (!call("getaddressinfo", "[\"" + json_escape(address) + "\"]", result, error, err)) {
         // Node lama / tanpa wallet: coba validateaddress.
         Json r2, e2;
         std::string err2;
-        if (!call("validateaddress", "[\"" + address + "\"]", r2, e2, err2)) return false;
+        if (!call("validateaddress", "[\"" + json_escape(address) + "\"]", r2, e2, err2))
+            return false;
         if (!r2.getStr("scriptPubKey", scriptHex)) {
             err = "alamat tanpa scriptPubKey";
             return false;

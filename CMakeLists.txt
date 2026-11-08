@@ -115,6 +115,7 @@ set(MINER_HEADERS
     src/ConnMiner.hpp
     src/Hashing/RandomXV2.hpp
     src/Config.hpp
+    src/JsonUtil.hpp
     src/Log.hpp
     src/Stats.hpp
     src/Submitter.hpp
@@ -138,6 +139,27 @@ add_executable(xcb ${MINER_SOURCES} ${MINER_HEADERS})
 
 if(BUILD_TESTING)
     add_test(NAME xcb-selftest COMMAND xcb --selftest)
+
+    # json_escape() header-only: cukup satu TU tanpa link ke binary miner.
+    add_executable(json-escape-test tests/json_escape_test.cpp)
+    target_include_directories(json-escape-test PRIVATE src)
+    add_test(NAME xcb-json-escape COMMAND json-escape-test)
+
+    # Parser host:port / IPv6 yang dipakai --conn-pool dan CONN_POOL.
+    add_executable(hostport-test tests/hostport_test.cpp)
+    target_include_directories(hostport-test PRIVATE src)
+    add_test(NAME xcb-hostport COMMAND hostport-test)
+
+    # Presedensi file parsial + fallback (wallet/worker/threads/light).
+    add_executable(config-merge-test tests/config_merge_test.cpp)
+    target_include_directories(config-merge-test PRIVATE src)
+    add_test(NAME xcb-config-merge COMMAND config-merge-test)
+
+    # Config::parse/loadFile: env vs CLI invalid, backend kosong, fallback.
+    # Config.cpp ditautkan langsung; rxv2::memNeed() distub di test.
+    add_executable(config-parse-test tests/config_parse_test.cpp src/Config.cpp)
+    target_include_directories(config-parse-test PRIVATE src)
+    add_test(NAME xcb-config-parse COMMAND config-parse-test)
 endif()
 
 # Runtime butuh librandomx_v2.so di direktori yang sama (RPATH $ORIGIN).

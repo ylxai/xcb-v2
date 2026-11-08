@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,9 @@ struct PoolConfig {
 
 struct MinerConfig {
     std::vector<PoolConfig> pools;
+    // wallet= dari pool.cfg. Disimpan terpisah supaya file yang hanya berisi
+    // wallet (tanpa server[N]) tetap berguna untuk pool yang dibuat -o.
+    std::string wallet;
     int threads = 0;          // 0 = auto (CPU cores)
     bool useJIT = true;
     bool fullMem = true;
@@ -42,12 +46,22 @@ struct MinerConfig {
     int connPoolPort = 17194;
     bool connPoolTls = true;
     std::string connPoolWorker;  // label worker yang dikirim ke pool
+    // Awal ruang nonce untuk algo=conn. Wajib berbeda per mesin saat beberapa
+    // miner menambang solo ke node yang sama; tanpa ini semuanya menghitung
+    // nonce 0.. dan menduplikasi pekerjaan.
+    uint32_t nonceOffset = 0;
 };
 
 class Config {
 public:
     static MinerConfig parse(int argc, char* argv[]);
-    static MinerConfig loadFile(const std::string& path);
+    static MinerConfig loadFile(const std::string& path, bool* opened = nullptr,
+                                bool* parsedAny = nullptr,
+                                std::set<std::string>* keys = nullptr);
+    // Muat rantai kandidat config: file pertama yang punya key backend menang,
+    // semua file yang terbuka tanpa backend digabung sebagai partial. Dipisah
+    // dari parse() supaya urutan kandidat bisa diuji tanpa path tetap.
+    static MinerConfig loadChain(const std::vector<std::string>& candidates);
     // Isi fullMem/largePages dari kondisi host untuk field yang masih "auto".
     static void autoDetect(MinerConfig& cfg);
     // CPU yang benar-benar boleh dipakai proses ini (sched_getaffinity), bukan
