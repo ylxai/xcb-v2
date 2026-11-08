@@ -100,6 +100,52 @@ int main() {
         expectBool("light auto", dst.fullMemAuto, false);
     }
 
+    // Placeholder kosong (`wallet=`, `worker=`, `conn_cookie=`) tidak boleh
+    // menghapus nilai fallback.
+    {
+        MinerConfig dst = fallbackCfg();
+        MinerConfig src;  // semua string kosong, seperti pool.cfg tanpa isi
+        src.connCookie = "";
+        applyFileOverlay(dst, src, {"wallet", "worker", "conn_cookie"});
+        expectStr("wallet kosong", dst.wallet, "fbwallet");
+        expectStr("pool wallet kosong", dst.pools[0].wallet, "fbwallet");
+        expectStr("worker kosong", dst.connPoolWorker, "fbworker");
+        expectStr("pool worker kosong", dst.pools[0].worker, "fbworker");
+        expectStr("cookie kosong", dst.connCookie, "/fb/cookie");
+    }
+
+    // Worker dari env WORKER / worker= file berlaku untuk pool -o yang masih
+    // memakai default "worker" (pool dibuat setelah file dibaca).
+    {
+        MinerConfig cfg;
+        PoolConfig p;
+        p.host = "127.0.0.1";
+        cfg.pools.push_back(p);
+        cfg.connPoolWorker = "envworker";
+        applyCliPoolDefaults(cfg, "", "", false);
+        expectStr("worker -o", cfg.pools[0].worker, "envworker");
+    }
+
+    // -u wallet.worker menang atas worker env; --worker menang atas suffix.
+    {
+        MinerConfig cfg;
+        PoolConfig p;
+        p.host = "127.0.0.1";
+        cfg.pools.push_back(p);
+        cfg.connPoolWorker = "envworker";
+        applyCliPoolDefaults(cfg, "wallet", "cliworker", false);
+        expectStr("suffix -u", cfg.pools[0].worker, "cliworker");
+        expectStr("wallet -u", cfg.pools[0].wallet, "wallet");
+
+        MinerConfig cfg2;
+        PoolConfig p2;
+        p2.host = "127.0.0.1";
+        cfg2.pools.push_back(p2);
+        cfg2.connPoolWorker = "flagworker";
+        applyCliPoolDefaults(cfg2, "wallet", "cliworker", true);
+        expectStr("--worker", cfg2.pools[0].worker, "flagworker");
+    }
+
     if (g_fail) {
         std::fprintf(stderr, "%d kasus gagal\n", g_fail);
         return 1;

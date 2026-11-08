@@ -563,19 +563,9 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     }
     
     // -u dan --worker berlaku untuk semua pool, termasuk yang dibuat -o
-    // setelahnya; tanpa ini urutan argumen mengubah hasil. Wallet dari file
-    // hanya mengisi pool yang belum punya wallet sendiri.
-    if (!cliWallet.empty()) {
-        for (auto& p : cfg.pools) p.wallet = cliWallet;
-    } else if (!cfg.wallet.empty()) {
-        for (auto& p : cfg.pools)
-            if (p.wallet.empty()) p.wallet = cfg.wallet;
-    }
-    if (cliWorkerSet) {
-        for (auto& p : cfg.pools) p.worker = cfg.connPoolWorker;
-    } else if (!cliWorkerSuffix.empty()) {
-        for (auto& p : cfg.pools) p.worker = cliWorkerSuffix;
-    }
+    // setelahnya; tanpa ini urutan argumen mengubah hasil. Wallet/worker dari
+    // file atau env hanya mengisi pool yang belum punya nilai sendiri.
+    applyCliPoolDefaults(cfg, cliWallet, cliWorkerSuffix, cliWorkerSet);
 
     // Apply wallet from file if CLI didn't override
     // (already done in loadFile)
