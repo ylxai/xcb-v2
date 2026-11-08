@@ -21,7 +21,10 @@ int main() {
     expect("host:port", "eu.rplant.xyz:17194", "eu.rplant.xyz", 17194, true);
     expect("host saja", "eu.rplant.xyz", "eu.rplant.xyz", 17194, true);
     expect("port lain", "pool.local:3333", "pool.local", 3333, true);
-    expect("host kosong", ":17194", "", 17194, true);
+    expect("host kosong", ":17194", "", 17194, false);
+    expect("string kosong", "", "", 17194, false);
+    expect("bracket kosong", "[]:17194", "", 17194, false);
+    expect("bracket kosong saja", "[]", "", 17194, false);
 
     // IPv6
     expect("v6 tanpa bracket", "::1", "::1", 17194, true);

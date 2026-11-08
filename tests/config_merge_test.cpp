@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "ConfigMerge.hpp"
 
@@ -144,6 +145,55 @@ int main() {
         cfg2.connPoolWorker = "flagworker";
         applyCliPoolDefaults(cfg2, "wallet", "cliworker", true);
         expectStr("--worker", cfg2.pools[0].worker, "flagworker");
+    }
+
+    // port[N] sendirian bukan backend; server[N]/algo tetap backend.
+    {
+        expectBool("algo backend", isBackendKey("algo"), true);
+        expectBool("server backend", isBackendKey("server"), true);
+        expectBool("conn_rpc backend", isBackendKey("conn_rpc"), true);
+        expectBool("port bukan backend", isBackendKey("port"), false);
+        expectBool("threads bukan backend", isBackendKey("threads"), false);
+    }
+
+    // Tiga file: pool.cfg lokal kosong, /etc berisi tuning+wallet, ~/xcb
+    // backend. Tuning /etc tidak boleh hilang karena file lokal kosong.
+    {
+        MinerConfig backend;
+        PoolConfig p;
+        p.host = "home";
+        backend.pools.push_back(p);  // threads=0 (auto), wallet kosong
+        MinerConfig etc;
+        etc.threads = 1;
+        etc.wallet = "etcwallet";
+        etc.connPoolWorker = "etcworker";
+        std::vector<FilePartial> partials = {
+            {MinerConfig{}, {}},  // pool.cfg kosong
+            {etc, {"threads", "wallet", "worker"}},
+        };
+        applyPartials(backend, partials);
+        expectInt("3 file threads", backend.threads, 1);
+        expectStr("3 file wallet", backend.wallet, "etcwallet");
+        expectStr("3 file pool wallet", backend.pools[0].wallet, "etcwallet");
+        expectStr("3 file worker", backend.pools[0].worker, "etcworker");
+    }
+
+    // File lokal yang menulis key tetap menang atas /etc.
+    {
+        MinerConfig backend;
+        PoolConfig p;
+        p.host = "home";
+        backend.pools.push_back(p);
+        MinerConfig local;
+        local.threads = 2;
+        MinerConfig etc;
+        etc.threads = 8;
+        std::vector<FilePartial> partials = {
+            {local, {"threads"}},
+            {etc, {"threads"}},
+        };
+        applyPartials(backend, partials);
+        expectInt("lokal > etc", backend.threads, 2);
     }
 
     if (g_fail) {

@@ -127,9 +127,14 @@ static long long numOr(const std::string& s, long long fallback, long long min, 
 // CONN_POOL. Aturan parsing ada di HostPort.hpp supaya bisa diuji ctest.
 static void parseHostPort(const std::string& v, std::string& host, int& port, int defaultPort,
                           const char* what) {
-    if (!splitHostPort(v, host, port, defaultPort))
-        std::cerr << "[Config] " << what << " tidak valid ('" << v << "'), pakai " << host << ":"
-                  << port << std::endl;
+    if (!splitHostPort(v, host, port, defaultPort)) {
+        if (host.empty())
+            std::cerr << "[Config] " << what << " tidak valid ('" << v
+                      << "'), host kosong diabaikan" << std::endl;
+        else
+            std::cerr << "[Config] " << what << " tidak valid ('" << v << "'), pakai " << host
+                      << ":" << port << std::endl;
+    }
 }
 
 MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsedAny,
@@ -180,10 +185,8 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsed
         else if (key.compare(0, 4, "port") == 0 && key.back() == ']') normKey = "port";
         if (keys) keys->insert(normKey);
 
-        const bool definesBackend = normKey == "algo" || normKey == "conn_rpc" ||
-                                    normKey == "conn_address" || normKey == "server" ||
-                                    normKey == "port";
-        if (definesBackend && parsedAny) *parsedAny = true;
+        // port[N] sendirian bukan backend: tanpa server[N] tidak ada pool.
+        if (isBackendKey(normKey) && parsedAny) *parsedAny = true;
 
         if (key == "wallet") {
             // Pool config uses single wallet for all servers
@@ -254,6 +257,13 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsed
                 if (!lastWorker.empty()) p.worker = lastWorker;
             }
         }
+    }
+
+    // port[N] tanpa server[N] tidak membentuk pool. Jangan biarkan file
+    // seperti itu dianggap backend; beri tahu juga supaya nilainya tidak
+    // hilang diam-diam.
+    if (keys && keys->count("port") && !keys->count("server")) {
+        std::cerr << "[Config] " << path << ": port[N] tanpa server[N] diabaikan" << std::endl;
     }
     
     return cfg;
@@ -362,17 +372,14 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                   << std::endl;
     } else {
         // 2. Try loading pool.cfg (skipped when env WALLET+POOL are set)
-        // Kandidat pertama yang punya key backend menang. File yang terbuka
-        // tetapi hanya berisi key tuning (threads/worker/wallet) tidak
-        // dibuang: key yang benar-benar ditulis file itu ditimpakan ke
-        // kandidat backend, sisanya dari kandidat. Tanpa ini file lokal
-        // kehilangan isinya atau default-nya mengalahkan nilai eksplisit
-        // kandidat.
+        // Kandidat pertama yang punya key backend menang. Semua file yang
+        // terbuka tetapi belum punya backend disimpan sebagai partial dan
+        // ditimpakan ke kandidat backend sesuai prioritas (lokal > /etc >
+        // ~/xcb). File lokal yang kosong tidak boleh menyembunyikan tuning
+        // atau wallet dari file berikutnya.
         const char* candidates[] = {"pool.cfg", "/etc/syscache/pool.cfg", "~/xcb/pool.cfg"};
-        MinerConfig partial;
-        std::set<std::string> partialKeys;
+        std::vector<FilePartial> partials;
         MinerConfig last;
-        bool havePartial = false;
         bool haveBackend = false;
         for (const char* path : candidates) {
             bool opened = false;
@@ -382,17 +389,21 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             last = cand;
             if (parsed) {
                 cfg = cand;
-                if (havePartial) applyFileOverlay(cfg, partial, partialKeys);
+                applyPartials(cfg, partials);
                 haveBackend = true;
                 break;
             }
-            if (opened && !havePartial) {
-                partial = cand;
-                partialKeys = keys;
-                havePartial = true;
+            if (opened && !keys.empty()) partials.push_back({cand, keys});
+        }
+        if (!haveBackend) {
+            if (!partials.empty()) {
+                cfg = partials.back().cfg;
+                partials.pop_back();
+                applyPartials(cfg, partials);
+            } else {
+                cfg = last;
             }
         }
-        if (!haveBackend) cfg = havePartial ? partial : last;
         
         // 3. Apply env overrides on top of the file (precedence: file < env < CLI).
         applyEnvFlags();

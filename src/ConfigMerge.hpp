@@ -2,14 +2,22 @@
 
 #include <set>
 #include <string>
+#include <vector>
 
 #include "Config.hpp"
+
+// Key yang menandai file sebagai konfigurasi backend yang lengkap. port[N]
+// sendirian bukan backend: tanpa server[N] tidak ada pool yang bisa dipakai,
+// jadi file seperti itu harus tetap menjadi partial dan fallback berjalan.
+inline bool isBackendKey(const std::string& key) {
+    return key == "algo" || key == "conn_rpc" || key == "conn_address" || key == "server";
+}
 
 // Terapkan key yang benar-benar ditulis file berprioritas lebih tinggi (src)
 // ke config hasil kandidat fallback (dst). Hanya key di `keys` yang menimpa,
 // jadi nilai default file parsial tidak mengalahkan nilai eksplisit dari
-// kandidat. Key backend (algo/conn_rpc/conn_address/server/port) tidak
-// di-overlay: file yang punya key itu sudah menjadi kandidat backend.
+// kandidat. Key backend (algo/conn_rpc/conn_address/server) tidak di-overlay:
+// file yang punya key itu sudah menjadi kandidat backend.
 //
 // Nilai string kosong berarti "tidak di-set", bukan "kosongkan nilai
 // fallback": pool.cfg yang di-commit memakai `wallet=` sebagai placeholder,
@@ -34,6 +42,21 @@ inline void applyFileOverlay(MinerConfig& dst, const MinerConfig& src,
     if (keys.count("no_aes")) dst.hardAES = src.hardAES;
     if (keys.count("conn_cookie") && !src.connCookie.empty()) dst.connCookie = src.connCookie;
     if (keys.count("conn_nonce_offset")) dst.nonceOffset = src.nonceOffset;
+}
+
+// Satu file pool.cfg yang terbuka tetapi tidak punya key backend, beserta key
+// yang benar-benar ditulisnya.
+struct FilePartial {
+    MinerConfig cfg;
+    std::set<std::string> keys;
+};
+
+// Terapkan semua partial ke backend. `partials` disusun sesuai urutan
+// kandidat (pool.cfg, /etc/syscache/pool.cfg, ~/xcb/pool.cfg), jadi iterasi
+// dibalik: file berprioritas terendah dulu, file lokal terakhir dan menang.
+inline void applyPartials(MinerConfig& base, const std::vector<FilePartial>& partials) {
+    for (auto it = partials.rbegin(); it != partials.rend(); ++it)
+        applyFileOverlay(base, it->cfg, it->keys);
 }
 
 // Terapkan wallet/worker hasil CLI ke semua pool setelah semua -o terkumpul.
