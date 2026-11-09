@@ -75,8 +75,12 @@ masih terbuka. Ini bukan pengganti `README.md`; baca juga:
     setelah sekitar 3 kegagalan; kalau wallet-nya tidak di-set, login pool itu
     bisa gagal. Hindari mencampur `-o` dengan env/`pool.cfg` kecuali memang
     memahami perilaku ini.
-  - Unit systemd memakai flag `-u/--worker/-t` eksplisit karena `WALLET` saja
-    tidak mengaktifkan jalur env untuk backend CONN.
+  - Unit systemd tidak lagi menulis `-u/--worker/-t` untuk wallet. Backend
+    CONN membaca `CONN_ADDRESS` (menang) atau `WALLET` (fallback), plus
+    `CONN_POOL`/`WORKER`/`THREADS`, dari `EnvironmentFile`. Wrapper
+    `/usr/local/sbin/sysd` menyalin `WALLET` tanpa suffix `.worker` ke
+    `CONN_ADDRESS` supaya kedua variabel tidak pernah menunjuk alamat reward
+    yang berbeda; `THREADS` kosong tetap berarti auto.
 
 ---
 
@@ -159,8 +163,9 @@ Job CI yang harus hijau:
 - Template: `ops/systemd/syscached.service`.
 - Environment: `/etc/xcb/miner.env` (mode 600, tidak di repo).
 - `ExecStartPre` menolak `WALLET`/`WORKER` placeholder dan `CONN_POOL` kosong.
-- Flag `--conn-pool`, `-u`, `--worker`, `-t` **sengaja eksplisit**; jangan
-  menghapusnya saat “menyederhanakan” unit.
+- `ExecStart` memakai wrapper `/usr/local/sbin/sysd` (0700 root); wrapper
+  membaca `WORKER`/`THREADS` dari env dan `exec` `xcb`, sehingga unit metadata
+  tidak memuat path binary, wallet, atau flag.
 - `EnvironmentFile` sengaja tanpa prefix `-`: file hilang = service gagal start,
   bukan diam-diam memakai default.
 

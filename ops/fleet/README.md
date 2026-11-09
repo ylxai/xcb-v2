@@ -72,8 +72,31 @@ sudo ./install.sh --wallet <alamat> --worker <nama>
 ```
 
 `install.sh` memasang binary + library ke `/usr/local/bin`, menulis
-`/etc/xcb/miner.env` (0600), menyiapkan hugepages, memasang unit, lalu
-menjalankan `syscached`. `--dry-run` mencetak rencana tanpa mengubah apa pun.
+`/etc/xcb/miner.env` (0600), menyiapkan hugepages, menulis wrapper
+`/usr/local/sbin/sysd` (0700), memasang unit, lalu menjalankan `syscached`.
+`--dry-run` mencetak rencana tanpa mengubah apa pun. Sebelum menimpa,
+`install.sh` membackup binary, library, dan unit lama dengan akhiran
+`-<stamp>` dan mencetak perintah rollback satu baris. Ganti unit di host fleet
+lewat `install.sh`, bukan `deploy.sh`: `apply.sh rollback` (dipakai
+`deploy.sh --rollback`) hanya mengembalikan binary + library.
+
+Urutan rollback aman: **pulihkan unit dulu**, baru binary + library. Kalau
+`apply.sh rollback` dipulihkan lebih dulu sementara unit wrapper masih aktif,
+binary pra-PR #20 start tanpa `CONN_POOL` yang bisa dipakai dan service gagal
+sampai unit lama dikembalikan.
+
+```bash
+# 1. unit lama dulu
+sudo install -m 0644 /etc/systemd/system/syscached.service.bak-<stamp> \
+    /etc/systemd/system/syscached.service
+sudo systemctl daemon-reload
+# 2. baru binary + library
+sudo ./deploy.sh --rollback        # atau apply.sh rollback
+```
+
+`install.sh` adalah installer penuh: ia juga memasang `xcb` dan
+`librandomx_v2.so` dari tarball, jadi pakai tarball rilis yang cocok atau
+pasang unit + wrapper secara manual.
 Kalau `install.sh` sudah ada di host, `--version v1.0.0` (atau `latest`)
 membuatnya mengunduh dan memverifikasi tarball rilis itu sendiri.
 
