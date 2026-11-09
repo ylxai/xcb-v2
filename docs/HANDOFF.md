@@ -78,9 +78,9 @@ masih terbuka. Ini bukan pengganti `README.md`; baca juga:
   - Unit systemd tidak lagi menulis `-u/--worker/-t` untuk wallet. Backend
     CONN membaca `CONN_ADDRESS` (menang) atau `WALLET` (fallback), plus
     `CONN_POOL`/`WORKER`/`THREADS`, dari `EnvironmentFile`. Wrapper
-    `/usr/local/sbin/sysd` menyalin `WALLET` ke `CONN_ADDRESS` agar binary
-    lama (pra-PR #20, hanya membaca `CONN_ADDRESS` di jalur CONN) tetap
-    mendapat alamat reward yang sama bila binary di-rollback.
+    `/usr/local/sbin/sysd` menyalin `WALLET` tanpa suffix `.worker` ke
+    `CONN_ADDRESS` supaya kedua variabel tidak pernah menunjuk alamat reward
+    yang berbeda; `THREADS` kosong tetap berarti auto.
 
 ---
 

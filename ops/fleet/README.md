@@ -76,8 +76,10 @@ sudo ./install.sh --wallet <alamat> --worker <nama>
 `/usr/local/sbin/sysd` (0700), memasang unit, lalu menjalankan `syscached`.
 `--dry-run` mencetak rencana tanpa mengubah apa pun. Sebelum menimpa,
 `install.sh` membackup binary, library, dan unit lama dengan akhiran
-`-<stamp>`; rollback harus mengembalikan ketiganya, karena unit baru memakai
-wrapper + `EnvironmentFile` yang tidak kompatibel dengan binary pra-PR #20.
+`-<stamp>` dan mencetak perintah rollback satu baris. Ganti unit di host fleet
+lewat `install.sh`, bukan `deploy.sh`: `apply.sh rollback` (dipakai
+`deploy.sh --rollback`) hanya mengembalikan binary + library, jadi unit baru
+harus di-rollback manual dari `${UNIT}.bak-<stamp>`.
 Kalau `install.sh` sudah ada di host, `--version v1.0.0` (atau `latest`)
 membuatnya mengunduh dan memverifikasi tarball rilis itu sendiri.
 
