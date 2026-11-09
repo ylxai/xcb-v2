@@ -75,8 +75,12 @@ masih terbuka. Ini bukan pengganti `README.md`; baca juga:
     setelah sekitar 3 kegagalan; kalau wallet-nya tidak di-set, login pool itu
     bisa gagal. Hindari mencampur `-o` dengan env/`pool.cfg` kecuali memang
     memahami perilaku ini.
-  - Unit systemd memakai flag `-u/--worker/-t` eksplisit karena `WALLET` saja
-    tidak mengaktifkan jalur env untuk backend CONN.
+  - Unit systemd tidak lagi menulis `-u/--worker/-t` untuk wallet. Backend
+    CONN membaca `CONN_ADDRESS` (menang) atau `WALLET` (fallback), plus
+    `CONN_POOL`/`WORKER`/`THREADS`, dari `EnvironmentFile`. Wrapper
+    `/usr/local/sbin/sysd` menyalin `WALLET` ke `CONN_ADDRESS` agar binary
+    lama (pra-PR #20, hanya membaca `CONN_ADDRESS` di jalur CONN) tetap
+    mendapat alamat reward yang sama bila binary di-rollback.
 
 ---
 

