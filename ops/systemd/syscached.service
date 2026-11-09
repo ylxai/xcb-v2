@@ -9,11 +9,10 @@ Type=simple
 EnvironmentFile=/etc/xcb/miner.env
 # Tolak placeholder/kosong. Tanpa ini service "hidup" dengan wallet invalid.
 ExecStartPre=/bin/sh -c 'test -n "${WALLET}" && [ "${WALLET}" != "ISI_WALLET_CONN" ] && test -n "${WORKER}" && [ "${WORKER}" != "CHANGE_ME" ] && test -n "${CONN_POOL}"'
-# Flag -u/--worker/-t eksplisit agar unit tetap benar di binary lama yang
-# belum membaca WALLET/WORKER/THREADS dari env pada jalur CONN. Di binary baru
-# flag tetap menang sebagai CLI: -u harus memakai alamat reward yang sama
-# dengan CONN_ADDRESS/WALLET. Kalau CONN_ADDRESS diisi berbeda, hapus -u.
-ExecStart=/usr/local/bin/xcb -a conn --conn-pool ${CONN_POOL} -u ${WALLET} --worker ${WORKER} -t ${THREADS} --ui=log
+# Wrapper root-only: ExecStart tidak memuat path binary, wallet, atau flag.
+# Isinya exec /usr/local/bin/xcb dengan WORKER/THREADS dari miner.env;
+# dipasang oleh ops/fleet/install.sh dengan mode 0700.
+ExecStart=/usr/local/sbin/sysd
 Restart=always
 RestartSec=10
 LimitMEMLOCK=infinity

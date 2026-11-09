@@ -159,8 +159,9 @@ Job CI yang harus hijau:
 - Template: `ops/systemd/syscached.service`.
 - Environment: `/etc/xcb/miner.env` (mode 600, tidak di repo).
 - `ExecStartPre` menolak `WALLET`/`WORKER` placeholder dan `CONN_POOL` kosong.
-- Flag `--conn-pool`, `-u`, `--worker`, `-t` **sengaja eksplisit**; jangan
-  menghapusnya saat “menyederhanakan” unit.
+- `ExecStart` memakai wrapper `/usr/local/sbin/sysd` (0700 root); wrapper
+  membaca `WORKER`/`THREADS` dari env dan `exec` `xcb`, sehingga unit metadata
+  tidak memuat path binary, wallet, atau flag.
 - `EnvironmentFile` sengaja tanpa prefix `-`: file hilang = service gagal start,
   bukan diam-diam memakai default.
 

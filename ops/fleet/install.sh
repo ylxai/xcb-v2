@@ -8,11 +8,12 @@
 #        sudo ./install.sh --version v1.0.0 --wallet <alamat> --worker <nama>
 #
 # Skrip ini hanya menyentuh host lokal: binary + library, /etc/xcb/miner.env,
-# sysctl hugepages, dan unit syscached. Tidak menghubungi host lain.
+# sysctl hugepages, wrapper sysd, dan unit syscached. Tidak menghubungi host lain.
 set -eu
 
 REPO="ylxai/xcb-v2"
 PREFIX="/usr/local/bin"
+WRAPPER="/usr/local/sbin/sysd"
 CONF_DIR="/etc/xcb"
 CONF="${CONF_DIR}/miner.env"
 UNIT="/etc/systemd/system/syscached.service"
@@ -171,6 +172,20 @@ if [ -f "${SRC}/VERSION" ]; then
     run install -m 0644 "${SRC}/VERSION" "${PREFIX}/VERSION"
 fi
 
+# Wrapper root-only supaya ExecStart dan `systemctl show` tidak memuat path
+# binary atau flag. Isinya membaca WORKER/THREADS dari miner.env.
+run install -d -m 0755 "$(dirname "$WRAPPER")"
+if [ "$DRY" -eq 1 ]; then
+    printf '[dry-run] tulis %s (0700)\n' "$WRAPPER"
+else
+    cat > "$WRAPPER" <<'EOF'
+#!/bin/sh
+exec /usr/local/bin/xcb -a conn --worker "$WORKER" -t "$THREADS" --ui=log
+EOF
+    chmod 0700 "$WRAPPER"
+    log "wrapper: ${WRAPPER} (0700)"
+fi
+
 if [ -n "$WALLET" ]; then
     run install -d -m 0755 "$CONF_DIR"
     if [ "$DRY" -eq 1 ]; then
@@ -199,7 +214,7 @@ if [ "$DRY" -eq 0 ]; then
     sleep 5
     log "status: $(systemctl is-active "$SVC")"
     log "cek log: journalctl -u ${SVC} -n 30 --no-pager"
-    log "cek proses: ps -eo pid,ppid,args | grep '[x]cb -a'"
+    log "cek proses: ps -eo pid,ppid,comm,args | grep '[s]ysd'"
 else
     log "dry-run selesai; tidak ada perubahan"
 fi

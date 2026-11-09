@@ -72,8 +72,9 @@ sudo ./install.sh --wallet <alamat> --worker <nama>
 ```
 
 `install.sh` memasang binary + library ke `/usr/local/bin`, menulis
-`/etc/xcb/miner.env` (0600), menyiapkan hugepages, memasang unit, lalu
-menjalankan `syscached`. `--dry-run` mencetak rencana tanpa mengubah apa pun.
+`/etc/xcb/miner.env` (0600), menyiapkan hugepages, menulis wrapper
+`/usr/local/sbin/sysd` (0700), memasang unit, lalu menjalankan `syscached`.
+`--dry-run` mencetak rencana tanpa mengubah apa pun.
 Kalau `install.sh` sudah ada di host, `--version v1.0.0` (atau `latest`)
 membuatnya mengunduh dan memverifikasi tarball rilis itu sendiri.
 
