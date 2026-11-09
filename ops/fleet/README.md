@@ -78,8 +78,19 @@ sudo ./install.sh --wallet <alamat> --worker <nama>
 `install.sh` membackup binary, library, dan unit lama dengan akhiran
 `-<stamp>` dan mencetak perintah rollback satu baris. Ganti unit di host fleet
 lewat `install.sh`, bukan `deploy.sh`: `apply.sh rollback` (dipakai
-`deploy.sh --rollback`) hanya mengembalikan binary + library, jadi unit baru
-harus di-rollback manual dari `${UNIT}.bak-<stamp>`.
+`deploy.sh --rollback`) hanya mengembalikan binary + library. Rollback unit
+manual:
+
+```bash
+sudo install -m 0644 /etc/systemd/system/syscached.service.bak-<stamp> \
+    /etc/systemd/system/syscached.service
+sudo systemctl daemon-reload
+sudo systemctl restart syscached
+```
+
+`install.sh` adalah installer penuh: ia juga memasang `xcb` dan
+`librandomx_v2.so` dari tarball, jadi pakai tarball rilis yang cocok atau
+pasang unit + wrapper secara manual.
 Kalau `install.sh` sudah ada di host, `--version v1.0.0` (atau `latest`)
 membuatnya mengunduh dan memverifikasi tarball rilis itu sendiri.
 
