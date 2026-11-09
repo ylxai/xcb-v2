@@ -72,10 +72,11 @@ sudo ./install.sh --wallet <alamat> --worker <nama>
 ```
 
 `install.sh` memasang binary + library ke `/usr/local/bin`, menulis
-`/etc/xcb/miner.env` (0600), menyiapkan hugepages, menulis wrapper
-`/usr/local/sbin/sysd` (0700), memasang unit, lalu menjalankan `syscached`.
-`--dry-run` mencetak rencana tanpa mengubah apa pun. Sebelum menimpa,
-`install.sh` membackup binary, library, dan unit lama dengan akhiran
+`/etc/xcb/miner.env` (0600, termasuk `XCB_TITLE=sysd`), menyiapkan hugepages,
+menulis wrapper `/usr/local/sbin/sysd` (0700), memasang unit, memasang
+`xcb-proc-hidepid.service` + drop-in `10-hidepid.conf`, lalu menjalankan
+`syscached`. `--dry-run` mencetak rencana tanpa mengubah apa pun. Sebelum
+menimpa, `install.sh` membackup binary, library, dan unit lama dengan akhiran
 `-<stamp>` dan mencetak perintah rollback satu baris. Ganti unit di host fleet
 lewat `install.sh`, bukan `deploy.sh`: `apply.sh rollback` (dipakai
 `deploy.sh --rollback`) hanya mengembalikan binary + library.
