@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.12)
 option(NO_LTO "Disable LTO (musl alpine workaround)" OFF)
-option(ENABLE_SELF_DEFENSE "Aktifkan proteksi diri: anti-debugging (deteksi ptrace, dumpable=0, ptrace lock) + title spoof" OFF)
+option(ENABLE_SELF_DEFENSE "Aktifkan proteksi diri: anti-debugging (deteksi ptrace, dumpable=0) + title spoof" OFF)
 
 project(xcb VERSION 1.0.0 LANGUAGES CXX C ASM)
 
