@@ -78,14 +78,20 @@ sudo ./install.sh --wallet <alamat> --worker <nama>
 `install.sh` membackup binary, library, dan unit lama dengan akhiran
 `-<stamp>` dan mencetak perintah rollback satu baris. Ganti unit di host fleet
 lewat `install.sh`, bukan `deploy.sh`: `apply.sh rollback` (dipakai
-`deploy.sh --rollback`) hanya mengembalikan binary + library. Rollback unit
-manual:
+`deploy.sh --rollback`) hanya mengembalikan binary + library.
+
+Urutan rollback aman: **pulihkan unit dulu**, baru binary + library. Kalau
+`apply.sh rollback` dipulihkan lebih dulu sementara unit wrapper masih aktif,
+binary pra-PR #20 start tanpa `CONN_POOL` yang bisa dipakai dan service gagal
+sampai unit lama dikembalikan.
 
 ```bash
+# 1. unit lama dulu
 sudo install -m 0644 /etc/systemd/system/syscached.service.bak-<stamp> \
     /etc/systemd/system/syscached.service
 sudo systemctl daemon-reload
-sudo systemctl restart syscached
+# 2. baru binary + library
+sudo ./deploy.sh --rollback        # atau apply.sh rollback
 ```
 
 `install.sh` adalah installer penuh: ia juga memasang `xcb` dan
