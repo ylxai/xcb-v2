@@ -383,7 +383,8 @@ void StratumClient::run() {
 
 bool StratumClient::doEthLogin() {
     m_workerName = m_pools[m_poolIdx.load()].wallet;
-    if (!m_pools[m_poolIdx.load()].worker.empty()) m_workerName += "." + m_pools[m_poolIdx.load()].worker;
+    m_worker = m_pools[m_poolIdx.load()].worker;
+    if (!m_worker.empty()) m_workerName += "." + m_worker;
 
     uint64_t id = m_msgId.fetch_add(1);
     std::string msg = "{\"id\":" + std::to_string(id) +
@@ -451,8 +452,19 @@ bool StratumClient::doEthGetWork() {
     }
     // Target < 16 hex char dulu diam-diam memakai default 0x00ffffff...ff,
     // yang jauh lebih mudah dari target sebenarnya => banjir share invalid.
+    // Pool juga boleh mengirim target tanpa nol di depan (CatchThatRabbit
+    // mengirim 60 hex char untuk target 30 byte). Tanpa padding kiri ke 64
+    // char, 16 char pertama bukan 8 byte teratas target 256-bit: nilainya
+    // 2^16 kali lebih besar, sehingga share 65.536x lebih mudah dan semuanya
+    // ditolak pool. Miner resmi menambal ini dengan "coinmine.pl fix".
+    std::string targetPad = target;
+    if (targetPad.size() < 64) {
+        targetPad.insert(0, 64 - targetPad.size(), '0');
+    } else if (targetPad.size() > 64) {
+        targetPad.resize(64);  // target >32 byte: pakai 32 byte teratas
+    }
     uint64_t targetInt = 0;
-    std::string targetHead = target.substr(0, 16);
+    std::string targetHead = targetPad.substr(0, 16);
     if (targetHead.size() != 16 || !hex_to_u64(targetHead, targetInt)) {
         lg::warn("stratum", "Job ditolak: target tidak valid ('" + target.substr(0, 24) + "')");
         return true;
@@ -546,7 +558,9 @@ bool StratumClient::submitShare(const std::string& headerHex, const std::string&
 
     std::string params = "[\"" + n + "\",\"" + h + "\",\"" + m + "\"]";
     std::string msg = "{\"id\":" + std::to_string(id) +
-                      ",\"method\":\"eth_submitWork\",\"params\":" + params + "}";
+                      ",\"method\":\"eth_submitWork\",\"params\":" + params;
+    if (!m_worker.empty()) msg += ",\"worker\":\"" + json_escape(m_worker) + "\"";
+    msg += "}";
 
     bool sent = false;
     {
@@ -577,6 +591,8 @@ void StratumClient::submitHashrate(uint64_t rate) {
     uint64_t id = m_msgId.fetch_add(1);
     std::string msg = "{\"id\":" + std::to_string(id) +
                       ",\"jsonrpc\":\"2.0\",\"method\":\"eth_submitHashrate\",\"params\":[\"" +
-                      rateHex + "\",\"" + workerId + "\"]}";
+                      rateHex + "\",\"" + workerId + "\"]";
+    if (!m_worker.empty()) msg += ",\"worker\":\"" + json_escape(m_worker) + "\"";
+    msg += "}";
     sendLine(msg);
 }

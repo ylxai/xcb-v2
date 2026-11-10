@@ -77,6 +77,10 @@ private:
     int m_failCount = 0;
     int m_reconnectDelay = 2;
     std::string m_workerName;
+    // Nama worker saja (tanpa wallet). Pool CatchThatRabbit menandai worker
+    // dari field "worker" di setiap eth_submitWork; tanpa field itu share
+    // di-ACK tetapi tidak pernah dicatat sebagai share worker.
+    std::string m_worker;
 
     std::atomic<int> m_sock{-1};
     int m_pollMs = 1000;  // eth_getWork poll interval (ms)
