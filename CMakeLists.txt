@@ -155,6 +155,11 @@ if(BUILD_TESTING)
     target_include_directories(config-merge-test PRIVATE src)
     add_test(NAME xcb-config-merge COMMAND config-merge-test)
 
+    # Normalisasi target pool ke 64 hex char (CatchThatRabbit mengirim 60).
+    add_executable(target-norm-test tests/target_norm_test.cpp)
+    target_include_directories(target-norm-test PRIVATE src)
+    add_test(NAME xcb-target-norm COMMAND target-norm-test)
+
     # Config::parse/loadFile: env vs CLI invalid, backend kosong, fallback.
     # Config.cpp ditautkan langsung; rxv2::memNeed() distub di test.
     add_executable(config-parse-test tests/config_parse_test.cpp src/Config.cpp)

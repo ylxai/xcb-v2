@@ -2,6 +2,7 @@
 
 #include "JsonUtil.hpp"
 #include "Log.hpp"
+#include "TargetNorm.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -382,16 +383,15 @@ void StratumClient::run() {
 }
 
 bool StratumClient::doEthLogin() {
-    m_workerName = m_pools[m_poolIdx.load()].wallet;
-    m_worker = m_pools[m_poolIdx.load()].worker;
-    if (!m_worker.empty()) m_workerName += "." + m_worker;
+    const PoolConfig& pool = m_pools[m_poolIdx.load()];
+    m_workerName = pool.wallet;
+    if (!pool.worker.empty()) m_workerName += "." + pool.worker;
 
     uint64_t id = m_msgId.fetch_add(1);
     std::string msg = "{\"id\":" + std::to_string(id) +
                       ",\"method\":\"eth_submitLogin\",\"params\":[\"" +
-                      json_escape(m_pools[m_poolIdx.load()].wallet) + "\"]";
-    const std::string& worker = m_pools[m_poolIdx.load()].worker;
-    if (!worker.empty()) msg += ",\"worker\":\"" + json_escape(worker) + "\"";
+                      json_escape(pool.wallet) + "\"]";
+    if (!pool.worker.empty()) msg += ",\"worker\":\"" + json_escape(pool.worker) + "\"";
     msg += "}";
     sendLine(msg);
 
@@ -452,20 +452,15 @@ bool StratumClient::doEthGetWork() {
     }
     // Target < 16 hex char dulu diam-diam memakai default 0x00ffffff...ff,
     // yang jauh lebih mudah dari target sebenarnya => banjir share invalid.
-    // Pool juga boleh mengirim target tanpa nol di depan (CatchThatRabbit
-    // mengirim 60 hex char untuk target 30 byte). Tanpa padding kiri ke 64
-    // char, 16 char pertama bukan 8 byte teratas target 256-bit: nilainya
-    // 2^16 kali lebih besar, sehingga share 65.536x lebih mudah dan semuanya
-    // ditolak pool. Miner resmi menambal ini dengan "coinmine.pl fix".
-    std::string targetPad = target;
-    if (targetPad.size() < 64) {
-        targetPad.insert(0, 64 - targetPad.size(), '0');
-    } else if (targetPad.size() > 64) {
-        targetPad.resize(64);  // target >32 byte: pakai 32 byte teratas
+    // Normalisasi (padding ke 64 char, buang nol depan, tolak non-hex) ada di
+    // TargetNorm.hpp supaya bisa dites tanpa menarik StratumClient.
+    std::string targetHex;
+    if (!normalizeTargetHex(target, targetHex)) {
+        lg::warn("stratum", "Job ditolak: target tidak valid ('" + target.substr(0, 24) + "')");
+        return true;
     }
     uint64_t targetInt = 0;
-    std::string targetHead = targetPad.substr(0, 16);
-    if (targetHead.size() != 16 || !hex_to_u64(targetHead, targetInt)) {
+    if (!hex_to_u64(targetHex.substr(0, 16), targetInt)) {
         lg::warn("stratum", "Job ditolak: target tidak valid ('" + target.substr(0, 24) + "')");
         return true;
     }
@@ -494,7 +489,7 @@ bool StratumClient::doEthGetWork() {
     job.jobId = m_currentJobId;
     job.header = std::move(headerBytes);
     job.seedHex = seed;
-    job.targetHex = target;
+    job.targetHex = targetHex;
     job.targetInt = targetInt;
     job.seedChanged = seedChanged;
 
@@ -559,7 +554,11 @@ bool StratumClient::submitShare(const std::string& headerHex, const std::string&
     std::string params = "[\"" + n + "\",\"" + h + "\",\"" + m + "\"]";
     std::string msg = "{\"id\":" + std::to_string(id) +
                       ",\"method\":\"eth_submitWork\",\"params\":" + params;
-    if (!m_worker.empty()) msg += ",\"worker\":\"" + json_escape(m_worker) + "\"";
+    // Nama worker dibaca langsung dari m_pools: vektornya tidak berubah setelah
+    // konstruksi dan indeksnya atomik, jadi aman dipanggil dari worker thread.
+    // Cache di member akan balapan dengan doEthLogin() saat reconnect.
+    const std::string& worker = m_pools[m_poolIdx.load()].worker;
+    if (!worker.empty()) msg += ",\"worker\":\"" + json_escape(worker) + "\"";
     msg += "}";
 
     bool sent = false;
@@ -592,7 +591,8 @@ void StratumClient::submitHashrate(uint64_t rate) {
     std::string msg = "{\"id\":" + std::to_string(id) +
                       ",\"jsonrpc\":\"2.0\",\"method\":\"eth_submitHashrate\",\"params\":[\"" +
                       rateHex + "\",\"" + workerId + "\"]";
-    if (!m_worker.empty()) msg += ",\"worker\":\"" + json_escape(m_worker) + "\"";
+    const std::string& worker = m_pools[m_poolIdx.load()].worker;
+    if (!worker.empty()) msg += ",\"worker\":\"" + json_escape(worker) + "\"";
     msg += "}";
     sendLine(msg);
 }
