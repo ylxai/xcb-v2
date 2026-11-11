@@ -16,7 +16,6 @@
 set -eu
 
 REGION=${XCB_POOL_REGION:-sg}
-API="https://${REGION}-api.catchthatrabbit.com/v2/api"
 UA='Mozilla/5.0'
 INTERVAL=0
 WALLET=${WALLET:-}
@@ -35,12 +34,31 @@ EOF
 while getopts "w:r:i:h" opt; do
     case $opt in
         w) WALLET=$OPTARG ;;
-        r) REGION=$OPTARG; API="https://${REGION}-api.catchthatrabbit.com/v2/api" ;;
+        r) REGION=$OPTARG ;;
         i) INTERVAL=$OPTARG ;;
         h) usage; exit 0 ;;
         *) usage; exit 2 ;;
     esac
 done
+
+# Region masuk ke nama host, jadi tolak apa pun yang bisa memindahkan
+# request ke host lain (garis miring, titik, titik dua).
+case $REGION in
+    ''|*[!a-z0-9-]*)
+        echo "region tidak valid: '$REGION' (pakai huruf/angka, mis. sg)" >&2
+        exit 2
+        ;;
+esac
+API="https://${REGION}-api.catchthatrabbit.com/v2/api"
+
+# `test -gt` menerima sampah sebagai 0, dan dulu -i salah diam-diam
+# berjalan sekali. Tolak di sini.
+case $INTERVAL in
+    ''|*[!0-9]*)
+        echo "interval tidak valid: '$INTERVAL' (detik, bilangan bulat >= 0)" >&2
+        exit 2
+        ;;
+esac
 
 if [ -z "$WALLET" ] && [ -r /etc/xcb/miner.env ]; then
     WALLET=$(sed -n 's/^WALLET=//p' /etc/xcb/miner.env | head -n 1)
@@ -59,15 +77,17 @@ fetch() {
 }
 
 render() {
-    now=$(date +%s)
     acc=$(fetch accounts) || { echo "gagal mengambil data akun dari $API" >&2; return 1; }
     wrk=$(fetch workers) || { echo "gagal mengambil data worker dari $API" >&2; return 1; }
+    # Diambil setelah request supaya umur share tidak lebih tua dari data.
+    now=$(date +%s)
 
     printf 'Pool CatchThatRabbit %s — %s\n' "$REGION" "$(date -u '+%Y-%m-%d %H:%M:%SZ')"
     printf 'Wallet %s\n\n' "$WALLET"
 
-    printf '%-18s %-8s %8s %8s %12s\n' WORKER STATUS HR HR2 "SHARE AKHIR"
-    printf '%s\n' "$wrk" | jq -r --argjson now "$now" '
+    # Output jq ditampung dulu: kegagalan parsing harus terlihat, bukan
+    # berakhir sebagai tabel kosong dengan exit 0 (status pipeline = while).
+    rows=$(printf '%s\n' "$wrk" | jq -r --argjson now "$now" '
         [.workers | to_entries[] | {
             name: .key,
             status: (if .value.offline then "offline" else "online" end),
@@ -78,21 +98,28 @@ render() {
         | sort_by([(if .status == "online" then 0 else 1 end), -.hr, .name])
         | .[]
         | [.name, .status, (.hr | tostring), (.hr2 | tostring), (.age | tostring)]
-        | @tsv' |
-    while IFS="$(printf '\t')" read -r name status hr hr2 age; do
-        printf '%-18s %-8s %8s %8s %9sm lalu\n' "$name" "$status" "$hr" "$hr2" "$age"
-    done
+        | @tsv') || { echo "respons worker tidak dikenal: $API" >&2; return 1; }
+
+    printf '%-18s %-8s %8s %8s %12s\n' WORKER STATUS HR HR2 "SHARE AKHIR"
+    if [ -n "$rows" ]; then
+        printf '%s\n' "$rows" |
+        while IFS="$(printf '\t')" read -r name status hr hr2 age; do
+            printf '%-18s %-8s %8s %8s %9sm lalu\n' "$name" "$status" "$hr" "$hr2" "$age"
+        done
+    fi
 
     printf '\n'
-    printf '%s\n' "$acc" | jq -r --argjson now "$now" '
+    summary=$(printf '%s\n' "$acc" | jq -r --argjson now "$now" '
         "Online \(.workersOnline)/\(.workersOnline + .workersOffline)"
         + " | current \(.currentHashrate) H/s | hashrate \(.hashrate) H/s"
         + "\nroundShares \(.roundShares) | immature \(.stats.immature)"
         + " | balance \(.stats.balance)"
-        + " | share terakhir \((($now - .stats.lastShare) / 60) | floor) menit lalu"'
+        + " | share terakhir \((($now - .stats.lastShare) / 60) | floor) menit lalu"') ||
+        { echo "respons akun tidak dikenal: $API" >&2; return 1; }
+    printf '%s\n' "$summary"
 }
 
-if [ "$INTERVAL" -gt 0 ] 2>/dev/null; then
+if [ "$INTERVAL" -gt 0 ]; then
     while :; do
         printf '\033[H\033[2J'
         render || exit 1
