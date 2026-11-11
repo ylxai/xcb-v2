@@ -669,7 +669,10 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     // gate) for no reason.
     // Algo conn tidak memakai pool/stratum sama sekali (solo RPC), jadi
     // validasi pool dilewati; yang wajib adalah alamat reward.
-    const bool needsPool = !cfg.selftest && cfg.benchmarkNonces == 0 && cfg.algo != "conn";
+    // Zycord memakai pool sendiri (zycordPoolHost) lewat ConnMiner, bukan
+    // cfg.pools — jadi lewati validasi pool di bawah bila host itu diisi.
+    const bool needsPool = !cfg.selftest && cfg.benchmarkNonces == 0 &&
+                           cfg.algo != "conn" && cfg.zycordPoolHost.empty();
     if (needsPool) {
         if (cfg.pools.empty()) {
             std::cerr << "[Config] No pool configured! Use -o or set in pool.cfg" << std::endl;
