@@ -2,7 +2,8 @@
 # pool-workers.sh — status worker XCB di pool CatchThatRabbit.
 #
 # POSIX sh (jalan dengan `sh pool-workers.sh`), butuh curl dan jq.
-# Wallet diambil dari -w, lalu $WALLET, lalu /etc/xcb/miner.env.
+# Wallet diambil dari -w, lalu $WALLET, lalu /etc/xcb/miner.env — env file itu
+# hanya dipakai kalau POOL-nya memang CatchThatRabbit.
 #
 #   sh pool-workers.sh                    # sekali tampil
 #   sh pool-workers.sh -i 60              # ulang tiap 60 detik
@@ -60,8 +61,24 @@ case $INTERVAL in
         ;;
 esac
 
+# Wallet dari env file hanya dipakai kalau file itu konfigurasi pool XCB.
+# install.sh menulis environment CONN (CONN_ADDRESS/CONN_POOL); mengambil
+# WALLET dari sana akan menanyakan akun yang salah ke API CatchThatRabbit.
 if [ -z "$WALLET" ] && [ -r /etc/xcb/miner.env ]; then
-    WALLET=$(sed -n 's/^WALLET=//p' /etc/xcb/miner.env | head -n 1)
+    env_pool=$(sed -n 's/^POOL=//p' /etc/xcb/miner.env | head -n 1)
+    case $env_pool in
+        *catchthatrabbit*)
+            WALLET=$(sed -n 's/^WALLET=//p' /etc/xcb/miner.env | head -n 1)
+            ;;
+        '')
+            echo "peringatan: /etc/xcb/miner.env tidak menyebut POOL XCB (kemungkinan" >&2
+            echo "environment CONN); pakai -w untuk wallet pool CatchThatRabbit" >&2
+            ;;
+        *)
+            echo "peringatan: POOL di /etc/xcb/miner.env adalah '$env_pool', bukan" >&2
+            echo "CatchThatRabbit; pakai -w untuk wallet pool XCB" >&2
+            ;;
+    esac
 fi
 WALLET=${WALLET%%.*}
 if [ -z "$WALLET" ]; then
@@ -122,7 +139,10 @@ render() {
 if [ "$INTERVAL" -gt 0 ]; then
     while :; do
         printf '\033[H\033[2J'
-        render || exit 1
+        # Satu timeout/5xx tidak boleh menghentikan pemantauan: tunggu
+        # interval lalu coba lagi. Mode sekali jalan tetap keluar dengan
+        # status gagal.
+        render || printf '\ngagal mengambil data; coba lagi dalam %s detik.\n' "$INTERVAL" >&2
         printf '\nCtrl-C untuk berhenti. Refresh tiap %s detik.\n' "$INTERVAL"
         sleep "$INTERVAL"
     done
