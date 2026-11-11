@@ -424,8 +424,8 @@ bool parseJobDoc(const Json& doc, ConnPoolJob& out, std::string& err) {
         return false;
     }
     if (!hexToBytes(blobHex, out.blob) ||
-        (out.blob.size() != 80 && out.blob.size() != 76)) {
-        err = "job: blob harus 80 (atau 76) byte, dapat " + std::to_string(out.blob.size());
+        (out.blob.size() != 80 && out.blob.size() != 76 && out.blob.size() != 43)) {
+        err = "job: blob harus 43/76/80 byte, dapat " + std::to_string(out.blob.size());
         return false;
     }
     if (seedHex.size() != 64) {

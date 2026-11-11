@@ -223,9 +223,14 @@ struct ConnMiner::Impl {
         std::string coinbaseHex;
         std::vector<std::string> txData;
         uint8_t targetLE[32]{};
-        // Mode pool (rplant rx/2b): target 64-bit LE + job untuk submit.
+        // Mode pool (rplant rx/2b / Zycord rx/2): target 64-bit LE + job untuk submit.
         bool pool = false;
         uint64_t target64 = 0;
+        // Lebar input RandomX dan offset nonce per job. CONN (rx/2b): blob 76/80
+        // byte, input 80, nonce di offset 76. Zycord (rx/2): blob 43 byte, input
+        // 43, nonce di offset 39 (PoWInputNonceOffset). Keduanya = inputLen - 4.
+        int poolInputLen = 80;
+        int nonceOff = 76;
         ConnPoolJob poolJob;
         std::atomic<uint32_t> nonce{0};
         // True setelah blok untuk work ini dikirim: berhenti menghashing
@@ -532,12 +537,18 @@ struct ConnMiner::Impl {
         work->height = static_cast<int>(j.height);
         work->target64 = j.target;
         work->poolJob = j;
-        if (j.blob.size() != 80 && j.blob.size() != 76) {
-            lg::error("conn", "job pool blob bukan 76/80 byte");
+        // Zycord (rx/2) mengirim blob 43 byte dengan nonce di dalamnya (offset 39);
+        // CONN (rx/2b) mengirim blob 76/80 byte dengan nonce di-append (offset 76).
+        const size_t blobLen = j.blob.size();
+        if (blobLen != 80 && blobLen != 76 && blobLen != 43) {
+            lg::error("conn", "job pool blob bukan 43/76/80 byte, dapat " +
+                                   std::to_string(blobLen));
             return false;
         }
-        memcpy(work->header, j.blob.data(), j.blob.size());
-        memset(work->header + 76, 0, 4);  // nonce diisi worker
+        work->poolInputLen = (blobLen == 43) ? 43 : 80;
+        work->nonceOff = work->poolInputLen - 4;  // 39 untuk ZCD, 76 untuk CONN
+        memcpy(work->header, j.blob.data(), blobLen);
+        memset(work->header + work->nonceOff, 0, 4);  // nonce diisi worker
         {
             std::lock_guard<std::mutex> lock(mu);
             work->gen = ++genCounter;
@@ -712,9 +723,10 @@ struct ConnMiner::Impl {
                 uint8_t header[80];
                 memcpy(header, work->header, sizeof(header));
                 const uint32_t nonce = work->nonce.fetch_add(1, std::memory_order_relaxed);
-                for (int k = 0; k < 4; k++) header[76 + k] = static_cast<uint8_t>(nonce >> (8 * k));
+                for (int k = 0; k < 4; k++)
+                    header[work->nonceOff + k] = static_cast<uint8_t>(nonce >> (8 * k));
                 uint8_t out[32];
-                vm->hash(header, sizeof(header), out);
+                vm->hash(header, static_cast<size_t>(work->poolInputLen), out);
                 // Akuntansi per hash: batch 4096 membuat sampel 10 detik
                 // bergantian 0 / penuh (hashrate tampak putus-putus).
                 hashes.fetch_add(1, std::memory_order_relaxed);
