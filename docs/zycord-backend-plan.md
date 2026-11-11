@@ -40,9 +40,9 @@ Perubahan sesungguhnya kecil dan terlokalisasi (lihat §3).
 Cek sisa yang belum 100% dipastikan — near-certain karena rplant ZCD & CONN sama-sama
 pool NOMP rplant dengan dialek stratum xmrig identik, tapi layak dikonfirmasi sekali:
 
-1. **Ambil port rplant ZCD** dari halaman connect
-   `https://pool.rplant.xyz/#zycord#connect` (atau `/api/currencies` field `port`).
-   CONN pakai `eu.rplant.xyz:17194`; ZCD port berbeda — jangan hardcode 17194.
+1. **Endpoint rplant ZCD (SUDAH DIKONFIRMASI operator): `randomx.rplant.xyz:17197`
+   (TLS).** CONN pakai `eu.rplant.xyz:17194`; ZCD host+port berbeda — jangan
+   hardcode 17194. Default `--zycord-pool` = `randomx.rplant.xyz:17197` dengan TLS.
 2. **Cocokkan field job ZCD** dengan yang diparse `ConnPool::parseJob`
    (`ConnPool.cpp:413-441`): `blob`, `seed_hash` (64 hex), `target`, `height`, dan
    `algo`. Jika rplant ZCD mengirim field dengan nama berbeda (mis. `seedHash` bukan
@@ -79,7 +79,7 @@ pool NOMP rplant dengan dialek stratum xmrig identik, tapi layak dikonfirmasi se
   ```cpp
   // Pool rplant Zycord (RandomX V2, algo rx/2). Isi host untuk mode pool.
   std::string zycordPoolHost;
-  int zycordPoolPort = 0;       // diisi dari --zycord-pool / env ZYORD_POOL
+  int zycordPoolPort = 17197;   // default rplant ZCD TLS: randomx.rplant.xyz:17197
   bool zycordPoolTls = true;
   std::string zycordPoolWorker; // label worker ke pool
   std::string zycordAddress;    // wallet ZCD = login pool
@@ -91,8 +91,8 @@ pool NOMP rplant dengan dialek stratum xmrig identik, tapi layak dikonfirmasi se
   `ZYKORD_ADDRESS` → `cfg.zycordAddress`.
 - **CLI** (mirror `--conn-pool` `Config.cpp:519-523` dan `--address` `516`):
   - `--zycord-address WALLET` → `cfg.zycordAddress`
-  - `--zycord-pool HOST[:PORT]` → `parseHostPort(..., defaultPortZCD, "ZYKORD_POOL port")`
-    (default port = hasil §2.1)
+  - `--zycord-pool HOST[:PORT]` → `parseHostPort(..., 17197, "ZYKORD_POOL port")`
+    (default = randomx.rplant.xyz:17197, TLS)
   - `--zycord-pool-plain` → `cfg.zycordPoolTls = false`
   - `--zycord-pool-worker NAME` → `cfg.zycordPoolWorker`
 - **Help** (`Config.cpp` sekitar 557-563): tambah baris untuk flag `--zycord-*`.
@@ -152,7 +152,7 @@ Dua opsi, pilih yang lebih disukai:
   `rxv2::selftest()` harus PASS (engine tidak diubah — hanya string algo yang
   dilewatkan). Ini sekaligus membuktikan Zycord pakai engine yang sama persis.
 - **Uji jalur ZCD** ~5-10 menit di `fl` (canary):
-  `./xcb --zycord-pool <host>:<port> --zycord-address <walletZCD> --zycord-pool-worker fl-z`
+  `./xcb --zycord-pool randomx.rplant.xyz:17197 --zycord-address <walletZCD> --zycord-pool-worker fl-z`
   - Cek `A` (accepted) di log lokal naik.
   - **Verifikasi pool-side** (wajib, per memori): cek worker ZCD muncul online dan
     `lastShare` bergerak di API rplant — jangan puas dengan `A` lokal saja, karena
