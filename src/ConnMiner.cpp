@@ -904,7 +904,7 @@ bool ConnMiner::start(const ConnMinerConfig& cfg) {
     // --- Mode pool rplant (rx/2b): tanpa RPC node, tanpa scriptPubKey ---
     if (!cfg.poolHost.empty()) {
         m_impl->pool = std::make_unique<ConnPool>(cfg.poolHost, cfg.poolPort, cfg.address,
-                                                  cfg.poolWorker, cfg.poolTls);
+                                                  cfg.poolWorker, cfg.poolTls, cfg.poolAlgo);
         ConnPoolJob first;
         std::string err;
         if (!m_impl->pool->connectAndLogin(first, err)) {
@@ -925,7 +925,7 @@ bool ConnMiner::start(const ConnMinerConfig& cfg) {
         for (int i = 0; i < cfg.threads; i++)
             m_impl->workers.emplace_back([this, i]() { m_impl->workerLoop(i); });
         m_impl->poolThread = std::thread([this]() { m_impl->poolLoop(); });
-        lg::info("conn", "Mining pool CONN rx/2b dengan " + std::to_string(cfg.threads) +
+        lg::info("conn", "Mining pool " + cfg.poolAlgo + " dengan " + std::to_string(cfg.threads) +
                              " thread");
         return true;
     }

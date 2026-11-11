@@ -32,6 +32,9 @@ struct ConnMinerConfig {
     int poolPort = 17194;
     bool poolTls = true;
     std::string poolWorker = "xcb";
+    // Algo stratum rplant ("rx/2b"=CONN, "rx/2"=Zycord). Diteruskan ke ConnPool
+    // agar login + submit memakai string algo yang benar.
+    std::string poolAlgo = "rx/2b";
     // Awal ruang nonce (32-bit). Beberapa mesin yang menambang solo ke node
     // yang sama harus memakai offset berbeda supaya tidak menghitung nonce
     // yang sama.

@@ -31,7 +31,8 @@ class ConnPool {
 public:
     enum class Event { None, Job, Accepted, Rejected, Error };
 
-    ConnPool(std::string host, int port, std::string wallet, std::string worker, bool tls);
+    ConnPool(std::string host, int port, std::string wallet, std::string worker, bool tls,
+             std::string algo = "rx/2b");
     ~ConnPool();
 
     // DNS + TCP + TLS + login. Blocking (timeout socket 30 s).
@@ -75,6 +76,7 @@ private:
     std::string m_wallet;
     std::string m_worker;
     bool m_tls;
+    std::string m_algo = "rx/2b";  // stratum algo (rx/2b=CONN, rx/2=ZCD)
 
     // SSL* tidak boleh dipakai dua thread sekaligus. poolLoop memanggil
     // SSL_read, worker memanggil SSL_write, dan poolLoop bisa SSL_free saat

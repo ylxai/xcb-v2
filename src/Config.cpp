@@ -239,6 +239,16 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsed
         } else if (key == "conn_nonce_offset") {
             cfg.nonceOffset = static_cast<uint32_t>(
                 numOr(val, 0, 0, 4294967295LL, "conn_nonce_offset"));
+        } else if (key == "zycord_pool") {
+            if (!val.empty())
+                parseHostPort(val, cfg.zycordPoolHost, cfg.zycordPoolPort, 17197,
+                              "zycord_pool port");
+        } else if (key == "zycord_pool_plain") {
+            cfg.zycordPoolTls = (val != "true" && val != "1" && val != "yes");
+        } else if (key == "zycord_pool_worker") {
+            if (!val.empty()) cfg.zycordPoolWorker = val;
+        } else if (key == "zycord_address") {
+            if (!val.empty()) cfg.zycordAddress = val;
         }
     }
     
@@ -326,6 +336,10 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     const char* envConnAddress = getenv("CONN_ADDRESS");
     const char* envConnPool = getenv("CONN_POOL");
     const char* envNonceOffset = getenv("CONN_NONCE_OFFSET");
+    // Zycord (ZCD) rplant pool env.
+    const char* envZykordPool = getenv("ZYKORD_POOL");
+    const char* envZykordAddress = getenv("ZYKORD_ADDRESS");
+    const char* envZykordWorker = getenv("ZYKORD_WORKER");
 
     // Env feature flags, applied in both the env-pool and file-pool paths.
     auto applyEnvFlags = [&]() {
@@ -381,6 +395,19 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         if (envNonceOffset && envNonceOffset[0] != '\0')
             cfg.nonceOffset = static_cast<uint32_t>(
                 numOr(envNonceOffset, 0, 0, 4294967295LL, "CONN_NONCE_OFFSET"));
+        if (envZykordPool && envZykordPool[0] != '\0')
+            parseHostPort(envZykordPool, cfg.zycordPoolHost, cfg.zycordPoolPort, 17197,
+                          "ZYKORD_POOL port");
+        if (envZykordAddress && envZykordAddress[0] != '\0') {
+            cfg.zycordAddress = envZykordAddress;
+            const auto dot = cfg.zycordAddress.find('.');
+            if (dot != std::string::npos) {
+                if (dot + 1 < cfg.zycordAddress.size())
+                    cfg.zycordPoolWorker = cfg.zycordAddress.substr(dot + 1);
+                cfg.zycordAddress.resize(dot);
+            }
+        }
+        if (envZykordWorker && envZykordWorker[0] != '\0') cfg.zycordPoolWorker = envZykordWorker;
     };
 
     if (envWallet && envPool) {
@@ -523,6 +550,19 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         } else if (arg == "--conn-pool-plain") {
             cfg.connPoolTls = false;
 
+        } else if (arg == "--zycord-pool" && i + 1 < argc) {
+            parseHostPort(argv[++i], cfg.zycordPoolHost, cfg.zycordPoolPort, 17197,
+                          "--zycord-pool port");
+
+        } else if (arg == "--zycord-pool-plain") {
+            cfg.zycordPoolTls = false;
+
+        } else if (arg == "--zycord-pool-worker" && i + 1 < argc) {
+            cfg.zycordPoolWorker = argv[++i];
+
+        } else if (arg == "--zycord-address" && i + 1 < argc) {
+            cfg.zycordAddress = argv[++i];
+
         } else if (arg == "--nonce-offset" && i + 1 < argc) {
             cfg.nonceOffset = static_cast<uint32_t>(
                 numOr(argv[++i], 0, 0, 4294967295LL, "--nonce-offset"));
@@ -561,6 +601,10 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  --address ADDR        Alamat reward CONN (atau pakai -u)\n"
                       << "  --conn-pool HOST[:PORT] Mining pool rplant rx/2b (default port 17194)\n"
                       << "  --conn-pool-plain     Pool tanpa TLS (default TLS)\n"
+                      << "  --zycord-pool HOST[:PORT]  Mining pool rplant Zycord rx/2 (default port 17197, TLS)\n"
+                      << "  --zycord-pool-plain   Zycord pool tanpa TLS\n"
+                      << "  --zycord-pool-worker NAME  Worker label Zycord pool\n"
+                      << "  --zycord-address ADDR  Wallet ZCD = login pool Zycord\n"
                       << "  --nonce-offset N      Awal nonce 32-bit algo conn (default 0)\n"
                       << "  -R, --report-hashrate Submit hashrate to pool every 60s\n"
                       << "  --benchmark N         Benchmark N nonces (no pool)\n"
@@ -609,6 +653,10 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         if (cfg.connPoolWorker == "auto") {
             if (hostName.empty()) hostName = hostWorkerName();
             cfg.connPoolWorker = hostName;
+        }
+        if (cfg.zycordPoolWorker == "auto") {
+            if (hostName.empty()) hostName = hostWorkerName();
+            cfg.zycordPoolWorker = hostName;
         }
         if (!hostName.empty())
             std::cout << "[Config] worker=auto -> \"" << hostName << "\" (hostname mesin)"

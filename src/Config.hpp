@@ -46,6 +46,12 @@ struct MinerConfig {
     int connPoolPort = 17194;
     bool connPoolTls = true;
     std::string connPoolWorker;  // label worker yang dikirim ke pool
+    // Pool rplant Zycord (RandomX V2, algo rx/2). Isi host untuk mode pool.
+    std::string zycordPoolHost;
+    int zycordPoolPort = 17197;   // default rplant ZCD TLS: randomx.rplant.xyz:17197
+    bool zycordPoolTls = true;
+    std::string zycordPoolWorker;  // label worker ke pool
+    std::string zycordAddress;     // wallet ZCD = login pool
     // Awal ruang nonce untuk algo=conn. Wajib berbeda per mesin saat beberapa
     // miner menambang solo ke node yang sama; tanpa ini semuanya menghitung
     // nonce 0.. dan menduplikasi pekerjaan.

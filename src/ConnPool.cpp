@@ -58,12 +58,13 @@ bool parseJobDoc(const Json& doc, ConnPoolJob& out, std::string& err);
 }  // namespace
 
 ConnPool::ConnPool(std::string host, int port, std::string wallet, std::string worker,
-                   bool tls)
+                   bool tls, std::string algo)
     : m_host(std::move(host)),
       m_port(port),
       m_wallet(std::move(wallet)),
       m_worker(std::move(worker)),
-      m_tls(tls) {}
+      m_tls(tls),
+      m_algo(std::move(algo)) {}
 
 ConnPool::~ConnPool() { close(); }
 
@@ -245,7 +246,7 @@ bool ConnPool::connectAndLogin(ConnPoolJob& first, std::string& err) {
         login = "{\"id\":" + std::to_string(m_msgId++) +
                 ",\"jsonrpc\":\"2.0\",\"method\":\"login\",\"params\":{"
                 "\"login\":\"" + json_escape(who) + "\",\"pass\":\"x\",\"agent\":"
-                "\"xcb-v2/1.0\",\"algo\":[\"rx/2b\"]}}";
+                "\"xcb-v2/1.0\",\"algo\":[\"" + m_algo + "\"]}}";
     }
     if (!sendLine(login, err)) return false;
 
@@ -525,7 +526,7 @@ bool ConnPool::submit(const ConnPoolJob& job, uint32_t nonce, const uint8_t hash
                             "\"id\":\"" + json_escape(m_loginId) + "\",\"job_id\":\"" +
                             json_escape(job.id) +
                             "\",\"nonce\":\"" + nonceHex + "\",\"result\":\"" + resultHex +
-                            "\",\"algo\":\"" + json_escape(job.algo.empty() ? "rx/2b" : job.algo) +
+                            "\",\"algo\":\"" + json_escape(job.algo.empty() ? m_algo : job.algo) +
                             "\"}}";
     return sendLineLocked(msg, err);
 }

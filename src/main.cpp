@@ -201,6 +201,42 @@ int main(int argc, char* argv[]) {
 
     if (cfg.selftest) return runSelftest();
 
+    // --- Jalur mining pool Zycord (ZCD, RandomX V2, rplant rx/2) ---
+    // Engine RandomX V2 SAMA dengan CONN (hanya algo stratum berbeda: rx/2
+    // bukan rx/2b) dan dialek pool xmrig identik, jadi pakai ConnMiner pool.
+    if (!cfg.zycordPoolHost.empty()) {
+        if (cfg.zycordAddress.empty()) {
+            lg::error("main", "Zycord butuh alamat wallet: --zycord-address ADDR");
+            return 1;
+        }
+        lg::info("main", "xcb v2 (Zycord ZCD — RandomX V2, pool rplant rx/2)");
+        ConnMinerConfig mc;
+        mc.poolHost = cfg.zycordPoolHost;
+        mc.poolPort = cfg.zycordPoolPort;
+        mc.poolTls = cfg.zycordPoolTls;
+        mc.poolWorker = cfg.zycordPoolWorker.empty() ? "xcb" : cfg.zycordPoolWorker;
+        mc.poolAlgo = "rx/2";
+        mc.address = cfg.zycordAddress;
+        mc.threads = cfg.threads;
+        mc.fastMem = cfg.fullMem;
+        mc.largePages = cfg.largePages;
+        mc.nonceOffset = cfg.nonceOffset;
+
+        ConnMiner zc;
+        if (!zc.start(mc)) {
+            lg::error("main", "Zycord miner gagal start");
+            return 1;
+        }
+        while (g_running.load() && zc.isRunning())
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        if (zc.isRunning()) {
+            lg::info("main", "Stopping...");
+            zc.stop();
+        }
+        lg::info("sysd", zc.finalSummary());
+        return 0;
+    }
+
     // --- Jalur mining solo ConnectCoin (RandomX V2 lewat RPC node) ---
     // Tidak menyentuh StratumClient/Miner sama sekali: CONN tidak punya pool.
     if (cfg.algo == "conn") {
