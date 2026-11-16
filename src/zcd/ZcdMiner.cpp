@@ -92,12 +92,16 @@ struct Miner::Impl {
         return engineError;
     }
 
-    // Bangun engine untuk seed baru. `oldCtx` dilepas lebih dulu oleh pemanggil
-    // supaya dataset lama tidak hidup bersamaan dengan yang baru (hugepages
-    // hanya cukup untuk satu dataset).
+    // Bangun engine untuk seed baru. Dataset lama dilepas lebih dulu di sini
+    // dan ditunggu benar-benar hilang: satu dataset FAST 2080 MB, sedangkan
+    // hugepages biasanya hanya cukup untuk satu. Tanpa penantian, alokasi baru
+    // gagal mendapat hugepages lalu turun diam-diam ke page biasa dan hash rate
+    // tetap rendah sampai proses di-restart.
     void buildEngine(const Job& job) {
         engineFailed.store(false, std::memory_order_relaxed);
         clearEngineError();
+
+        releaseOldWork();
 
         auto w = std::make_shared<Work>();
         w->job = std::make_shared<const Job>(job);
@@ -123,6 +127,14 @@ struct Miner::Impl {
                                                                 : "FAST, regular pages")
                                        : "LIGHT";
         lg::info("zcd", std::string("RandomX V2 siap (") + mode + ")");
+        // Jatuh ke page biasa menurunkan hash rate sekitar setengah dan tidak
+        // terlihat dari log biasa, jadi diperingatkan sekali di sini.
+        if (cfg.fastMem && cfg.largePages && !ctx->usesLargePages()) {
+            lg::warn("zcd", "hugepages tidak terpakai (minta " +
+                                std::to_string(cfg.fastMem ? 2080 : 256) +
+                                " MB); hash rate turun ~50%. Periksa vm.nr_hugepages "
+                                "atau HugePages_Free.");
+        }
 
         const int n = std::max(1, static_cast<int>(cfg.threads));
         w->vms.reserve(static_cast<size_t>(n));
@@ -144,6 +156,33 @@ struct Miner::Impl {
             work = std::move(w);
         }
         engineRebuilds.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Lepas work lama dan tunggu worker berhenti memakainya. Worker memegang
+    // snapshot `shared_ptr<Work>` selama satu batch, jadi dataset lama baru
+    // benar-benar bebas setelah referensinya habis. Dipanggil sebelum engine
+    // baru dialokasikan supaya puncak pemakaian memori tidak dua dataset.
+    void releaseOldWork() {
+        std::shared_ptr<Work> old;
+        {
+            std::lock_guard<std::mutex> lock(mu);
+            old = std::move(work);
+            work.reset();
+            // Naikkan generasi supaya worker tidak memakai snapshot lama untuk
+            // batch berikutnya.
+            engineGen.fetch_add(1, std::memory_order_acq_rel);
+        }
+        if (!old) return;
+        // Tunggu sampai tidak ada worker yang masih memegang Work ini. Batas
+        // waktu menjaga agar worker yang macet tidak menggantungkan ioLoop.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (old.use_count() > 1 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        if (old.use_count() > 1) {
+            lg::warn("zcd", "worker masih memegang dataset lama setelah 10 detik; "
+                            "engine baru mungkin jatuh ke page biasa");
+        }
     }
 
     // Hentikan semua worker dari work yang sekarang tanpa membiarkan engine
