@@ -76,8 +76,10 @@ Yang aktif di binary hasil build ini:
   keluar sebelum sempat membaca config/wallet dari memori.
 - **Anti-dump** — `PR_SET_DUMPABLE=0` + `RLIMIT_CORE=0`: `/proc/<pid>/mem`
   dan `/proc/<pid>/environ` tidak bisa dibaca proses lain, tidak ada core file.
-- **Anti-ptrace** — `PTRACE_TRACEME` dikunci: `strace -p <pid>` dan
-  `gdb -p <pid>` ditolak kernel (`Operation not permitted`).
+- **Anti-ptrace (non-root)** — `PR_SET_DUMPABLE=0` membuat kernel menolak
+  `PTRACE_ATTACH` dari proses non-root (`Operation not permitted`). Attach oleh
+  root tetap mungkin; itu batas yang memang tidak bisa ditutup dari dalam
+  proses.
 - **Title spoof (opsional)** — env `XCB_TITLE=nama` mengganti nama proses di
   `ps` (comm) dan menghapus cmdline asli (host/wallet/pool tidak terlihat):
 

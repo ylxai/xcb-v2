@@ -189,15 +189,19 @@ int main(int argc, char* argv[]) {
     }
 
 #ifdef XCB_SELF_DEFENSE
-    // Proteksi diri: deteksi debugger, kunci ptrace, cegah dump/core.
-    // XCB_TITLE (env) opsional: ganti nama proses di ps + hapus cmdline
-    // asli. Panggil sebelum parsing config supaya env masih terbaca.
+    // Proteksi diri: deteksi debugger, cegah dump/core.
     xcb::selfdefense::init();
-    if (const char* t = getenv("XCB_TITLE"))
-        xcb::selfdefense::set_process_title(argc, argv, t);
 #endif
 
     auto cfg = Config::parse(argc, argv);
+
+#ifdef XCB_SELF_DEFENSE
+    // XCB_TITLE (env) opsional: ganti nama proses di ps + hapus cmdline
+    // asli. Dipanggil setelah Config::parse karena seluruh area env
+    // di-zero, sehingga config dari environment harus dibaca lebih dulu.
+    if (const char* t = getenv("XCB_TITLE"))
+        xcb::selfdefense::set_process_title(argc, argv, t);
+#endif
 
     if (cfg.selftest) return runSelftest();
 
