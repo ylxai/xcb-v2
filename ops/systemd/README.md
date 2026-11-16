@@ -1,4 +1,4 @@
-# ops/systemd — unit contoh untuk miner CONN
+# ops/systemd — unit contoh untuk miner CONN dan ZCD
 
 Unit di folder ini adalah **template**, bukan konfigurasi fleet yang sedang
 berjalan. Alamat pool, wallet, dan worker disimpan di environment file lokal.
@@ -58,6 +58,55 @@ ldd /usr/local/bin/xcb | grep librandomx_v2
 grep ' /proc ' /proc/mounts | grep -o 'hidepid=[a-z0-9]*'
 ```
 
+## Pasang miner ZCD (`zcd.service`)
+
+`zcd-miner` adalah biner terpisah dari `xcb`: backend Zycord mandiri
+(`src/zcd/`), tidak memakai ConnPool/ConnMiner/StratumClient. Karena itu unit,
+environment file, dan wrapper-nya juga terpisah — jangan mencampurnya dengan
+`syscached`.
+
+```bash
+sudo install -d -m 755 /etc/zcd /usr/local/sbin
+sudo install -m 755 build/src/zcd/zcd-miner /usr/local/bin/zcd-miner
+sudo install -m 644 build/src/zcd/librandomx_v2.so /usr/local/bin/
+sudo tee /usr/local/sbin/zcdd >/dev/null <<'EOF'
+#!/bin/sh
+set -eu
+: "${ZCD_ADDRESS:?ZCD_ADDRESS kosong di /etc/zcd/miner.env}"
+: "${ZCD_WORKER:?ZCD_WORKER kosong di /etc/zcd/miner.env}"
+: "${ZCD_POOL:?ZCD_POOL kosong di /etc/zcd/miner.env}"
+set -- --address "$ZCD_ADDRESS" --worker "$ZCD_WORKER" --pool "$ZCD_POOL"
+if [ -n "${ZCD_THREADS:-}" ]; then
+    set -- "$@" --threads "$ZCD_THREADS"
+fi
+[ "${ZCD_PLAIN:-0}" = "1" ] && set -- "$@" --plain
+[ "${ZCD_LIGHT:-0}" = "1" ] && set -- "$@" --light
+[ "${ZCD_NO_HUGEPAGES:-0}" = "1" ] && set -- "$@" --no-hugepages
+if [ -n "${ZCD_NONCE_OFFSET:-}" ]; then
+    set -- "$@" --nonce-offset "$ZCD_NONCE_OFFSET"
+fi
+exec /usr/local/bin/zcd-miner "$@"
+EOF
+sudo chmod 0700 /usr/local/sbin/zcdd
+sudo install -m 644 ops/systemd/zcd.service /etc/systemd/system/zcd.service
+sudo install -m 600 ops/systemd/zcd.env.example /etc/zcd/miner.env
+sudoedit /etc/zcd/miner.env          # isi ZCD_ADDRESS/ZCD_WORKER/ZCD_THREADS
+sudo systemctl daemon-reload
+sudo systemctl enable --now zcd
+```
+
+Cek:
+
+```bash
+systemctl status zcd
+journalctl -u zcd -n 50 --no-pager
+ldd /usr/local/bin/zcd-miner | grep librandomx_v2
+```
+
+Bukti share harus datang dari pool, bukan dari log lokal (`found` hanya
+hitungan sisi miner). Baris `pool OK <n> ditolak <n>` pada ringkasan berhenti
+adalah balasan pool yang sebenarnya.
+
 ## Catatan
 
 - **`WALLET` wajib diisi.** Placeholder `ISI_WALLET_CONN`/`CHANGE_ME` ditolak
@@ -95,3 +144,21 @@ grep ' /proc ' /proc/mounts | grep -o 'hidepid=[a-z0-9]*'
   `syscached.service.d/10-instabox.conf` untuk `LD_PRELOAD` dan hugepages.
   Jangan menjalankan kedua deploy di host yang sama; hapus drop-in instabox
   sebelum memakai `ops/fleet`.
+
+## Catatan ZCD
+
+- **`ZCD_ADDRESS` wajib diisi.** Placeholder `ISI_WALLET_ZCD`/`CHANGE_ME`
+  ditolak `ExecStartPre`.
+- zcd-miner membaca konfigurasi dari environment (`ZCD_*`, lihat
+  `ZcdMain.cpp`) dan juga bisa dari `~/.config/zcd/miner.conf`; unit ini
+  memakai environment supaya wallet tidak perlu ditulis di dua tempat.
+- `ZCD_PLAIN=1` untuk pool tanpa TLS. Pool TLS rplant memakai sertifikat
+  ZeroSSL yang rantainya lengkap, jadi verifikasi tidak perlu dimatikan.
+- Baseline terukur di 4 core: **~1370 H/s**, diff 200.000 di
+  `randomx.rplant.xyz` menghasilkan ~19 share per 1,4 juta hash, dan pool
+  menerima 18/19 (1 sisanya proses berhenti sebelum balasan masuk).
+- `ProtectSystem=strict` + `ProtectHome=read-only` aman: miner tidak menulis
+  disk. `LimitMEMLOCK=infinity` diperlukan untuk dataset RandomX FAST.
+- Hugepages tidak wajib, tapi menaikkan hash rate: `sysctl -w vm.nr_hugepages=1050`
+  (2 GiB dataset + scratchpad). Tanpa itu miner turun ke page biasa dengan
+  peringatan di log.

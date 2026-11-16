@@ -216,6 +216,17 @@ target_link_options(xcb PRIVATE
     $<$<NOT:$<CONFIG:Debug>>:-s>
 )
 
+# ============================================================
+# Miner Zycord (ZCD) — biner terpisah, backend mandiri
+# ============================================================
+# Target zcd-miner dibangun dari src/zcd/* saja dan hanya me-link RandomX V2.
+# Backend CONN (ConnMiner/ConnPool/ConnRpc) dan Core Coin (Miner/StratumClient)
+# tidak ikut, jadi perubahan di sana tidak bisa memengaruhi ZCD dan sebaliknya.
+option(BUILD_ZCD_MINER "Bangun biner zcd-miner (Zycord ZCD)" ON)
+if(BUILD_ZCD_MINER)
+    add_subdirectory(src/zcd)
+endif()
+
 install(TARGETS xcb DESTINATION bin)
 # librandomx_v2.so harus di direktori yang sama dengan xcb (RPATH $ORIGIN).
 install(TARGETS randomx_v2 LIBRARY DESTINATION bin)

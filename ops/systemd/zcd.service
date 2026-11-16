@@ -1,0 +1,30 @@
+[Unit]
+Description=Zycord (ZCD) miner — RandomX v2 / rx/2
+After=network-online.target
+Wants=network-online.target
+# zcd-miner memakai hugepages bila tersedia dan turun ke page biasa bila
+# tidak, jadi tidak ada syarat vm.nr_hugepages di sini. Menyiapkannya tetap
+# menaikkan hash rate ~20%: sysctl -w vm.nr_hugepages=1050
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/zcd/miner.env
+# Tolak placeholder/kosong. Tanpa ini service "hidup" dengan alamat invalid
+# dan pool menolak login berulang kali tanpa terlihat.
+ExecStartPre=/bin/sh -c 'test -n "${ZCD_ADDRESS}" && [ "${ZCD_ADDRESS}" != "ISI_WALLET_ZCD" ] && test -n "${ZCD_WORKER}" && [ "${ZCD_WORKER}" != "CHANGE_ME" ] && test -n "${ZCD_POOL}"'
+# Wrapper root-only: ExecStart tidak memuat path binary, alamat wallet, atau
+# flag. Isinya exec /usr/local/bin/zcd-miner dengan nilai dari miner.env;
+# dipasang oleh README dengan mode 0700.
+ExecStart=/usr/local/sbin/zcdd
+Restart=always
+RestartSec=10
+# Dataset RandomX FAST butuh mlock saat hugepages dipakai.
+LimitMEMLOCK=infinity
+NoNewPrivileges=true
+# Miner tidak menulis apa pun ke disk.
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
