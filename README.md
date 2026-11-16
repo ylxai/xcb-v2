@@ -1,10 +1,10 @@
-# xcb — Miner XCB (RandomY) + ConnectCoin (CONN / RandomX V2)
+# xcb — Miner XCB (RandomY) + ConnectCoin (CONN / RandomX V2) + Zycord (ZCD)
 
 [![CI](https://github.com/ylxai/xcb-v2/actions/workflows/ci.yml/badge.svg)](https://github.com/ylxai/xcb-v2/actions/workflows/ci.yml)
 
 Miner C++ pribadi untuk **Core Coin (XCB)** menggunakan algoritma **RandomY** (fork RandomX v1.2.1),
-plus backend **ConnectCoin (CONN)** dengan RandomX V2. Dibangun dari nol — **zero dev fee**,
-dependensi eksternal hanya RandomY, RandomX V2 (vendored), FTXUI, dan OpenSSL.
+plus backend **ConnectCoin (CONN)** dan **Zycord (ZCD)** dengan RandomX V2. Dibangun dari nol —
+**zero dev fee**, dependensi eksternal hanya RandomY, RandomX V2 (vendored), FTXUI, dan OpenSSL.
 
 - **Zero dev fee** — semua hash 100% ke wallet yang dikonfigurasi, tidak ada switch wallet
 - **ETHPROXY protocol** (`eth_submitLogin` / `eth_getWork` / `eth_submitWork`) untuk pool catchthatrabbit
@@ -12,6 +12,8 @@ dependensi eksternal hanya RandomY, RandomX V2 (vendored), FTXUI, dan OpenSSL.
 - **CPU affinity + nice priority** — thread di-pin per core
 - **Multi-pool config file** (`pool.cfg`) — failover otomatis antar server
 - **Dashboard TUI (FTXUI)** — live stats interaktif, keyboard-driven (1/2/3 pindah tab, q quit)
+- **Backend ZCD terpisah** — biner `zcd-miner` sendiri (`src/zcd/`), tidak berbagi kode dengan
+  CONN/XCB, dipakai lewat stratum dialek XMRig `rx/2`
 
 ---
 
@@ -212,6 +214,53 @@ Catatan operasional:
 
 ---
 
+## Zycord (ZCD) — biner terpisah
+
+ZCD **tidak** dijalankan lewat binary `xcb`. Ia punya biner sendiri,
+`zcd-miner`, yang dibangun dari `src/zcd/` saja dan hanya me-link RandomX V2.
+Backend CONN (`ConnMiner`/`ConnPool`/`ConnRpc`) dan Core Coin
+(`Miner`/`StratumClient`/RandomY) tidak ikut di-link, jadi perubahan di salah
+satu sisi tidak bisa memengaruhi yang lain.
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target zcd-miner -j$(nproc)
+
+./build/src/zcd/zcd-miner --selftest          # engine + aturan share
+./build/src/zcd/zcd-miner \
+    --address 0x02... --worker myhost --threads 4
+```
+
+Opsi lain: `--pool HOST[:PORT]` (default `randomx.rplant.xyz:17197`),
+`--plain`, `--light`, `--no-hugepages`, `--nonce-offset N`. Konfigurasi bisa
+juga dari environment (`ZCD_POOL`, `ZCD_ADDRESS`, `ZCD_WORKER`, `ZCD_THREADS`,
+`ZCD_PLAIN`, `ZCD_LIGHT`, `ZCD_NO_HUGEPAGES`, `ZCD_NONCE_OFFSET`) atau
+`~/.config/zcd/miner.conf`. Unit systemd ada di `ops/systemd/zcd.service`.
+
+**Aturan share `rx/2` (berbeda dari CONN).** Nilai share bukan digest RandomX
+mentah, melainkan `blake2b-256(blob ‖ digest)`; yang dibandingkan dengan target
+adalah byte 24..31 dari commitment itu dibaca little-endian, dan
+perbandingannya ketat (`<`) — sama persis dengan `core/pow/pow.go` dan
+`node/stratum/seam.go` di zycord-node. Filter pada digest mentah membuat semua
+share ditolak tanpa error, jadi aturan ini dikunci oleh `tests/zcd_commitment_test.cpp`.
+
+Blob job 43 byte: seed 32 byte, 7 byte reserved nol, nonce `uint32`
+little-endian di offset 39.
+
+Baseline terukur (4 core, hugepages FAST): **~1370 H/s**, dan pada diff
+200.000 di `randomx.rplant.xyz` sekitar 19 share per 1,4 juta hash — 18
+diterima pool.
+
+Test:
+
+```bash
+cd build && ctest -R zcd --output-on-failure
+```
+
+(`--test-dir` baru ada di CMake 3.20; proyek ini masih mendukung 3.12.)
+
+---
+
 ## Dashboard / UI Mode
 
 Secara default di terminal (TTY) miner menampilkan **dashboard FTXUI** full-screen yang hidup:
@@ -374,6 +423,14 @@ xcb/
     ├── ConnRpc.hpp/.cpp     # JSON-RPC connectcoind (solo) + parser JSON
     ├── ConnMiner.hpp/.cpp   # Backend CONN: template loop + worker RandomX V2
     ├── Hashing/RandomXV2.*  # Wrapper Context/VM RandomX V2
+    ├── zcd/                 # Backend Zycord mandiri — biner zcd-miner sendiri
+    │   ├── ZcdMain.cpp      # entrypoint + CLI/env/file + selftest
+    │   ├── ZcdMiner.*       # worker + engine loop
+    │   ├── ZcdPool.*        # stratum XMRig (TLS) — tidak memakai ConnPool
+    │   ├── ZcdJob.*         # parse job rx/2 (blob 43 byte, target 8 byte LE)
+    │   ├── ZcdCommitment.*  # blake2b(blob||digest), aturan share
+    │   ├── ZcdJson.*        # parser JSON sendiri (bukan ConnRpc)
+    │   └── CMakeLists.txt   # target zcd-miner + ctest
     └── Sha3_512.hpp/.cpp    # SHA3-512 keccak satu-blok (hot path 40B)
 ```
 
