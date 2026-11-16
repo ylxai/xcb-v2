@@ -32,10 +32,10 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=true
-# Batasi syscall ke yang dipakai: socket, poll, mmap/mprotect (RandomX JIT),
-# mlock, sched_setaffinity, setpriority.
-SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources
+# Tanpa SystemCallFilter: RandomX JIT menjalankan kode hasil kompilasi sendiri
+# dan kena SIGSYS (status 31) bila syscall-nya tidak masuk whitelist.
+# Terverifikasi di fl — mining berhenti tepat setelah "RandomX V2 siap"
+# dengan SystemCallFilter=@system-service.
 
 [Install]
 WantedBy=multi-user.target
