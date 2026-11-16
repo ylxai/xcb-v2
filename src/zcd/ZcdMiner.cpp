@@ -225,6 +225,10 @@ struct Miner::Impl {
                 return;
             }
         }
+        // Seed berganti: lepas snapshot di sini juga. Kalau `cur` masih hidup
+        // saat releaseOldWork() menghitung use_count, penantiannya selalu
+        // timeout dan dataset baru dibangun berdampingan dengan yang lama.
+        cur.reset();
         buildEngine(job);
     }
 
@@ -277,6 +281,10 @@ struct Miner::Impl {
         while (run.load(std::memory_order_acquire)) {
             auto w = snapshot();
             if (!w || !w->job || id >= static_cast<int>(w->vms.size())) {
+                // Work dikosongkan saat rekey: lepas juga referensi terakhir
+                // worker ke dataset lama, kalau tidak releaseOldWork() menunggu
+                // sampai timeout dan engine baru terpaksa memakai page biasa.
+                engineAtStart.reset();
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 continue;
             }
