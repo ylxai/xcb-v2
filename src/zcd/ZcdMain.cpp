@@ -60,28 +60,54 @@ std::string hostWorkerName() {
     return s;
 }
 
+bool parsePort(const std::string& s, uint16_t& out) {
+    if (s.empty() || s.size() > 5) return false;
+    unsigned v = 0;
+    for (char c : s) {
+        if (c < '0' || c > '9') return false;  // tolak "123junk"
+        v = v * 10 + static_cast<unsigned>(c - '0');
+    }
+    if (v == 0 || v > 65535) return false;
+    out = static_cast<uint16_t>(v);
+    return true;
+}
+
 bool splitHostPort(const std::string& in, std::string& host, uint16_t& port) {
     if (in.empty()) return false;
-    std::string h = in;
-    uint16_t p = 17197;
-    // [::1]:9425 atau host:port
-    const size_t colon = in.rfind(':');
-    if (colon != std::string::npos && in.find(']') != std::string::npos && colon > in.find(']')) {
-        h = in.substr(0, colon);
-        if (h.size() >= 2 && h.front() == '[' && h.back() == ']') h = h.substr(1, h.size() - 2);
-        const long v = std::strtol(in.c_str() + colon + 1, nullptr, 10);
-        if (v <= 0 || v > 65535) return false;
-        p = static_cast<uint16_t>(v);
-    } else if (colon != std::string::npos && in.find(':') == colon) {
-        h = in.substr(0, colon);
-        const long v = std::strtol(in.c_str() + colon + 1, nullptr, 10);
-        if (v <= 0 || v > 65535) return false;
-        p = static_cast<uint16_t>(v);
+    port = 17197;
+
+    // [::1]:9425 atau [::1] tanpa port.
+    if (!in.empty() && in.front() == '[') {
+        const size_t close = in.find(']');
+        if (close == std::string::npos || close == 1) return false;
+        const std::string inner = in.substr(1, close - 1);
+        const std::string rest = in.substr(close + 1);
+        if (rest.empty()) {
+            host = inner;
+            return true;
+        }
+        if (rest[0] != ':') return false;
+        host = inner;
+        return parsePort(rest.substr(1), port);
     }
-    if (h.empty()) return false;
-    host = h;
-    port = p;
-    return true;
+
+    // host:port — hanya bila ada tepat satu titik dua, supaya IPv6 tanpa
+    // bracket tidak dipotong di tengah alamat.
+    const size_t first = in.find(':');
+    const size_t last = in.rfind(':');
+    if (first == std::string::npos) {
+        host = in;
+        return true;
+    }
+    if (first != last) {
+        // IPv6 tanpa bracket dan tanpa port: terima apa adanya (getaddrinfo
+        // menanganinya), port tetap default.
+        host = in;
+        return true;
+    }
+    host = in.substr(0, first);
+    if (host.empty()) return false;
+    return parsePort(in.substr(first + 1), port);
 }
 
 bool truthy(const std::string& v) {

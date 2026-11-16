@@ -1,6 +1,8 @@
 #include "ZcdJob.hpp"
 
+#include <cmath>
 #include <cstring>
+#include <limits>
 
 // Parser JSON sendiri (ZcdJson) — memakai ConnRpc.hpp akan menyeret backend
 // CONN ke biner ZCD dan menghapus kemandiriannya.
@@ -161,7 +163,24 @@ bool parseJob(const std::string& line, Job& out, std::string& err) {
     }
 
     std::string algo;
-    if (j->getStr("algo", algo) && !algo.empty()) out.algo = algo;
+    if (j->getStr("algo", algo) && !algo.empty()) {
+        // Backend ini hanya mengimplementasikan rx/2. Menerima algo lain berarti
+        // menghitung RandomX V2 untuk pekerjaan yang algoritmanya berbeda, dan
+        // hasilnya ditolak pool tanpa pesan yang berguna.
+        if (algo != "rx/2") {
+            err = "job: algo tidak didukung: " + algo;
+            return false;
+        }
+        out.algo = algo;
+    }
+
+    // height datang dari JSON pool sebagai double. Nilai negatif, NaN, inf,
+    // atau di luar rentang uint64_t membuat static_cast tidak terdefinisi.
+    if (!std::isfinite(height) || height < 0 ||
+        height > static_cast<double>(std::numeric_limits<uint64_t>::max())) {
+        err = "job: height di luar rentang";
+        return false;
+    }
 
     out.id = id;
     out.height = static_cast<uint64_t>(height);

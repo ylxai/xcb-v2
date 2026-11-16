@@ -66,6 +66,8 @@ environment file, dan wrapper-nya juga terpisah — jangan mencampurnya dengan
 `syscached`.
 
 ```bash
+# Miner jalan sebagai user khusus, bukan root.
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin zcd || true
 sudo install -d -m 755 /etc/zcd /usr/local/sbin
 sudo install -m 755 build/src/zcd/zcd-miner /usr/local/bin/zcd-miner
 sudo install -m 644 build/src/zcd/librandomx_v2.so /usr/local/bin/
@@ -75,21 +77,26 @@ set -eu
 : "${ZCD_ADDRESS:?ZCD_ADDRESS kosong di /etc/zcd/miner.env}"
 : "${ZCD_WORKER:?ZCD_WORKER kosong di /etc/zcd/miner.env}"
 : "${ZCD_POOL:?ZCD_POOL kosong di /etc/zcd/miner.env}"
-set -- --address "$ZCD_ADDRESS" --worker "$ZCD_WORKER" --pool "$ZCD_POOL"
+# Alamat wallet TIDAK diteruskan sebagai flag: zcd-miner sudah membacanya dari
+# ZCD_ADDRESS di environment, dan argv terlihat oleh user lokal lewat
+# ps / /proc/<pid>/cmdline.
 if [ -n "${ZCD_THREADS:-}" ]; then
-    set -- "$@" --threads "$ZCD_THREADS"
+    set -- --threads "$ZCD_THREADS"
 fi
-[ "${ZCD_PLAIN:-0}" = "1" ] && set -- "$@" --plain
-[ "${ZCD_LIGHT:-0}" = "1" ] && set -- "$@" --light
-[ "${ZCD_NO_HUGEPAGES:-0}" = "1" ] && set -- "$@" --no-hugepages
+# `if` (bukan `[ ] && ...`) karena dengan set -e tes yang gagal menghentikan
+# skrip.
+if [ "${ZCD_PLAIN:-0}" = "1" ]; then set -- "$@" --plain; fi
+if [ "${ZCD_LIGHT:-0}" = "1" ]; then set -- "$@" --light; fi
+if [ "${ZCD_NO_HUGEPAGES:-0}" = "1" ]; then set -- "$@" --no-hugepages; fi
 if [ -n "${ZCD_NONCE_OFFSET:-}" ]; then
     set -- "$@" --nonce-offset "$ZCD_NONCE_OFFSET"
 fi
 exec /usr/local/bin/zcd-miner "$@"
 EOF
-sudo chmod 0700 /usr/local/sbin/zcdd
+sudo chown root:zcd /usr/local/sbin/zcdd
+sudo chmod 0750 /usr/local/sbin/zcdd
 sudo install -m 644 ops/systemd/zcd.service /etc/systemd/system/zcd.service
-sudo install -m 600 ops/systemd/zcd.env.example /etc/zcd/miner.env
+sudo install -m 640 -g zcd ops/systemd/zcd.env.example /etc/zcd/miner.env
 sudoedit /etc/zcd/miner.env          # isi ZCD_ADDRESS/ZCD_WORKER/ZCD_THREADS
 sudo systemctl daemon-reload
 sudo systemctl enable --now zcd
@@ -149,6 +156,12 @@ adalah balasan pool yang sebenarnya.
 
 - **`ZCD_ADDRESS` wajib diisi.** Placeholder `ISI_WALLET_ZCD`/`CHANGE_ME`
   ditolak `ExecStartPre`.
+- Unit berjalan sebagai user `zcd`, bukan root: miner mengolah JSON dan TLS
+  dari pool yang tidak tepercaya. `syscached` masih root karena warisan
+  deployment lama; unit ZCD tidak mengulangi itu.
+- Alamat wallet tidak pernah masuk argv: `zcd-miner` membacanya dari
+  `ZCD_ADDRESS` di `/etc/zcd/miner.env` (0640 root:zcd), jadi `ps` dan
+  `/proc/<pid>/cmdline` tidak membocorkannya ke user lokal.
 - zcd-miner membaca konfigurasi dari environment (`ZCD_*`, lihat
   `ZcdMain.cpp`) dan juga bisa dari `~/.config/zcd/miner.conf`; unit ini
   memakai environment supaya wallet tidak perlu ditulis di dua tempat.

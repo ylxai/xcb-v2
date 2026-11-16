@@ -38,10 +38,14 @@ std::vector<int> usableCpus() {
     return cpus;
 }
 
-// Satu template kerja yang sedang dicari. Dibuat ulang setiap seed berubah.
+// Satu template kerja yang sedang dicari. Work dibuat ulang setiap seed
+// berubah, dan `job` sengaja dimiliki lewat shared_ptr<const Job>: job baru
+// mengganti pointer, tidak memutasi objek yang sedang dibaca worker. Dulu
+// `work->job` diganti di tempat dengan move-assignment, yang membebaskan
+// buffer blob milik worker yang sedang memcpy — use-after-free setiap blok.
 struct Work {
     uint64_t gen = 0;
-    Job job;
+    std::shared_ptr<const Job> job;
     std::shared_ptr<rxv2::Context> ctx;
     std::vector<std::unique_ptr<rxv2::Context::VM>> vms;
     // Penghitung nonce tunggal per Work: semua worker menarik nomor dari sini,
@@ -69,11 +73,34 @@ struct Miner::Impl {
     std::atomic<uint64_t> submitted{0};
     std::atomic<uint64_t> engineRebuilds{0};
     std::atomic<bool> engineFailed{false};
+    std::mutex errMu;
     std::string engineError;
 
+    void clearEngineError() {
+        std::lock_guard<std::mutex> lock(errMu);
+        engineError.clear();
+    }
+
+    void setEngineError(const std::string& msg) {
+        std::lock_guard<std::mutex> lock(errMu);
+        engineFailed.store(true, std::memory_order_relaxed);
+        engineError = msg;
+    }
+
+    std::string getEngineError() {
+        std::lock_guard<std::mutex> lock(errMu);
+        return engineError;
+    }
+
+    // Bangun engine untuk seed baru. `oldCtx` dilepas lebih dulu oleh pemanggil
+    // supaya dataset lama tidak hidup bersamaan dengan yang baru (hugepages
+    // hanya cukup untuk satu dataset).
     void buildEngine(const Job& job) {
+        engineFailed.store(false, std::memory_order_relaxed);
+        clearEngineError();
+
         auto w = std::make_shared<Work>();
-        w->job = job;
+        w->job = std::make_shared<const Job>(job);
         w->nonce.store(cfg.nonceOffset, std::memory_order_relaxed);
 
         const std::string kh = job.keyHex();
@@ -85,10 +112,11 @@ struct Miner::Impl {
         auto ctx = std::make_shared<rxv2::Context>(key, sizeof(key), cfg.fastMem, cfg.largePages,
                                                   static_cast<int>(cfg.threads));
         if (!ctx->ok()) {
-            std::lock_guard<std::mutex> lock(mu);
-            engineFailed.store(true, std::memory_order_relaxed);
-            engineError = ctx->error();
+            setEngineError(ctx->error());
             lg::error("zcd", "engine gagal: " + ctx->error());
+            // Engine lama tidak boleh tetap aktif: share untuk seed usang akan
+            // ditolak pool, dan lebih buruk lagi menutupi kegagalan ini.
+            invalidateWork();
             return;
         }
         const char* mode = cfg.fastMem ? (ctx->usesLargePages() ? "FAST, hugepages"
@@ -101,10 +129,9 @@ struct Miner::Impl {
         for (int i = 0; i < n; i++) {
             auto vm = ctx->createVM();
             if (!vm || !vm->ok()) {
-                std::lock_guard<std::mutex> lock(mu);
-                engineFailed.store(true, std::memory_order_relaxed);
-                engineError = "VM gagal dibuat";
+                setEngineError("VM gagal dibuat");
                 lg::error("zcd", "VM RandomX gagal dibuat");
+                invalidateWork();
                 return;
             }
             w->vms.push_back(std::move(vm));
@@ -119,6 +146,15 @@ struct Miner::Impl {
         engineRebuilds.fetch_add(1, std::memory_order_relaxed);
     }
 
+    // Hentikan semua worker dari work yang sekarang tanpa membiarkan engine
+    // gagal tampak "jalan": workers menunggu work kosong sampai engine baru
+    // berhasil dibangun.
+    void invalidateWork() {
+        std::lock_guard<std::mutex> lock(mu);
+        work.reset();
+        engineGen.fetch_add(1, std::memory_order_acq_rel);
+    }
+
     std::shared_ptr<Work> snapshot() {
         std::lock_guard<std::mutex> lock(mu);
         return work;
@@ -126,20 +162,36 @@ struct Miner::Impl {
 
     void publishJob(const Job& job) {
         auto cur = snapshot();
-        if (cur && cur->job.id == job.id) return;
+        // Bandingkan isi job, bukan hanya id: pool boleh memakai ulang job_id
+        // untuk pekerjaan yang berbeda (termasuk setelah reconnect), dan
+        // menganggapnya sama membuat worker terus menambang blob lama.
+        if (cur && cur->job && sameJob(*cur->job, job)) return;
+
         // Blob berubah tiap blok tetapi seed biasanya tetap: engine hanya
-        // dibangun ulang saat seed_hash berubah. Selain itu cukup tukar job
-        // pada Work yang sama, sehingga VM/dataset dipakai ulang.
-        if (cur && std::memcmp(cur->job.key, job.key, 32) == 0) {
+        // dibangun ulang saat seed_hash berubah. Selain itu cukup tukar
+        // pointer job, sehingga VM/dataset dipakai ulang.
+        if (cur && cur->job && std::memcmp(cur->job->key, job.key, 32) == 0) {
+            auto next = std::make_shared<const Job>(job);
             std::lock_guard<std::mutex> lock(mu);
-            if (work) {
-                Job next = job;
+            if (work && work->job && std::memcmp(work->job->key, job.key, 32) == 0) {
+                // Tukar pointer, bukan memutasi Job: worker yang sedang memcpy
+                // memegang shared_ptr sendiri sehingga buffernya tetap hidup.
                 work->job = std::move(next);
+                // Naikkan generasi supaya worker berhenti memakai snapshot job
+                // lama. Tanpa ini worker menyelesaikan sisa batch 2048 hash
+                // untuk blob yang sudah usang (hash rate tampak turun dan
+                // share dikirim untuk job yang sudah lewat).
+                work->gen = engineGen.fetch_add(1, std::memory_order_acq_rel) + 1;
                 work->done.store(false, std::memory_order_relaxed);
+                return;
             }
-            return;
         }
         buildEngine(job);
+    }
+
+    static bool sameJob(const Job& a, const Job& b) {
+        return a.id == b.id && a.target == b.target && a.height == b.height &&
+               a.blob == b.blob && std::memcmp(a.key, b.key, 32) == 0;
     }
 
     void ioLoop(Miner& mself) {
@@ -152,12 +204,13 @@ struct Miner::Impl {
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
                     continue;
                 }
-                Job first;
-                if (pool->currentJob(first)) publishJob(first);
             }
 
             Job job;
             if (pool->nextJob(job, 5000, err)) {
+                // Stop bisa datang selama nextJob menunggu; jangan pasang job
+                // baru ke miner yang sudah diminta berhenti.
+                if (!run.load(std::memory_order_acquire)) break;
                 publishJob(job);
                 lg::info("zcd", "job baru tinggi " + std::to_string(job.height) + " diff " +
                                     std::to_string(static_cast<long long>(job.difficultyValue())));
@@ -180,23 +233,22 @@ struct Miner::Impl {
         }
         ::setpriority(PRIO_PROCESS, 0, -10);
 
-        uint64_t seenGen = 0;
-        std::shared_ptr<Work> cur;
         std::shared_ptr<Work> engineAtStart;
 
         while (run.load(std::memory_order_acquire)) {
             auto w = snapshot();
-            if (!w || id >= static_cast<int>(w->vms.size())) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (!w || !w->job || id >= static_cast<int>(w->vms.size())) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 continue;
             }
-            // Context yang context-nya berganti: lepas referensi lama supaya
-            // dataset lama tidak ikut hidup saat engine baru dibangun
-            // (hugepages hanya cukup untuk satu dataset).
+            // Context berganti: lepas referensi lama supaya dataset lama tidak
+            // ikut hidup saat engine baru dibangun.
             if (engineAtStart && engineAtStart->ctx != w->ctx) engineAtStart.reset();
-            cur = w;
             engineAtStart = w;
             const uint64_t gen = w->gen;
+            // Snapshot job dipegang selama batch: shared_ptr menjaga buffer
+            // blob hidup walau ioLoop mengganti pointer job di tengah.
+            std::shared_ptr<const Job> job = w->job;
 
             auto& vm = w->vms[static_cast<size_t>(id)];
             for (int i = 0; i < 2048 && run.load(std::memory_order_relaxed); i++) {
@@ -204,11 +256,17 @@ struct Miner::Impl {
                     std::this_thread::sleep_for(std::chrono::milliseconds(20));
                     break;
                 }
+                // Cek pergantian job tiap 64 hash, bukan tiap hash: dua atomic
+                // load per hash memotong hash rate. 64 hash (~50 ms) cukup
+                // cepat untuk job baru 30 detik, dan nonce tetap unik karena
+                // diambil dari counter bersama.
+                if ((i & 63) == 0 && w->gen != gen) break;
 
+                const Job& j = *job;
                 uint8_t blob[BLOB_SIZE];
-                std::memcpy(blob, w->job.blob.data(), BLOB_SIZE);
+                std::memcpy(blob, j.blob.data(), BLOB_SIZE);
                 const uint32_t nonce =
-                    static_cast<uint32_t>(cur->nonce.fetch_add(1, std::memory_order_relaxed));
+                    static_cast<uint32_t>(w->nonce.fetch_add(1, std::memory_order_relaxed));
                 for (size_t k = 0; k < NONCE_SIZE; k++)
                     blob[NONCE_OFFSET + k] = static_cast<uint8_t>(nonce >> (8 * k));
 
@@ -220,32 +278,29 @@ struct Miner::Impl {
                 uint8_t commit[COMMITMENT_SIZE];
                 commitment(blob, BLOB_SIZE, digest, commit);
 
-                if (meetsTarget(commit, cur->job.target)) {
+                if (meetsTarget(commit, j.target)) {
                     found.fetch_add(1, std::memory_order_relaxed);
                     mself.m_found.fetch_add(1, std::memory_order_relaxed);
 
-                    // Nonce sudah tertulis di blob; submit memakai job yang
-                    // membawa blob/nonce ini.
-                    Job solved = cur->job;
+                    Job solved = j;
                     std::memcpy(solved.blob.data(), blob, BLOB_SIZE);
-                    const uint64_t val = shareValue(commit);
+                    // Job bisa berganti antara hash ini dan submit. Share untuk
+                    // job lama pasti dijawab "stale share" oleh pool, jadi
+                    // jangan dikirim (menghemat kuota submit dan tidak
+                    // mengotori statistik). Nonce sudah terpakai, jadi
+                    // melewatkannya tidak kehilangan peluang.
+                    if (w->gen != gen) continue;
                     lg::good("zcd", "[share] tinggi " + std::to_string(solved.height) + " nonce 0x" +
                                         solved.nonceHex(0) + " value 0x" +
-                                        std::to_string(val) + " < target 0x" +
+                                        std::to_string(shareValue(commit)) + " < target 0x" +
                                         std::to_string(solved.target));
                     std::string serr;
                     if (pool->submit(solved, digest, commit, serr))
                         submitted.fetch_add(1, std::memory_order_relaxed);
                     else
                         lg::warn("zcd", "submit gagal: " + serr);
-                    // Job tidak ditandai selesai: share lain untuk job yang
-                    // sama tetap dinamis, dan pool yang memutuskan kapan job
-                    // berganti.
                 }
-
-                if ((i & 63) == 0 && gen != engineGen.load(std::memory_order_acquire)) break;
             }
-            (void)seenGen;
         }
     }
 };
@@ -265,6 +320,12 @@ bool Miner::start(const MinerConfig& cfg, std::string& err) {
         return false;
     }
     m_impl->cfg = cfg;
+    // Kontrak MinerConfig.threads: 0 = auto. Diselesaikan di sini supaya
+    // pemanggil selain ZcdMain juga mendapat perilaku yang sama.
+    if (m_impl->cfg.threads <= 0) {
+        const int n = static_cast<int>(usableCpus().size());
+        m_impl->cfg.threads = n > 0 ? n : 1;
+    }
     m_impl->pool = std::make_unique<Pool>(cfg.pool);
 
     if (!m_impl->pool->connect(err)) return false;
@@ -278,18 +339,17 @@ bool Miner::start(const MinerConfig& cfg, std::string& err) {
     m_impl->run.store(true, std::memory_order_release);
     m_running.store(true, std::memory_order_release);
 
+    // engineFailed di-reset di buildEngine, jadi start yang diulang setelah
+    // kegagalan tidak lagi melihat status lama.
     m_impl->buildEngine(first);
-    {
-        std::lock_guard<std::mutex> lock(m_impl->mu);
-        if (m_impl->engineFailed.load(std::memory_order_relaxed)) {
-            err = "engine: " + m_impl->engineError;
-            m_impl->run.store(false);
-            m_running.store(false);
-            return false;
-        }
+    if (m_impl->engineFailed.load(std::memory_order_relaxed)) {
+        err = "engine: " + m_impl->getEngineError();
+        m_impl->run.store(false);
+        m_running.store(false);
+        return false;
     }
 
-    const int n = std::max(1, static_cast<int>(cfg.threads));
+    const int n = std::max(1, static_cast<int>(m_impl->cfg.threads));
     const std::vector<int> cpus = usableCpus();
     m_impl->workers.reserve(static_cast<size_t>(n));
     for (int i = 0; i < n; i++) {
@@ -298,8 +358,8 @@ bool Miner::start(const MinerConfig& cfg, std::string& err) {
     }
     m_impl->ioThread = std::thread([this]() { m_impl->ioLoop(*this); });
 
-    lg::info("zcd", "miner ZCD jalan: " + std::to_string(n) + " thread, algo " +
-                        first.algo + ", tinggi " + std::to_string(first.height) + ", diff " +
+    lg::info("zcd", "miner ZCD jalan: " + std::to_string(n) + " thread, algo " + first.algo +
+                        ", tinggi " + std::to_string(first.height) + ", diff " +
                         std::to_string(static_cast<long long>(first.difficultyValue())));
     return true;
 }

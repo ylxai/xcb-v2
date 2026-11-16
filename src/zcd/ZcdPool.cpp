@@ -15,11 +15,20 @@
 #include "../Log.hpp"
 #include "ZcdJson.hpp"
 
+#include <chrono>
+
 namespace zcd {
 
 namespace {
 
 constexpr int kIoTimeoutSec = 30;
+
+// Dua job dianggap sama bila seluruh isinya sama. job_id saja tidak cukup:
+// pool boleh memakai ulang id untuk pekerjaan yang berbeda.
+bool sameJobContent(const Job& a, const Job& b) {
+    return a.id == b.id && a.target == b.target && a.height == b.height &&
+           a.blob == b.blob && std::memcmp(a.key, b.key, sizeof(a.key)) == 0;
+}
 
 std::string toHex(const uint8_t* p, size_t n) {
     static const char hx[] = "0123456789abcdef";
@@ -80,8 +89,16 @@ bool Pool::sendLine(const std::string& line, std::string& err) {
 
 bool Pool::recvLine(std::string& line, int timeoutMs, std::string& err) {
     // Pemanggil sudah memegang m_ioMu.
-    const long long deadline = timeoutMs <= 0 ? 0 : timeoutMs;
-    for (int tries = 0; tries < 64; tries++) {
+    //
+    // Satu deadline absolut untuk seluruh panggilan. Sebelumnya setiap poll
+    // memakai timeout penuh, jadi reply yang datang bertahap bisa menahan
+    // m_ioMu sampai 64 kali timeout — dan selama itu submit() dari worker
+    // ikut tertahan.
+    const auto start = std::chrono::steady_clock::now();
+    const int totalMs = timeoutMs > 0 ? timeoutMs : (kIoTimeoutSec * 1000);
+    const auto deadline = start + std::chrono::milliseconds(totalMs);
+
+    for (int tries = 0; tries < 256; tries++) {
         const size_t nl = m_buf.find('\n');
         if (nl != std::string::npos) {
             line = m_buf.substr(0, nl);
@@ -89,20 +106,39 @@ bool Pool::recvLine(std::string& line, int timeoutMs, std::string& err) {
             return true;
         }
 
-        struct pollfd pfd;
-        pfd.fd = m_fd;
-        pfd.events = POLLIN;
-        pfd.revents = 0;
-        const int waitMs = deadline > 0 ? static_cast<int>(deadline) : (kIoTimeoutSec * 1000);
-        const int pr = ::poll(&pfd, 1, waitMs);
-        if (pr == 0) {
-            err = "timeout menunggu data pool";
-            return false;
+        // Data yang sudah terdekripsi di buffer OpenSSL hanya bisa dibaca lewat
+        // SSL_read; poll() pada socket tidak akan menyala karena byte itu tidak
+        // lagi berada di kernel. Tanpa cek ini, notifikasi job bisa tertahan
+        // sampai paket berikutnya datang.
+        bool buffered = false;
+        if (m_ssl) {
+            buffered = SSL_pending(static_cast<SSL*>(m_ssl)) > 0;
         }
-        if (pr < 0) {
-            if (errno == EINTR) continue;
-            err = std::string("poll gagal: ") + std::strerror(errno);
-            return false;
+
+        if (!buffered) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) {
+                err = "timeout menunggu data pool";
+                return false;
+            }
+            const long long left = static_cast<long long>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+            const int waitMs = static_cast<int>(left > 0 ? left : 1);
+
+            struct pollfd pfd;
+            pfd.fd = m_fd;
+            pfd.events = POLLIN;
+            pfd.revents = 0;
+            const int pr = ::poll(&pfd, 1, waitMs);
+            if (pr == 0) {
+                err = "timeout menunggu data pool";
+                return false;
+            }
+            if (pr < 0) {
+                if (errno == EINTR) continue;
+                err = std::string("poll gagal: ") + std::strerror(errno);
+                return false;
+            }
         }
 
         char buf[8192];
@@ -217,6 +253,18 @@ bool Pool::connect(std::string& err) {
                 err = "setup verifikasi hostname TLS gagal";
                 return false;
             }
+            // SNI: tanpa ini pool yang dilayani virtual host/CDN bisa
+            // mempersembahkan sertifikat default dan handshake ditolak. Hanya
+            // untuk nama host; alamat IP literal tidak boleh dikirim sebagai
+            // SNI (RFC 6066).
+            if (!isIp) {
+                if (SSL_set_tlsext_host_name(ssl, m_cfg.host.c_str()) != 1) {
+                    SSL_free(ssl);
+                    SSL_CTX_free(ctx);
+                    err = "gagal set SNI TLS";
+                    return false;
+                }
+            }
             if (SSL_connect(ssl) != 1) {
                 char eb[256] = {0};
                 ERR_error_string_n(ERR_peek_last_error(), eb, sizeof(eb));
@@ -245,7 +293,8 @@ bool Pool::connect(std::string& err) {
         const std::string who = m_cfg.worker.empty()
                                     ? m_cfg.login
                                     : (m_cfg.login + "." + m_cfg.worker);
-        m_loginId = std::to_string(m_msgId);
+        // m_msgId hanya boleh disentuh di bawah m_ioMu (submit juga memakainya).
+        m_loginId.clear();
         const std::string loginMsg =
             "{\"id\":" + std::to_string(m_msgId++) + ",\"jsonrpc\":\"2.0\",\"method\":\"login\"," +
             "\"params\":{\"login\":\"" + jsonEscape(who) + "\",\"pass\":\"x\",\"agent\":\"" +
@@ -281,6 +330,25 @@ bool Pool::connect(std::string& err) {
         if (!parseJob(line, job, perr)) {
             err = "job login tidak valid: " + perr;
             return false;
+        }
+
+        // Session id untuk submit adalah `result.id`, bukan id request JSON-RPC.
+        // rplant kebetulan mengembalikan "1" (sama dengan request id) sehingga
+        // kesalahan ini tidak terlihat, tetapi pool lain memberi id berbeda dan
+        // semua share akan ditolak. Fallback ke request id bila tidak ada.
+        {
+            const Json doc = parseJson(line, nullptr);
+            std::string session;
+            if (const Json* r = doc.get("result")) {
+                if (r->isObj() && r->getStr("id", session) && !session.empty()) {
+                    std::lock_guard<std::mutex> lock(m_ioMu);
+                    m_loginId = session;
+                }
+            }
+            if (m_loginId.empty()) {
+                std::lock_guard<std::mutex> lock(m_ioMu);
+                m_loginId = std::to_string(m_msgId - 1);
+            }
         }
         {
             std::lock_guard<std::mutex> lock(m_jobMu);
@@ -335,7 +403,10 @@ bool Pool::nextJob(Job& out, int timeoutMs, std::string& err) {
         }
         {
             std::lock_guard<std::mutex> lock(m_jobMu);
-            if (m_haveJob && m_job.id == job.id) return false;
+            // Bandingkan isi, bukan hanya id: pool boleh memakai ulang job_id
+            // untuk pekerjaan yang berbeda (termasuk setelah reconnect), dan
+            // mengabaikannya membuat worker menambang blob lama.
+            if (m_haveJob && sameJobContent(m_job, job)) return false;
             m_job = job;
             m_haveJob = true;
         }
@@ -343,15 +414,35 @@ bool Pool::nextJob(Job& out, int timeoutMs, std::string& err) {
         return true;
     }
 
-    if (line.find("\"status\"") != std::string::npos) {
-        const bool ok = line.find("\"status\":\"OK\"") != std::string::npos ||
-                        line.find("\"status\": \"OK\"") != std::string::npos;
-        if (ok) {
-            m_accepted.fetch_add(1, std::memory_order_relaxed);
-        } else {
-            m_rejected.fetch_add(1, std::memory_order_relaxed);
-            std::lock_guard<std::mutex> lock(m_rejectMu);
-            m_lastReject = line.substr(0, 300);
+    // Balasan submit: parse JSON-nya. Pencarian substring untuk beberapa
+    // ejaan "status" melewatkan error JSON-RPC (tanpa field status) dan
+    // salah menghitung status yang memakai whitespace JSON lain.
+    {
+        const Json doc = parseJson(line, nullptr);
+        if (doc.isObj()) {
+            bool counted = false;
+            if (const Json* r = doc.get("result")) {
+                if (r->isObj()) {
+                    std::string status;
+                    if (r->getStr("status", status)) {
+                        counted = true;
+                        if (status == "OK") {
+                            m_accepted.fetch_add(1, std::memory_order_relaxed);
+                        } else {
+                            m_rejected.fetch_add(1, std::memory_order_relaxed);
+                            std::lock_guard<std::mutex> lock(m_rejectMu);
+                            m_lastReject = line.substr(0, 300);
+                        }
+                    }
+                }
+            }
+            // Error JSON-RPC (mis. "Invalid job id") tidak selalu membawa
+            // status, tetapi tetap penolakan share.
+            if (!counted && doc.get("error")) {
+                m_rejected.fetch_add(1, std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(m_rejectMu);
+                m_lastReject = line.substr(0, 300);
+            }
         }
     }
     return false;
@@ -371,13 +462,17 @@ bool Pool::submit(const Job& job, const uint8_t digest[32], const uint8_t commit
     // XMRig: field "result" = commitment, field "commitment" = digest mentah.
     // Namanya terbalik relatif isinya (bug nyata di XMRig v6.26.0 yang
     // didokumentasikan zycord-node core/pow/pow.go).
+    //
+    // m_msgId dan m_loginId dibaca di bawah m_ioMu: submit dipanggil dari
+    // banyak worker sekaligus, dan connect() juga menulis m_msgId. Sebelumnya
+    // m_msgId++ terjadi sebelum lock, menghasilkan id duplikat.
+    std::lock_guard<std::mutex> lock(m_ioMu);
     const std::string msg =
         "{\"id\":" + std::to_string(m_msgId++) + ",\"jsonrpc\":\"2.0\",\"method\":\"submit\"," +
         "\"params\":{\"id\":\"" + jsonEscape(m_loginId) + "\",\"job_id\":\"" +
         jsonEscape(job.id) + "\",\"nonce\":\"" + job.nonceHex(0) + "\",\"result\":\"" +
         toHex(commitmentBytes, 32) + "\",\"commitment\":\"" + toHex(digest, 32) +
         "\",\"algo\":\"" + jsonEscape(job.algo) + "\"}}";
-    std::lock_guard<std::mutex> lock(m_ioMu);
     return sendLine(msg, err);
 }
 

@@ -139,11 +139,17 @@ struct Parser {
         if (digits && i < s.size() && (s[i] == 'e' || s[i] == 'E')) {
             i++;
             if (i < s.size() && (s[i] == '-' || s[i] == '+')) i++;
+            // Eksponen "1e" tanpa digit adalah JSON tidak valid; menerimanya
+            // membuat strtod membaca "1" dan job yang rusak lolos.
+            const size_t expStart = i;
             while (i < s.size() && s[i] >= '0' && s[i] <= '9') i++;
+            if (i == expStart) return fail("eksponen kosong");
         }
         if (!digits) return fail("angka tidak valid");
         out.t = Json::T::Num;
         out.num = std::strtod(s.substr(start, i - start).c_str(), nullptr);
+        // Overflow eksponen (1e9999) menghasilkan inf; simpan sebagai angka
+        // tapi pemakai wajib memvalidasi rentang sebelum konversi ke integer.
         return true;
     }
 

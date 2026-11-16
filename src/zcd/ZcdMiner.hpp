@@ -24,7 +24,7 @@ namespace zcd {
 
 struct MinerConfig {
     PoolConfig pool;
-    int threads = 0;          // 0 = auto (CPU yang boleh dipakai proses)
+    int threads = 0;          // 0 = auto (jumlah CPU yang boleh dipakai proses)
     bool fastMem = true;      // dataset 2 GiB (FAST) vs cache saja (LIGHT)
     bool largePages = true;
     uint32_t nonceOffset = 0;

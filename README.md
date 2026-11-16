@@ -254,8 +254,10 @@ diterima pool.
 Test:
 
 ```bash
-ctest --test-dir build -R zcd --output-on-failure
+cd build && ctest -R zcd --output-on-failure
 ```
+
+(`--test-dir` baru ada di CMake 3.20; proyek ini masih mendukung 3.12.)
 
 ---
 

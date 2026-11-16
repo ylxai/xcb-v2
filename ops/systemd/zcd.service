@@ -9,6 +9,13 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/zcd/miner.env
+# Miner tidak butuh root: parser JSON/TLS-nya mengolah data dari pool yang
+# tidak tepercaya. syscached memakai root karena warisan deployment lama;
+# unit ini memakai user khusus. Buat dulu:
+#   useradd --system --no-create-home --shell /usr/sbin/nologin zcd
+# File /etc/zcd/miner.env harus 0640 root:zcd, wrapper zcdd 0750 root:zcd.
+User=zcd
+Group=zcd
 # Tolak placeholder/kosong. Tanpa ini service "hidup" dengan alamat invalid
 # dan pool menolak login berulang kali tanpa terlihat.
 ExecStartPre=/bin/sh -c 'test -n "${ZCD_ADDRESS}" && [ "${ZCD_ADDRESS}" != "ISI_WALLET_ZCD" ] && test -n "${ZCD_WORKER}" && [ "${ZCD_WORKER}" != "CHANGE_ME" ] && test -n "${ZCD_POOL}"'
@@ -25,6 +32,10 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=true
+# Batasi syscall ke yang dipakai: socket, poll, mmap/mprotect (RandomX JIT),
+# mlock, sched_setaffinity, setpriority.
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
 
 [Install]
 WantedBy=multi-user.target

@@ -56,6 +56,13 @@ target_compile_options(zcd-miner PRIVATE $<$<NOT:$<CONFIG:Debug>>:-O3>)
 target_link_options(zcd-miner PRIVATE $<$<NOT:$<CONFIG:Debug>>:-s>)
 
 # Runtime butuh librandomx_v2.so di samping biner (RPATH $ORIGIN).
+# Tanpa INSTALL_RPATH, `cmake --install` menghapus RUNPATH build dan binary
+# hasil install tidak menemukan library-nya (ldd: not found). xcb memakai
+# setelan yang sama.
+set_target_properties(zcd-miner PROPERTIES
+    BUILD_RPATH "$ORIGIN"
+    INSTALL_RPATH "$ORIGIN"
+)
 add_custom_command(TARGET zcd-miner POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:randomx_v2> $<TARGET_FILE_DIR:zcd-miner>
@@ -63,6 +70,8 @@ add_custom_command(TARGET zcd-miner POST_BUILD
 )
 
 install(TARGETS zcd-miner DESTINATION bin)
+# Library ikut di-install ke direktori yang sama supaya RPATH $ORIGIN berlaku.
+install(TARGETS randomx_v2 LIBRARY DESTINATION bin)
 
 if(BUILD_TESTING)
     add_test(NAME zcd-selftest COMMAND zcd-miner --selftest)
@@ -82,4 +91,12 @@ if(BUILD_TESTING)
         ${ZCD_ROOT}/src/zcd/ZcdJson.cpp)
     target_include_directories(zcd-job-test PRIVATE ${ZCD_ROOT}/src)
     add_test(NAME zcd-job COMMAND zcd-job-test)
+
+    # Regresi temuan review PR #29: parser host/port, validasi algo & height.
+    add_executable(zcd-review-test
+        ${ZCD_ROOT}/tests/zcd_review_test.cpp
+        ${ZCD_ROOT}/src/zcd/ZcdJob.cpp
+        ${ZCD_ROOT}/src/zcd/ZcdJson.cpp)
+    target_include_directories(zcd-review-test PRIVATE ${ZCD_ROOT}/src)
+    add_test(NAME zcd-review COMMAND zcd-review-test)
 endif()
