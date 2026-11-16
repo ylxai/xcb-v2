@@ -32,10 +32,15 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=true
-# Tanpa SystemCallFilter: RandomX JIT menjalankan kode hasil kompilasi sendiri
-# dan kena SIGSYS (status 31) bila syscall-nya tidak masuk whitelist.
-# Terverifikasi di fl — mining berhenti tepat setelah "RandomX V2 siap"
-# dengan SystemCallFilter=@system-service.
+# Allowlist syscall, dengan dua pengecualian yang wajib.
+# @system-service membuang sched_setaffinity (worker menempel ke inti lewat
+# pthread_setaffinity_np) dan setpriority; tanpa keduanya proses mati SIGSYS
+# (status 31) tepat setelah "RandomX V2 siap". Kernel mencatatnya sebagai
+# syscall=203 lalu syscall=141 di audit log.
+# Jangan menambahkan "~@privileged @resources": grup @resources memblokir
+# setpriority lagi, jadi pengecualian di atas tidak berpengaruh.
+SystemCallFilter=@system-service
+SystemCallFilter=sched_setaffinity setpriority
 
 [Install]
 WantedBy=multi-user.target
