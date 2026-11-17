@@ -154,9 +154,18 @@ skrip ini butuh `systemctl` dan harus menghitung proses root — dengan
 
 ```bash
 scp xcb-thread-sweep.sh ubuntu@<fl>:~/
-ssh ubuntu@<fl> 'sudo sh ~/xcb-thread-sweep.sh'
+ssh ubuntu@<fl> 'sudo -n setsid sh -c "sh ~/xcb-thread-sweep.sh >/root/sweep-console.log 2>&1 </dev/null"'
 # atau: sudo NONCES=400000 THREADS_LIST="2 4" sh ~/xcb-thread-sweep.sh
 ```
+
+`setsid` + redirect + `</dev/null` mencegah HUP dari koneksi SSH yang putus
+lebih dulu dari trap skrip; trap tetap memulihkan service sebagai jaring kedua.
+
+Benchmark mengikuti algoritma yang dipakai service: `ALGO=auto` (default)
+membaca `-a <algo>` dari cmdline miner, karena `install.sh` menulis wrapper
+`-a conn` sedangkan instalasi lama (mis. `fl`) berjalan XCB tanpa `-a`. Kalau
+cmdline tidak terbaca, skrip berhenti dan minta `ALGO` disetel eksplisit —
+lebih baik gagal daripada membandingkan thread untuk algo yang salah.
 
 Alurnya: cek kondisi awal → `systemctl stop syscached` → tunggu 0 proses →
 `xcb --ui=log --benchmark <NONCES> -t <N>` untuk tiap N → ringkasan H/s →
@@ -181,7 +190,10 @@ Diuji di `fl` 45 menit dan dibandingkan slot jam yang sama sehari sebelumnya:
 | `POLL_MS=1000` (16 Nov 17:55–18:40) | +1 | 0 / 0 | 452 (603/jam) | 2,30–2,33 kH/s |
 | `POLL_MS=500` (17 Nov 17:55–18:40) | +1 | 0 / 0 | 435 (580/jam) | 2,34 kH/s |
 
-Tidak ada bedanya. Setelan terbukti aktif — laju request naik 1,0 → 1,87
+Tidak ada perbedaan yang terdeteksi, tetapi jendela 45 menit dengan **1 share per
+jendela** tidak cukup untuk menyimpulkan "sama": yang bisa dikatakan adalah
+tidak ada bukti perbaikan, bukan bukti kesetaraan (lihat catatan daya statistik
+di bawah). Setelan terbukti aktif — laju request naik 1,0 → 1,87
 getWork/detik (`bytes_received` dari `ss -tinH state established '( dport = :8008 )'`)
 — dan pool tidak menerbitkan jobId baru per request (churn tetap ~600/jam,
 bukan berlipat). Baseline 24 jam pada 1000 ms: 65 share, 0 stale drop, 0 reject,
@@ -198,9 +210,11 @@ diff 3,3M hanya ~2,7 share/jam, jadi mendeteksi efek ~3% butuh ~2000 share
 Semua knob RandomY sudah di posisi terbaik, jadi ~2,3 kH/s (≈260 H/s/GHz/core
 pada 2,19 GHz) adalah batas hardware VM ini:
 
-- `JIT=1 HARD_AES=1 FULL_MEM=1 LARGE_PAGES=1`, dan ISA-nya benar-benar ada di
-  `librandomx_v2.so` (`aesenc`, `vpxor` via `objdump -d`) — bukan flag yang
-  diabaikan.
+- `JIT=1 HARD_AES=1 FULL_MEM=1 LARGE_PAGES=1`; RandomY di-link statis ke
+  binary `xcb`, dan binary itu memang berisi kode AES/AVX (`objdump -d
+  /usr/local/bin/xcb` → 26 `aesenc`, 249 `vpxor`), jadi flag-nya tidak
+  diabaikan. Catatan: `librandomx_v2.so` adalah backend CONN (`rxv2_*`), bukan
+  library XCB — jangan dipakai sebagai bukti untuk RandomY.
 - Hugepages betul terpakai: `HugePages_Free` turun 136 halaman = dataset 132
   (264 MB) + scratchpad 4 × 2 MB (1 per worker). Cache 256 MB dilepas dengan
   `randomx_release_cache()` setelah dataset siap, jadi tidak ada RAM terbuang.
