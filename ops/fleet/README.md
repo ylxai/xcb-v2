@@ -146,6 +146,84 @@ Alert di-cooldown 30 menit per host, dan mengirim pesan "pulih" saat host
 kembali normal. Cooldown hanya maju bila pesan benar-benar terkirim;
 pengiriman yang gagal dicoba lagi pada run berikutnya.
 
+## Tuning jumlah thread (`xcb-thread-sweep.sh`)
+
+Dijalankan **sebagai root di host miner** (mis. `fl`), bukan dari mesin lokal:
+skrip ini butuh `systemctl` dan harus menghitung proses root — dengan
+`hidepid=2`, user biasa tidak melihat miner sama sekali.
+
+```bash
+scp xcb-thread-sweep.sh ubuntu@<fl>:~/
+ssh ubuntu@<fl> 'sudo sh ~/xcb-thread-sweep.sh'
+# atau: sudo NONCES=400000 THREADS_LIST="2 4" sh ~/xcb-thread-sweep.sh
+```
+
+Alurnya: cek kondisi awal → `systemctl stop syscached` → tunggu 0 proses →
+`xcb --ui=log --benchmark <NONCES> -t <N>` untuk tiap N → ringkasan H/s →
+selalu `systemctl start syscached` lalu verifikasi tepat satu proses. Trap
+`EXIT`/`INT`/`TERM`/`HUP` memulihkan service walau skrip gagal atau koneksi
+SSH putus. Hasil per run ada di `/root/xcb-bench-t<N>-<stamp>.log`, ringkasan
+di `/root/xcb-thread-sweep-<stamp>.log`.
+
+Satu host berhenti menambang selama sweep (±2 menit per nilai `-t` pada
+200.000 nonce). Hasil di `fl` (4 vCPU, 17 Nov 2026): `-t 2` 1.176 H/s,
+`-t 4` 2.296 H/s, `-t 6` 2.296 H/s — scaling linear sampai 4 thread dan `-t 6`
+tidak menambah apa pun karena kuota CPU host 4 vCPU, jadi `THREADS=4` sudah
+optimal di host itu.
+
+### Polling job (`POLL_MS`): 500 ms vs 1000 ms
+
+Menambah `POLL_MS=500` (miner resmi memakai 500 ms, default kita 1000 ms).
+Diuji di `fl` 45 menit dan dibandingkan slot jam yang sama sehari sebelumnya:
+
+| setelan | share (A) | stale (W/R) | job baru | HR |
+|---|---|---|---|---|
+| `POLL_MS=1000` (16 Nov 17:55–18:40) | +1 | 0 / 0 | 452 (603/jam) | 2,30–2,33 kH/s |
+| `POLL_MS=500` (17 Nov 17:55–18:40) | +1 | 0 / 0 | 435 (580/jam) | 2,34 kH/s |
+
+Tidak ada bedanya. Setelan terbukti aktif — laju request naik 1,0 → 1,87
+getWork/detik (`bytes_received` dari `ss -tinH state established '( dport = :8008 )'`)
+— dan pool tidak menerbitkan jobId baru per request (churn tetap ~600/jam,
+bukan berlipat). Baseline 24 jam pada 1000 ms: 65 share, 0 stale drop, 0 reject,
+artinya pool masih menerima share untuk jobId sebelumnya sehingga jendela buta
+antar-poll tidak berubah menjadi kerugian. Setelan dikembalikan ke default
+(tanpa `POLL_MS`); backup env: `/etc/xcb/miner.env.bak-<stamp>`.
+
+Kesimpulan praktis: jangan ulangi A/B ini kecuali saat share rate naik. Pada
+diff 3,3M hanya ~2,7 share/jam, jadi mendeteksi efek ~3% butuh ~2000 share
+(mingguan), sedangkan di diff ~0,5M dulu sampelnya 30x lebih cepat.
+
+### RandomY: sudah optimal (diverifikasi 17 Nov 2026)
+
+Semua knob RandomY sudah di posisi terbaik, jadi ~2,3 kH/s (≈260 H/s/GHz/core
+pada 2,19 GHz) adalah batas hardware VM ini:
+
+- `JIT=1 HARD_AES=1 FULL_MEM=1 LARGE_PAGES=1`, dan ISA-nya benar-benar ada di
+  `librandomx_v2.so` (`aesenc`, `vpxor` via `objdump -d`) — bukan flag yang
+  diabaikan.
+- Hugepages betul terpakai: `HugePages_Free` turun 136 halaman = dataset 132
+  (264 MB) + scratchpad 4 × 2 MB (1 per worker). Cache 256 MB dilepas dengan
+  `randomx_release_cache()` setelah dataset siap, jadi tidak ada RAM terbuang.
+- Worker dipin 1:1 ke CPU 0-3 (`pthread_setaffinity_np` + `nice -10`); scaling
+  thread linear sampai 4 thread ⇒ 4 vCPU memang 4 core, bukan 2 core × SMT.
+- `steal` 0% dan frekuensi terkunci 2.194 MHz (tidak ada turbo di guest).
+
+Yang tersisa hanya di luar guest: menambah vCPU (linear, +4 vCPU ≈ +2,3 kH/s)
+atau MSR prefetcher yang diblokir hypervisor. Rebuild dengan `-DARCH=native`
+tidak menolong karena path AVX2/AES sudah aktif saat runtime.
+
+### MSR prefetcher tidak tersedia di fleet ini
+
+Mematikan hardware prefetcher (`wrmsr 0x1a4`, preset Intel xmrig `0xf`)
+memberi 2–5% di RandomX/RandomY. Di `fl` (Xeon Silver 4214, **KVM**) MSR itu
+tidak diekspos hypervisor: `rdmsr -a 0x1a4` gagal `cannot read MSR
+0x000001a4` di semua vCPU, sementara `0x10` (TSC) dan `0x1a0` terbaca — jadi
+driver `msr` sehat dan blokirnya spesifik per-MSR. Karena nilai aslinya tidak
+bisa dibaca, perubahan itu juga tidak bisa di-rollback: **jangan dicoba di
+host ini**. Efeknya hanya terukur di bare metal atau VM yang mem-pass-through
+MSR. Jangan `apt-get install msr-tools` untuk keperluan ini sebelum `rdmsr`
+terbukti berhasil.
+
 ## Troubleshooting
 
 - **`GLIBC_2.38 not found`** — artefak dibuild di 24.04. Pakai `--from-ci`
