@@ -1,5 +1,5 @@
 #!/bin/sh
-# xcb-thread-sweep.sh — A/B jumlah thread (-t) miner XCB di satu host.
+# xcb-thread-sweep.sh — A/B jumlah thread (-t) miner XCB/RandomY di satu host.
 #
 # Dijalankan SEBAGAI ROOT DI HOST MINER (mis. fl), bukan dari mesin lokal:
 # skrip ini butuh `systemctl stop/start` dan harus menghitung proses root
@@ -10,12 +10,18 @@
 # masih bisa mengubah hashrate adalah jumlah thread dan topologi CPU
 # (SMT/NUMA/L3) — dan angkanya berbeda per host, jadi harus diukur di host.
 #
+# KHUSUS XCB/RandomY. Host yang menjalankan backend CONN (`-a conn`, yang
+# ditulis install.sh) ditolak: main.cpp menangani `algo == conn` sebelum jalur
+# benchmark, jadi `--benchmark` di sana bukan benchmark sama sekali dan sweep
+# akan menambang, bukan mengukur.
+#
 # Alur:
 #   1. cek kondisi awal (harus tepat 1 miner, atau 0 dengan peringatan)
 #   2. systemctl stop <UNIT>, tunggu sampai 0 proses xcb/sysd
-#   3. untuk tiap -t: <BIN> --ui=log --benchmark <NONCES> -t <N>
+#   3. untuk tiap -t: <BIN> --ui=log --benchmark <NONCES> -t <N> -a randomy
 #   4. ringkasan H/s per -t (dan H/s per thread)
-#   5. SELALU systemctl start <UNIT> lagi, lalu verifikasi tepat satu proses
+#   5. SELALU systemctl start <UNIT> lagi (kalau memang aktif sebelumnya),
+#      lalu verifikasi tepat satu proses + baris HR baru dari PID baru
 #      (trap EXIT/INT/TERM, jadi Ctrl+C pun memulihkan service)
 #
 # Pakai:
@@ -23,18 +29,12 @@
 #   sudo NONCES=400000 THREADS_LIST="2 4" sh xcb-thread-sweep.sh
 #   sudo DRY_RUN=1 sh xcb-thread-sweep.sh            # cetak rencana, tanpa stop
 #
-# Env: UNIT (syscached), BIN (/usr/local/bin/xcb), NONCES (200000, wajib >= 1),
-#      THREADS_LIST ("2 4 6"), ALGO (auto), BENCH_TIMEOUT (900 detik per run),
-#      WAIT_STOP (30), WAIT_START (60), POST_WAIT (30), OUTDIR (/root),
+# Env: UNIT (syscached), BIN (/usr/local/bin/xcb),
+#      NONCES (200000; 1..1000000000 — di luar itu biner memakai 0 = mining),
+#      THREADS_LIST ("2 4 6"; tiap nilai 1..4096, di atas itu jadi auto),
+#      BENCH_TIMEOUT (900 detik per run), WAIT_STOP (30), WAIT_START (60),
+#      POST_WAIT (30), OUTDIR (/root), LOCK (/run/xcb-thread-sweep.lock),
 #      DRY_RUN (0).
-#
-# ALGO: `auto` (default) membaca `-a <algo>` dari cmdline miner yang berjalan
-# supaya benchmark memakai algoritma yang sama dengan service — install.sh
-# menulis wrapper `-a conn`, sedangkan instalasi lama XCB tanpa `-a`. Kalau
-# cmdline tidak bisa dibaca (proses belum jalan / argv dikosongkan biner),
-# skrip berhenti dan minta ALGO disetel eksplisit: lebih baik gagal daripada
-# membandingkan thread untuk algoritma yang salah. `ALGO=` (kosong) memaksa
-# tanpa `-a` (XCB default).
 #
 # Hasil: ringkasan di stdout + log $OUTDIR/xcb-thread-sweep-<stamp>.log,
 #        output mentah tiap run $OUTDIR/xcb-bench-t<N>-<stamp>.log, dan tabel
@@ -46,26 +46,31 @@ set -u
 
 UNIT="${UNIT:-syscached}"
 BIN="${BIN:-/usr/local/bin/xcb}"
-NONCES="${NONCES:-200000}"
-THREADS_LIST="${THREADS_LIST:-2 4 6}"
+# Pakai `-` (bukan `:-`): nilai kosong eksplisit harus DITOLAK, bukan diam-diam
+# berubah jadi default. `THREADS_LIST= sh ...` pernah menjalankan sweep penuh
+# 3x200k karena `:-` menganggap string kosong sebagai "tidak diset".
+NONCES="${NONCES-200000}"
+THREADS_LIST="${THREADS_LIST-2 4 6}"
 BENCH_TIMEOUT="${BENCH_TIMEOUT:-900}"
 WAIT_STOP="${WAIT_STOP:-30}"
 WAIT_START="${WAIT_START:-60}"
 POST_WAIT="${POST_WAIT:-30}"
 OUTDIR="${OUTDIR:-/root}"
+LOCK="${LOCK:-/run/xcb-thread-sweep.lock}"
 DRY_RUN="${DRY_RUN:-0}"
-ALGO="${ALGO:-auto}"
 
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 LOG="$OUTDIR/xcb-thread-sweep-$STAMP.log"
 TSV="$OUTDIR/xcb-thread-sweep-$STAMP.tsv"
 
-STARTED=0    # 1 sejak perintah stop dijalankan (restore wajib start)
-RESTORED=0   # penjaga agar restore idempoten (EXIT + pemanggilan eksplisit)
-VERIFY_OK=0  # 1 hanya kalau pasca-sweep terverifikasi: 1 proses, unit active
-FAILS=0
-RAN=0        # jumlah benchmark yang benar-benar dieksekusi
+STARTED=0       # 1 sejak perintah stop dijalankan (restore wajib mencoba start)
+RESTORED=0      # 1 hanya setelah start + verifikasi sukses (trap boleh retry)
+VERIFY_OK=0     # 1 kalau pasca-sweep terverifikasi: 1 proses + HR baru
+FAILS=0         # jumlah run benchmark yang gagal
+RAN=0           # jumlah benchmark yang benar-benar dieksekusi
 SINCE_START=""  # timestamp lokal saat service dinyalakan ulang (filter HR)
+WAS_ACTIVE=""   # status unit sebelum sweep; unit yang mati tidak dinyalakan
+BENCH_PID=""    # PID benchmark yang sedang jalan (dibunuh saat sinyal berhenti)
 
 log() {
     printf '%s %s\n' "$(date -u +%H:%M:%SZ)" "$*" | tee -a "$LOG"
@@ -74,6 +79,13 @@ log() {
 die() {
     log "FATAL: $*"
     exit 1
+}
+
+is_uint() {
+    case $1 in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    return 0
 }
 
 # comm proses XCB: "sysd" kalau XCB_TITLE=sysd, "xcb" kalau build biasa.
@@ -134,6 +146,17 @@ probe_algo() {
     fi
 }
 
+# Proses benchmark yatim dari sweep sebelumnya (mis. skrip di-SIGKILL saat
+# `timeout xcb --benchmark` masih jalan). Mereka memakai CPU yang sama, jadi
+# angka sweep baru tidak sebanding — deteksi, jangan diukur.
+stray_benchmarks() {
+    for p in $(pgrep -x xcb 2>/dev/null); do
+        if tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q -- '--benchmark'; then
+            printf '%s\n' "$p"
+        fi
+    done
+}
+
 wait_stopped() {
     waited=0
     while [ "$(count_miners)" -gt 0 ]; do
@@ -189,13 +212,25 @@ verify_single() {
 }
 
 # Dipanggil dari trap EXIT/INT/TERM dan sekali di akhir alur normal.
+# RESTORED baru diset setelah start + verifikasi sukses, supaya trap masih
+# boleh mencoba lagi kalau percobaan pertama gagal di tengah jalan.
 restore() {
     if [ "$RESTORED" = 1 ]; then
         return 0
     fi
-    RESTORED=1
     if [ "$STARTED" != 1 ]; then
         return 0
+    fi
+    if [ "$WAS_ACTIVE" != "active" ]; then
+        log "unit tidak aktif sebelum sweep — dibiarkan mati (kondisi awal dipertahankan)"
+        RESTORED=1
+        return 0
+    fi
+    n="$(count_miners)"
+    if [ "$n" -gt 0 ]; then
+        log "GAGAL: $n proses miner masih berjalan; $UNIT TIDAK dinyalakan (hindari dua miner)"
+        VERIFY_OK=0
+        return 1
     fi
     SINCE_START="$(date '+%Y-%m-%d %H:%M:%S')"
     log "memulihkan service: systemctl start $UNIT"
@@ -211,17 +246,23 @@ restore() {
     fi
     log "menunggu ${POST_WAIT}s agar statistik pertama keluar"
     sleep "$POST_WAIT"
-    verify_single
+    verify_single || return 1
+    RESTORED=1
     return 0
 }
 
 trap 'restore' EXIT
 # HUP ikut ditangkap: kalau skrip dijalankan lewat SSH lalu koneksinya putus,
 # service harus tetap dinyalakan kembali (modul ini dijalankan dengan miner mati).
-trap 'log "sinyal berhenti (INT/TERM/HUP)"; exit 130' INT TERM HUP
+# Benchmark yang sedang jalan dibunuh dulu: kalau tidak, ia menjadi proses
+# yatim yang terus berebut CPU dengan miner yang baru dinyalakan.
+# Benchmark dibunuh dengan KILL: SIGTERM tidak dihentikan biner ini seketika
+# (terbukti di fl — proses masih hidup 2 detik setelah TERM), dan benchmark
+# yatim yang tertinggal akan berebut CPU dengan miner yang baru dinyalakan.
+trap 'log "sinyal berhenti (INT/TERM/HUP)"; if [ -n "$BENCH_PID" ]; then kill -9 "$BENCH_PID" 2>/dev/null; fi; exit 130' INT TERM HUP
 
 # ------------------------------------------------------------------
-# 1. Preflight
+# 1. Preflight — semua validasi sebelum ada downtime
 # ------------------------------------------------------------------
 if [ "$(id -u)" -ne 0 ]; then
     printf 'harus root: systemctl stop/start + proses miner ter-hide dari user biasa\n' >&2
@@ -236,50 +277,64 @@ fi
 if ! systemctl cat "$UNIT" >/dev/null 2>&1; then
     die "unit systemd tidak ada: $UNIT (pakai UNIT=<nama> bila berbeda)"
 fi
-case $NONCES in
-    ''|*[!0-9]*) die "NONCES harus angka >= 1, dapat '$NONCES'" ;;
-esac
-# 0 nonce berarti benchmarkNonces=0 -> biner masuk mode mining normal.
-[ "$NONCES" -ge 1 ] || die "NONCES harus >= 1 (0 = mode mining biasa, bukan benchmark)"
-case $ALGO in
-    auto) : ;;
-    *[!a-z0-9]*) die "ALGO hanya huruf kecil/angka (mis. conn) atau kosong, dapat '$ALGO'" ;;
-esac
+
+is_uint "$NONCES" || die "NONCES harus angka >= 1, dapat '$NONCES'"
+# Di luar 1..1000000000 biner jatuh ke 0 -> mode mining biasa, bukan benchmark.
+if [ "$NONCES" -lt 1 ] || [ "$NONCES" -gt 1000000000 ]; then
+    die "NONCES harus 1..1000000000 (0 atau terlalu besar = mode mining, bukan benchmark)"
+fi
+for pair in "BENCH_TIMEOUT:$BENCH_TIMEOUT" "WAIT_STOP:$WAIT_STOP" \
+            "WAIT_START:$WAIT_START" "POST_WAIT:$POST_WAIT"; do
+    name="${pair%%:*}"
+    val="${pair#*:}"
+    is_uint "$val" || die "$name harus angka >= 1, dapat '$val'"
+    [ "$val" -ge 1 ] || die "$name harus >= 1, dapat '$val'"
+done
+[ -n "$THREADS_LIST" ] || die "THREADS_LIST kosong — tidak ada yang bisa diukur"
+for t in $THREADS_LIST; do
+    is_uint "$t" || die "THREADS_LIST berisi '$t' (bukan angka)"
+    # -t di luar 1..4096 diparse jadi 0 = auto-threads, bukan nilai yang diminta.
+    if [ "$t" -lt 1 ] || [ "$t" -gt 4096 ]; then
+        die "THREADS_LIST berisi $t; harus 1..4096 (di luar itu biner memakai auto)"
+    fi
+done
 
 mkdir -p "$OUTDIR" 2>/dev/null || die "tidak bisa menulis $OUTDIR"
 
-BEFORE="$(count_miners)"
-log "unit=$UNIT bin=$BIN nonces=$NONCES threads=\"$THREADS_LIST\""
-log "PROSES sebelum sweep: $BEFORE"
-
-# Selaraskan algoritma benchmark dengan service. Salah algo = angka H/s yang
-# tidak sebanding dengan yang benar-benar ditambang host ini.
-if [ "$ALGO" = auto ]; then
-    if [ "$BEFORE" -ge 1 ]; then
-        ALGO="$(probe_algo)"
-        if [ "$ALGO" = unknown ]; then
-            die "algoritma service tidak bisa dideteksi dari cmdline; setel ALGO=conn atau ALGO= (XCB default)"
-        fi
-        if [ "$ALGO" = xcb ]; then
-            ALGO=""
-            log "algo: XCB (tidak ada -a di cmdline/wrapper service)"
-        else
-            log "algo: $ALGO (dari cmdline/wrapper service)"
-        fi
-    else
-        ALGO=""
-        log "PERINGATAN: service tidak berjalan, algo tidak terdeteksi — benchmark memakai default XCB (setel ALGO=conn bila perlu)"
+# Kunci host-wide: dua sweep (atau sweep + deploy) di host yang sama akan
+# saling menyalakan/mematikan miner dan mencampur angka.
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LOCK" || die "tidak bisa membuat lock $LOCK"
+    if ! flock -n 9; then
+        die "sweep lain sedang berjalan (lock $LOCK) — tunggu sampai selesai"
     fi
-else
-    log "algo: ${ALGO:-(default XCB)}"
 fi
+
+BEFORE="$(count_miners)"
+WAS_ACTIVE="$(systemctl is-active "$UNIT" 2>/dev/null || true)"
+log "unit=$UNIT bin=$BIN nonces=$NONCES threads=\"$THREADS_LIST\""
+log "PROSES sebelum sweep: $BEFORE; unit=$WAS_ACTIVE"
 
 if [ "$BEFORE" -gt 1 ]; then
     die "$BEFORE proses xcb/sysd sudah berjalan; bereskan dulu (jangan tambah beban)"
 fi
+STRAY="$(stray_benchmarks | tr '\n' ' ')"
+if [ -n "$STRAY" ]; then
+    die "benchmark yatim masih jalan (PID: $STRAY) — hentikan dulu (kill -9), angka sweep ini tidak akan sebanding"
+fi
 if [ "$BEFORE" -eq 0 ]; then
     log "PERINGATAN: tidak ada miner berjalan sebelum sweep — tidak ada baseline"
 fi
+
+# Sweep ini hanya untuk RandomY. Backend CONN tidak punya jalur benchmark
+# (main.cpp menangani algo == conn lebih dulu), jadi mengukurnya di sini salah.
+ALGO_SVC="$(probe_algo)"
+case $ALGO_SVC in
+    conn) die "host ini menjalankan backend CONN (-a conn); sweep ini hanya untuk XCB/RandomY" ;;
+    unknown) log "PERINGATAN: algo service tidak terdeteksi — benchmark dipaksa -a randomy" ;;
+    xcb) log "algo service: XCB/RandomY" ;;
+    *) log "algo service: $ALGO_SVC (benchmark tetap -a randomy)" ;;
+esac
 
 HP_TOTAL="$(awk '/^HugePages_Total:/ {print $2}' /proc/meminfo 2>/dev/null || true)"
 HP_FREE="$(awk '/^HugePages_Free:/ {print $2}' /proc/meminfo 2>/dev/null || true)"
@@ -298,9 +353,9 @@ fi
 if [ "$DRY_RUN" = 1 ]; then
     log "DRY_RUN=1: rencana = stop $UNIT, lalu:"
     for t in $THREADS_LIST; do
-        log "  $BIN --ui=log --benchmark $NONCES -t $t${ALGO:+ -a $ALGO}"
+        log "  $BIN --ui=log --benchmark $NONCES -t $t -a randomy"
     done
-    log "lalu start $UNIT dan verifikasi tepat 1 proses. Tidak ada yang diubah."
+    log "lalu start $UNIT (kalau aktif sebelumnya) dan verifikasi 1 proses + HR baru. Tidak ada yang diubah."
     exit 0
 fi
 
@@ -328,29 +383,23 @@ log "0 proses xcb/sysd; mulai benchmark"
 # ------------------------------------------------------------------
 : >"$TSV"
 for t in $THREADS_LIST; do
-    case $t in
-        ''|*[!0-9]*) log "lewati -t '$t' (bukan angka)"; continue ;;
-    esac
-    [ "$t" -lt 1 ] && { log "lewati -t $t (minimal 1)"; continue; }
-
     out="$OUTDIR/xcb-bench-t$t-$STAMP.log"
     log "benchmark: -t $t, $NONCES nonce, timeout ${BENCH_TIMEOUT}s -> $out"
     RAN=$((RAN + 1))
-    set -- --ui=log --benchmark "$NONCES" -t "$t"
-    [ -n "$ALGO" ] && set -- "$@" -a "$ALGO"
     t0="$(date +%s)"
     # Env miner sengaja dibuang: THREADS/FULL_MEM/LARGE_PAGES/ALGO dari
-    # /etc/xcb/miner.env tidak boleh diam-diam mengubah hasil A/B. Algo yang
-    # dipakai selalu eksplisit lewat -a di atas.
-    if env -u THREADS -u FULL_MEM -u LARGE_PAGES -u BENCHMARK -u POLL_MS -u ALGO \
-           -u REPORT_HASHRATE -u WALLET -u POOL -u WORKER -u CONN_ADDRESS \
-           timeout "$BENCH_TIMEOUT" "$BIN" "$@" \
-           >"$out" 2>&1
-    then
-        rc=0
-    else
-        rc=$?
-    fi
+    # /etc/xcb/miner.env tidak boleh diam-diam mengubah hasil A/B. Algo
+    # dipaksa randomy (XCB) dan log level dipaksa info supaya baris "Done"
+    # tidak hilang kalau host punya LOG_LEVEL=warn.
+    env -u THREADS -u FULL_MEM -u LARGE_PAGES -u BENCHMARK -u POLL_MS -u ALGO \
+        -u REPORT_HASHRATE -u WALLET -u POOL -u WORKER -u CONN_ADDRESS \
+        LOG_LEVEL=info \
+        timeout "$BENCH_TIMEOUT" "$BIN" --ui=log --benchmark "$NONCES" \
+        -t "$t" -a randomy >"$out" 2>&1 &
+    BENCH_PID=$!
+    wait "$BENCH_PID"
+    rc=$?
+    BENCH_PID=""
     t1="$(date +%s)"
 
     # Baris akhir benchmark: "Done <N> nonces in <S>s" -> H/s = N / S.
@@ -401,7 +450,7 @@ fi
 # ------------------------------------------------------------------
 restore
 if [ "$RAN" -eq 0 ]; then
-    log "GAGAL: tidak ada benchmark yang dijalankan (cek THREADS_LIST='$THREADS_LIST')"
+    log "GAGAL: tidak ada benchmark yang dijalankan"
     exit 1
 fi
 if [ "$FAILS" -gt 0 ] || [ "$VERIFY_OK" != 1 ]; then

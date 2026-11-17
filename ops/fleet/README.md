@@ -161,11 +161,16 @@ ssh ubuntu@<fl> 'sudo -n setsid sh -c "sh ~/xcb-thread-sweep.sh >/root/sweep-con
 `setsid` + redirect + `</dev/null` mencegah HUP dari koneksi SSH yang putus
 lebih dulu dari trap skrip; trap tetap memulihkan service sebagai jaring kedua.
 
-Benchmark mengikuti algoritma yang dipakai service: `ALGO=auto` (default)
-membaca `-a <algo>` dari cmdline miner, karena `install.sh` menulis wrapper
-`-a conn` sedangkan instalasi lama (mis. `fl`) berjalan XCB tanpa `-a`. Kalau
-cmdline tidak terbaca, skrip berhenti dan minta `ALGO` disetel eksplisit —
-lebih baik gagal daripada membandingkan thread untuk algo yang salah.
+Skrip ini **khusus XCB/RandomY**: benchmark selalu dipaksa `-a randomy` dan
+host yang service-nya berjalan `-a conn` ditolak. Alasannya di `main.cpp`:
+cabang `algo == conn` ditangani sebelum jalur benchmark, jadi `--benchmark` di
+host CONN bukan benchmark sama sekali — skrip akan menambang, bukan mengukur.
+Sweep juga memegang lock host-wide (`/run/xcb-thread-sweep.lock`) agar tidak
+bertabrakan dengan sweep/deploy lain, berhenti bila masih ada benchmark yatim
+dari sweep sebelumnya (proses itu berebut CPU dan membuat angka tidak
+sebanding), dan menolak nilai di luar rentang biner:
+`NONCES` 1..1000000000 (di luar itu jadi mode mining) dan tiap `-t` 1..4096
+(di atas itu jadi auto-threads).
 
 Alurnya: cek kondisi awal → `systemctl stop syscached` → tunggu 0 proses →
 `xcb --ui=log --benchmark <NONCES> -t <N>` untuk tiap N → ringkasan H/s →
@@ -202,8 +207,9 @@ antar-poll tidak berubah menjadi kerugian. Setelan dikembalikan ke default
 (tanpa `POLL_MS`); backup env: `/etc/xcb/miner.env.bak-<stamp>`.
 
 Kesimpulan praktis: jangan ulangi A/B ini kecuali saat share rate naik. Pada
-diff 3,3M hanya ~2,7 share/jam, jadi mendeteksi efek ~3% butuh ~2000 share
-(mingguan), sedangkan di diff ~0,5M dulu sampelnya 30x lebih cepat.
+diff 3,3M hanya ~2,7 share/jam, jadi mendeteksi efek ~3% butuh ~2000 share —
+sekitar **31 hari**, bukan jam. Di diff ~0,5M dulu sampelnya ~6,6x lebih cepat
+(~200 share/hari), masih bukan uji sekali jalan.
 
 ### RandomY: sudah optimal (diverifikasi 17 Nov 2026)
 
