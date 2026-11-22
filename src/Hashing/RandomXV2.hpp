@@ -33,11 +33,18 @@ class Context {
 public:
     // key = 32 byte dari getblocktemplate "randomxkey" (bootstrap key selama
     // seed height 0).
-    Context(const uint8_t key[32], bool fast, bool largePages, int initThreads);
+    //
+    // v2=true (default) memilih program VM 384 instruksi — wajib untuk CONN
+    // dan ZCD. v2=false memilih program 256 instruksi, yaitu RandomX v1
+    // kanonik; itu yang dipakai Block Zero (algo "rx/blockzero"). Ukuran
+    // dataset dan salt Argon2 sama di kedua mode, jadi satu library melayani
+    // keduanya.
+    Context(const uint8_t key[32], bool fast, bool largePages, int initThreads,
+            bool v2 = true);
     // Varian umum: RandomX memakai key persis sepanjang keyLen byte (vektor
     // uji upstream memakai key 12 byte "test key 000", bukan 32 byte padded).
     Context(const uint8_t* key, size_t keyLen, bool fast, bool largePages,
-            int initThreads);
+            int initThreads, bool v2 = true);
     ~Context();
 
     Context(const Context&) = delete;
@@ -56,6 +63,16 @@ public:
         // satu thread pada satu waktu.
         void hash(const uint8_t* data, size_t len, uint8_t out[32]);
 
+        // Batch berantai. hashFirst mulai hash pertama, hashNext menghasilkan
+        // hash input sebelumnya sambil mengisi scratchpad untuk input
+        // berikutnya (blake2b akhir dan pembacaan dataset berikutnya
+        // bertumpang tindih), hashLast menutup batch. Dipakai miner karena
+        // memberi ~4% di atas pemanggilan hash() satu per satu.
+        // Pola: first(in0); next(in1,out0); … next(inN-1,outN-2); last(outN-1).
+        void hashFirst(const uint8_t* data, size_t len);
+        void hashNext(const uint8_t* data, size_t len, uint8_t out[32]);
+        void hashLast(uint8_t out[32]);
+
     private:
         friend class Context;
         void* m_vm = nullptr;
@@ -69,6 +86,7 @@ private:
     void* m_dataset = nullptr;  // randomx_dataset*
     bool m_fast = false;
     bool m_largePages = false;
+    bool m_v2 = true;
     bool m_ok = false;
     std::string m_error;
 };
@@ -78,5 +96,14 @@ private:
 //   -> 22ec6b861b3eb23686b2efbad69513c967ecfce80983df66c9c5b4fbfb4cdb6f
 // LIGHT (cache 256 MiB) cukup: hash FAST identik.
 bool selftest(std::string& detail);
+
+// Vektor emas RandomX v1 (mode tanpa RANDOMX_FLAG_V2), diambil dari
+// cpuminer-rplant 6.0.26 saat menambang rx/blockzero ke pool palsu:
+//   blob 80 byte 0000002071dffbd9…071d00000000 (nonce 0x00000355 di offset 76)
+//   seed 7b5cdc9c17790fb2e9400cf29a3b373167d29657303269362d5e61e332de1edd
+//   -> d51a8c17b9e6720eb696bf766cd904b4317bb03e0c5a848882349dc061390900
+// Kalau vektor ini cocok, backend BLOZ menghitung digest yang sama dengan
+// miner lain untuk header yang sama.
+bool selftestV1(std::string& detail);
 
 }  // namespace rxv2

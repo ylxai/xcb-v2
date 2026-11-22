@@ -98,6 +98,17 @@ set(MINER_SOURCES
     src/ConnRpc.cpp
     src/ConnPool.cpp
     src/ConnMiner.cpp
+    src/bloz/BlozJob.cpp
+    src/bloz/BlozJson.cpp
+    src/bloz/BlozMiner.cpp
+    src/bloz/BlozPool.cpp
+    src/bloz/BlozRun.cpp
+    src/zcd/ZcdCommitment.cpp
+    src/zcd/ZcdJob.cpp
+    src/zcd/ZcdJson.cpp
+    src/zcd/ZcdMiner.cpp
+    src/zcd/ZcdPool.cpp
+    src/zcd/ZcdRun.cpp
     src/Hashing/RandomXV2.cpp
     src/Config.cpp
     src/Log.cpp
@@ -113,6 +124,17 @@ set(MINER_HEADERS
     src/ConnRpc.hpp
     src/ConnPool.hpp
     src/ConnMiner.hpp
+    src/bloz/BlozJob.hpp
+    src/bloz/BlozJson.hpp
+    src/bloz/BlozMiner.hpp
+    src/bloz/BlozPool.hpp
+    src/bloz/BlozRun.hpp
+    src/zcd/ZcdCommitment.hpp
+    src/zcd/ZcdJob.hpp
+    src/zcd/ZcdJson.hpp
+    src/zcd/ZcdMiner.hpp
+    src/zcd/ZcdPool.hpp
+    src/zcd/ZcdRun.hpp
     src/Hashing/RandomXV2.hpp
     src/Config.hpp
     src/JsonUtil.hpp
@@ -165,6 +187,39 @@ if(BUILD_TESTING)
     add_executable(config-parse-test tests/config_parse_test.cpp src/Config.cpp)
     target_include_directories(config-parse-test PRIVATE src)
     add_test(NAME xcb-config-parse COMMAND config-parse-test)
+
+    # Backend BLOZ: parser job (blob 80 byte, target 8 byte LE, seed_hash 64
+    # hex, algo rx/blockzero saja).
+    add_executable(bloz-job-test
+        tests/bloz_job_test.cpp
+        src/bloz/BlozJob.cpp
+        src/bloz/BlozJson.cpp)
+    target_include_directories(bloz-job-test PRIVATE src)
+    add_test(NAME bloz-job COMMAND bloz-job-test)
+
+    # Backend ZCD: aturan share (commitment blake2b(blob||digest), limb 24..31)
+    # dan parser job (blob 43 byte, target 8 byte LE).
+    add_executable(zcd-commitment-test
+        tests/zcd_commitment_test.cpp
+        src/zcd/ZcdCommitment.cpp)
+    target_include_directories(zcd-commitment-test PRIVATE src)
+    target_link_libraries(zcd-commitment-test PRIVATE randomx_v2)
+    add_test(NAME zcd-commitment COMMAND zcd-commitment-test)
+
+    add_executable(zcd-job-test
+        tests/zcd_job_test.cpp
+        src/zcd/ZcdJob.cpp
+        src/zcd/ZcdJson.cpp)
+    target_include_directories(zcd-job-test PRIVATE src)
+    add_test(NAME zcd-job COMMAND zcd-job-test)
+
+    # Regresi temuan review PR #29: parser host/port, validasi algo & height.
+    add_executable(zcd-review-test
+        tests/zcd_review_test.cpp
+        src/zcd/ZcdJob.cpp
+        src/zcd/ZcdJson.cpp)
+    target_include_directories(zcd-review-test PRIVATE src)
+    add_test(NAME zcd-review COMMAND zcd-review-test)
 endif()
 
 # Runtime butuh librandomx_v2.so di direktori yang sama (RPATH $ORIGIN).
@@ -217,15 +272,16 @@ target_link_options(xcb PRIVATE
 )
 
 # ============================================================
-# Miner Zycord (ZCD) — biner terpisah, backend mandiri
+# Backend bloz dan zcd ikut di biner xcb
 # ============================================================
-# Target zcd-miner dibangun dari src/zcd/* saja dan hanya me-link RandomX V2.
-# Backend CONN (ConnMiner/ConnPool/ConnRpc) dan Core Coin (Miner/StratumClient)
-# tidak ikut, jadi perubahan di sana tidak bisa memengaruhi ZCD dan sebaliknya.
-option(BUILD_ZCD_MINER "Bangun biner zcd-miner (Zycord ZCD)" ON)
-if(BUILD_ZCD_MINER)
-    add_subdirectory(src/zcd)
-endif()
+# Satu biner, empat algo (randomy, conn, bloz, zcd) seperti cpuminer: pemilihan
+# backend lewat -a/--algo saat runtime. Sebelumnya bloz-miner dan zcd-miner
+# adalah target terpisah dengan main() dan parser argv sendiri; sekarang
+# entry point-nya ada di src/*/…Run.cpp dan hanya menambah ~190 KB pada biner
+# 1 MB, tanpa library tambahan (semua memakai randomx_v2 yang sama).
+#
+# Konsekuensi build: artefak CI `xcb-2204` sekarang melayani keempat coin, jadi
+# tidak ada lagi biner yang harus dipaketkan terpisah untuk BLOZ/ZCD.
 
 install(TARGETS xcb DESTINATION bin)
 # librandomx_v2.so harus di direktori yang sama dengan xcb (RPATH $ORIGIN).
@@ -236,7 +292,6 @@ set_target_properties(xcb PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGI
 target_compile_definitions(xcb PRIVATE
     XCB_VERSION="${PROJECT_VERSION}"
     XCB_GIT_COMMIT="${XCB_GIT_COMMIT}"
-    XCB_WITH_CONN=1
 )
 
 if(ENABLE_SELF_DEFENSE)

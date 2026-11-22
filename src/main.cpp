@@ -4,6 +4,8 @@
 #include "Sha3_512.hpp"
 #include "ConnMiner.hpp"
 #include "Hashing/RandomXV2.hpp"
+#include "bloz/BlozRun.hpp"
+#include "zcd/ZcdRun.hpp"
 
 #ifdef XCB_SELF_DEFENSE
 #include "SelfDefense.hpp"
@@ -32,12 +34,10 @@ extern "C" void signal_handler(int sig) {
 #endif
 
 static std::string versionLine() {
-#ifdef XCB_WITH_CONN
-    return std::string("xcb ") + XCB_VERSION + " (ConnectCoin CONN - RandomX V2, " +
+    // Satu biner, empat backend (seperti cpuminer): algo dipilih saat runtime
+    // lewat -a/--algo, bukan lewat nama biner.
+    return std::string("xcb ") + XCB_VERSION + " (randomy, conn, bloz, zcd; " +
            XCB_GIT_COMMIT + ")";
-#else
-    return std::string("xcb ") + XCB_VERSION + " (Core Coin RandomY, " + XCB_GIT_COMMIT + ")";
-#endif
 }
 
 static std::string bytes_to_hex(const uint8_t* data, int len) {
@@ -149,6 +149,20 @@ static int runSelftest() {
         lg::info("selftest", std::string("randomx-v2 ") + (pass ? ": OK" : (": FAIL " + detail)));
     }
 
+    // Backend bloz dan zcd: engine + aturan share masing-masing. Satu
+    // `--selftest` sekarang mencakup keempat algo, jadi CI tidak perlu
+    // menjalankan biner terpisah.
+    {
+        const bool pass = bloz::selftest();
+        ok &= pass;
+        lg::info("selftest", std::string("backend bloz ") + (pass ? ": OK" : ": FAIL"));
+    }
+    {
+        const bool pass = zcd::selftest();
+        ok &= pass;
+        lg::info("selftest", std::string("backend zcd ") + (pass ? ": OK" : ": FAIL"));
+    }
+
     // 40-byte specialized path must agree with the generic path AND the
     // OpenSSL vector above.
     {
@@ -234,6 +248,13 @@ int main(int argc, char* argv[]) {
         lg::info("sysd", conn.finalSummary());
         return 0;
     }
+
+    // --- Backend bloz / zcd: pool stratum sendiri, bukan StratumClient ---
+    // Keduanya dulu biner terpisah (bloz-miner, zcd-miner). Sekarang satu
+    // biner seperti cpuminer: `-a bloz` / `-a zcd` memilih backend, Config
+    // membaca wallet/pool/thread yang sama.
+    if (cfg.algo == "bloz") return bloz::run(cfg, g_running);
+    if (cfg.algo == "zcd") return zcd::run(cfg, g_running);
 
     lg::info("main", versionLine());
     lg::info("config", "Pools: " + std::to_string(cfg.pools.size()) + ", Threads: " +

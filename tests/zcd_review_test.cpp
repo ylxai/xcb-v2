@@ -5,7 +5,8 @@
 //   3. parseJob: height negatif / inf ditolak
 //   4. parseJson: eksponen kosong ('1e') ditolak
 //
-// splitHostPort disalin dari ZcdMain.cpp karena file itu berisi main().
+// splitHostPort disalin dari parser Config (--conn-pool / POOL) supaya
+// perilakunya terkunci di sini; backend zcd sekarang membaca hasil Config.
 
 #include <cmath>
 #include <cstdio>
@@ -27,7 +28,7 @@ void check(const char* name, bool pass, const std::string& detail = "") {
     }
 }
 
-// --- salinan splitHostPort dari ZcdMain.cpp (dijaga tetap sama) -------------
+// --- salinan splitHostPort dari parser Config (dijaga tetap sama) ----------
 bool parsePort(const std::string& s, uint16_t& out) {
     if (s.empty() || s.size() > 5) return false;
     unsigned v = 0;

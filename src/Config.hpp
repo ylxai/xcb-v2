@@ -32,9 +32,17 @@ struct MinerConfig {
     uint64_t benchmarkNonces = 0; // >0 => benchmark mode (no pool)
     bool selftest = false;        // run SHA3/keccak self test and exit
     std::string ui = "auto";      // auto | ftxui | ansi | log (display mode)
-    // Backend PoW: "randomy" (RandomY, Core Coin XCB) atau "conn"
-    // (ConnectCoin — RandomX V2, mining solo lewat RPC node, tanpa stratum).
+    // Backend PoW, dipilih lewat -a/--algo seperti cpuminer:
+    //   randomy  RandomY (Core Coin XCB), pool stratum
+    //   conn     ConnectCoin (RandomX V2), solo lewat RPC node
+    //   bloz     Block Zero (RandomX v1), pool stratum dialek xmrig
+    //   zcd      Zycord (RandomX V2 + commitment), pool stratum
     std::string algo = "randomy";
+    // TLS pool bloz/zcd (backend punya pool stratum sendiri; jalur randomy
+    // selalu plain TCP). poolTlsAuto = belum ditentukan user, jadi diisi dari
+    // default per algo saat normalisasi: bloz plain, zcd TLS.
+    bool poolTls = false;
+    bool poolTlsAuto = true;
     // Parameter hanya untuk algo=conn.
     std::string connRpc = "http://127.0.0.1:48172";
     std::string connUser;

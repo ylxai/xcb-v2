@@ -12,8 +12,9 @@ plus backend **ConnectCoin (CONN)** dan **Zycord (ZCD)** dengan RandomX V2. Diba
 - **CPU affinity + nice priority** — thread di-pin per core
 - **Multi-pool config file** (`pool.cfg`) — failover otomatis antar server
 - **Dashboard TUI (FTXUI)** — live stats interaktif, keyboard-driven (1/2/3 pindah tab, q quit)
-- **Backend ZCD terpisah** — biner `zcd-miner` sendiri (`src/zcd/`), tidak berbagi kode dengan
-  CONN/XCB, dipakai lewat stratum dialek XMRig `rx/2`
+- **Satu biner, empat algo** — `-a randomy` (XCB), `-a conn` (ConnectCoin, solo RPC),
+  `-a bloz` (Block Zero), `-a zcd` (Zycord). Pola yang sama dengan cpuminer: satu
+  binary + `-a`, bukan satu biner per coin
 
 ---
 
@@ -209,33 +210,45 @@ Catatan operasional:
   `$ORIGIN`). `cmake --install` menaruh `xcb` + library di `bin/`.
 - Dataset FAST butuh ~2 GiB RAM per proses (bukan per thread); `--light`
   memakai cache ~256 MB dengan hashrate lebih rendah.
-- `--version` mencetak backend + commit, mis.
-  `xcb 1.0.0 (ConnectCoin CONN - RandomX V2, 62186fd)`.
+- `--version` mencetak daftar backend + commit, mis.
+  `xcb 1.0.0 (randomy, conn, bloz, zcd; 62186fd)`.
 
 ---
 
-## Zycord (ZCD) — biner terpisah
+## Zycord (ZCD) — `-a zcd`
 
-ZCD **tidak** dijalankan lewat binary `xcb`. Ia punya biner sendiri,
-`zcd-miner`, yang dibangun dari `src/zcd/` saja dan hanya me-link RandomX V2.
-Backend CONN (`ConnMiner`/`ConnPool`/`ConnRpc`) dan Core Coin
-(`Miner`/`StratumClient`/RandomY) tidak ikut di-link, jadi perubahan di salah
-satu sisi tidak bisa memengaruhi yang lain.
+ZCD memakai biner yang sama, dipilih lewat `-a zcd`. Backend-nya ada di
+`src/zcd/` dengan pool stratum sendiri (dialek XMRig `rx/2`); jalur CONN,
+Core Coin, dan BLOZ tidak ikut berjalan, jadi satu backend tidak bisa
+memengaruhi yang lain.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target zcd-miner -j$(nproc)
+cmake --build build -j$(nproc)
 
-./build/src/zcd/zcd-miner --selftest          # engine + aturan share
-./build/src/zcd/zcd-miner \
-    --address 0x02... --worker myhost --threads 4
+./build/xcb --selftest -a zcd              # engine + aturan share
+./build/xcb -a zcd \
+    -u 0x02... --worker myhost -t 4 -o randomx.rplant.xyz:17197
 ```
 
-Opsi lain: `--pool HOST[:PORT]` (default `randomx.rplant.xyz:17197`),
-`--plain`, `--light`, `--no-hugepages`, `--nonce-offset N`. Konfigurasi bisa
-juga dari environment (`ZCD_POOL`, `ZCD_ADDRESS`, `ZCD_WORKER`, `ZCD_THREADS`,
-`ZCD_PLAIN`, `ZCD_LIGHT`, `ZCD_NO_HUGEPAGES`, `ZCD_NONCE_OFFSET`) atau
-`~/.config/zcd/miner.conf`. Unit systemd ada di `ops/systemd/zcd.service`.
+Pool dan transport: `-o HOST[:PORT]` (default port 17197), `--plain` untuk
+mematikan TLS (default ZCD TLS), `--tls` untuk memaksa menyalakan. Konfigurasi
+bisa juga dari environment (`ALGO=zcd`, `POOL`, `WALLET`, `WORKER`, `THREADS`,
+`POOL_PLAIN`) atau `pool.cfg`. Unit systemd ada di `ops/systemd/zcd.service`.
+
+## Block Zero (BLOZ) — `-a bloz`
+
+BLOZ juga memakai biner yang sama: `-a bloz`. PoW-nya RandomX **v1** (program
+256 instruksi) atas header 80 byte dengan nonce di offset 76, tanpa commitment.
+Library-nya sama dengan CONN/ZCD — hanya flag v2 yang dimatikan.
+
+```bash
+./build/xcb -a bloz \
+    -u bz1... --worker myhost -t 4 -o eu.rplant.xyz:7170
+```
+
+Transport default plain (rplant 7170); `--tls` untuk pool yang memakai TLS.
+Environment: `ALGO=bloz`, `POOL`, `WALLET`, `WORKER`, `THREADS`.
 
 **Aturan share `rx/2` (berbeda dari CONN).** Nilai share bukan digest RandomX
 mentah, melainkan `blake2b-256(blob ‖ digest)`; yang dibandingkan dengan target
@@ -423,14 +436,19 @@ xcb/
     ├── ConnRpc.hpp/.cpp     # JSON-RPC connectcoind (solo) + parser JSON
     ├── ConnMiner.hpp/.cpp   # Backend CONN: template loop + worker RandomX V2
     ├── Hashing/RandomXV2.*  # Wrapper Context/VM RandomX V2
-    ├── zcd/                 # Backend Zycord mandiri — biner zcd-miner sendiri
-    │   ├── ZcdMain.cpp      # entrypoint + CLI/env/file + selftest
+    ├── zcd/                 # Backend Zycord (-a zcd) — pool sendiri
+    │   ├── ZcdRun.*         # entrypoint backend + selftest
     │   ├── ZcdMiner.*       # worker + engine loop
     │   ├── ZcdPool.*        # stratum XMRig (TLS) — tidak memakai ConnPool
     │   ├── ZcdJob.*         # parse job rx/2 (blob 43 byte, target 8 byte LE)
     │   ├── ZcdCommitment.*  # blake2b(blob||digest), aturan share
-    │   ├── ZcdJson.*        # parser JSON sendiri (bukan ConnRpc)
-    │   └── CMakeLists.txt   # target zcd-miner + ctest
+    │   └── ZcdJson.*        # parser JSON sendiri (bukan ConnRpc)
+    ├── bloz/                # Backend Block Zero (-a bloz) — pool sendiri
+    │   ├── BlozRun.*        # entrypoint backend + selftest
+    │   ├── BlozMiner.*      # worker + engine loop (batch 16 nonce)
+    │   ├── BlozPool.*       # stratum XMRig — tidak memakai ConnPool
+    │   ├── BlozJob.*        # parse job rx/blockzero (blob 80 byte, nonce @76)
+    │   └── BlozJson.*       # parser JSON sendiri
     └── Sha3_512.hpp/.cpp    # SHA3-512 keccak satu-blok (hot path 40B)
 ```
 

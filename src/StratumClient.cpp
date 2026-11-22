@@ -388,9 +388,14 @@ bool StratumClient::doEthLogin() {
     if (!pool.worker.empty()) m_workerName += "." + pool.worker;
 
     uint64_t id = m_msgId.fetch_add(1);
+    // Nama worker harus ikut di string login ("wallet.worker"), bukan hanya di
+    // field "worker": rabbitminer.cc dan luckypool membaca worker dari situ dan
+    // mencatat semua host sebagai "default" kalau params hanya berisi wallet.
+    // Field "worker" tetap dikirim karena CatchThatRabbit memakainya.
+    // Password "x" sama dengan yang dipakai coreminer/SRBMiner.
     std::string msg = "{\"id\":" + std::to_string(id) +
                       ",\"method\":\"eth_submitLogin\",\"params\":[\"" +
-                      json_escape(pool.wallet) + "\"]";
+                      json_escape(m_workerName) + "\",\"x\"]";
     if (!pool.worker.empty()) msg += ",\"worker\":\"" + json_escape(pool.worker) + "\"";
     msg += "}";
     sendLine(msg);

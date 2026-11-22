@@ -230,6 +230,13 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsed
             cfg.hardAES = (val != "true" && val != "1" && val != "yes");
         } else if (key == "algo") {
             if (!val.empty()) cfg.algo = val;
+        } else if (key == "tls") {
+            // Hanya untuk pool bloz/zcd; jalur randomy selalu plain.
+            cfg.poolTls = (val == "true" || val == "1" || val == "yes");
+            cfg.poolTlsAuto = false;
+        } else if (key == "plain") {
+            cfg.poolTls = !(val == "true" || val == "1" || val == "yes");
+            cfg.poolTlsAuto = false;
         } else if (key == "conn_rpc") {
             if (!val.empty()) cfg.connRpc = val;
         } else if (key == "conn_cookie") {
@@ -319,6 +326,8 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     const char* envPollMs = getenv("POLL_MS");
     const char* envBench = getenv("BENCHMARK");
     const char* envAlgo = getenv("ALGO");
+    const char* envPoolTls = getenv("POOL_TLS");
+    const char* envPoolPlain = getenv("POOL_PLAIN");
     const char* envConnRpc = getenv("CONN_RPC");
     const char* envConnUser = getenv("CONN_USER");
     const char* envConnPass = getenv("CONN_PASS");
@@ -349,6 +358,16 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             cfg.benchmarkNonces =
                 static_cast<uint64_t>(numOr(envBench, 0, 0, 1000000000LL, "BENCHMARK"));
         if (envAlgo && envAlgo[0] != '\0') cfg.algo = envAlgo;
+        if (envPoolTls && envPoolTls[0] != '\0') {
+            std::string t = envPoolTls;
+            cfg.poolTls = (t == "1" || t == "true" || t == "yes" || t == "on");
+            cfg.poolTlsAuto = false;
+        }
+        if (envPoolPlain && envPoolPlain[0] != '\0') {
+            std::string p = envPoolPlain;
+            cfg.poolTls = !(p == "1" || p == "true" || p == "yes" || p == "on");
+            cfg.poolTlsAuto = false;
+        }
         if (envConnRpc && envConnRpc[0] != '\0') cfg.connRpc = envConnRpc;
         if (envConnUser && envConnUser[0] != '\0') cfg.connUser = envConnUser;
         if (envConnPass && envConnPass[0] != '\0') cfg.connPass = envConnPass;
@@ -495,6 +514,14 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         } else if (arg == "--no-jit") {
             cfg.useJIT = false;
 
+        } else if (arg == "--tls") {
+            cfg.poolTls = true;
+            cfg.poolTlsAuto = false;
+
+        } else if (arg == "--plain") {
+            cfg.poolTls = false;
+            cfg.poolTlsAuto = false;
+
         } else if ((arg == "-a" || arg == "--algo") && i + 1 < argc) {
             cfg.algo = argv[++i];
 
@@ -554,6 +581,8 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  -p password           Pool password\n"
                       << "  -t N                  Thread count\n"
                       << "  -a, --algo ALGO       randomy (XCB) | conn (ConnectCoin, solo RPC)\n"
+                      << "                        | bloz (Block Zero) | zcd (Zycord)\n"
+                      << "  --tls / --plain       TLS pool bloz/zcd (default: bloz plain, zcd TLS)\n"
                       << "  --conn-rpc URL        connectcoind RPC (default http://127.0.0.1:48172)\n"
                       << "  --conn-user USER      RPC user   (default: baca cookie)\n"
                       << "  --conn-pass PASS      RPC password\n"
@@ -576,7 +605,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  dari RAM tersedia / cgroup limit / hugepages bebas.\n"
                       << "  Config file: pool.cfg\n"
                       << "  Env: WALLET POOL WORKER THREADS FULL_MEM LARGE_PAGES LOG_LEVEL\n"
-                      << "       LOG_FORMAT REPORT_HASHRATE POLL_MS BENCHMARK ALGO\n"
+                      << "       LOG_FORMAT REPORT_HASHRATE POLL_MS BENCHMARK ALGO POOL_TLS POOL_PLAIN\n"
                       << "       CONN_RPC CONN_USER CONN_PASS CONN_COOKIE CONN_ADDRESS CONN_POOL\n"
                       << "       CONN_NONCE_OFFSET\n";
             exit(0);
@@ -624,7 +653,8 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     const bool needsPool = !cfg.selftest && cfg.benchmarkNonces == 0 && cfg.algo != "conn";
     if (needsPool) {
         if (cfg.pools.empty()) {
-            std::cerr << "[Config] No pool configured! Use -o or set in pool.cfg" << std::endl;
+            std::cerr << "[Config] No pool configured! Use -o, POOL=, or set in pool.cfg"
+                      << std::endl;
             exit(1);
         }
         for (auto& p : cfg.pools) {
@@ -635,9 +665,10 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         }
     }
     
-    // --- Normalisasi algo. Alias randomx = randomy; conn = ConnectCoin.
-    // Algo tak dikenal => exit non-zero, bukan fallback diam-diam ke backend
-    // lain (share/blok pasti ditolak semua kalau salah backend). ---
+    // --- Normalisasi algo. Alias: randomx = randomy; conn = ConnectCoin;
+    // blockzero/rx-blockzero = bloz; zycord = zcd. Algo tak dikenal => exit
+    // non-zero, bukan fallback diam-diam ke backend lain (share/blok pasti
+    // ditolak semua kalau salah backend). ---
     {
         std::string a = cfg.algo;
         for (auto& c : a) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
@@ -654,11 +685,18 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                           << std::endl;
                 exit(1);
             }
+        } else if (a == "bloz" || a == "blockzero" || a == "rx/blockzero" ||
+                   a == "rx-blockzero") {
+            cfg.algo = "bloz";
+        } else if (a == "zcd" || a == "zycord") {
+            cfg.algo = "zcd";
         } else {
             std::cerr << "[Config] Algo tidak dikenal: '" << cfg.algo
-                      << "' (pilihan: randomy, conn)" << std::endl;
+                      << "' (pilihan: randomy, conn, bloz, zcd)" << std::endl;
             exit(1);
         }
+        // Default transport per backend: rplant BLOZ plain, rplant ZCD TLS.
+        if (cfg.poolTlsAuto) cfg.poolTls = (cfg.algo == "zcd");
     }
 
     // Default threads = jumlah CPU yang boleh dipakai proses ini.
@@ -733,11 +771,12 @@ static long cgroupLimitMb() {
 }
 
 // Kebutuhan dataset + cache per algo, dalam MB. RandomY memakai dataset
-// 256 MiB + 8 MiB (RandomX standar: 2 GiB + 32 MiB); CONN memakai RandomX V2
-// dengan dataset 2 GiB + 32 MiB. Keduanya dihitung dari parameter yang benar-
-// benar dikompilasi, bukan angka yang disalin.
+// 256 MiB + 8 MiB (RandomX standar: 2 GiB + 32 MiB); CONN, BLOZ, dan ZCD
+// memakai library rxv2 dengan dataset 2 GiB + 32 MiB. Ukuran dataset/cache
+// tidak berubah antara mode v1 (BLOZ) dan v2 (CONN/ZCD) — yang berbeda hanya
+// panjang program VM-nya.
 static void algoMemNeed(const std::string& algo, long& datasetMb, long& cacheMb) {
-    if (algo == "conn") {
+    if (algo == "conn" || algo == "bloz" || algo == "zcd") {
         const rxv2::MemNeed need = rxv2::memNeed();
         datasetMb = need.datasetMb;
         cacheMb = need.cacheMb;

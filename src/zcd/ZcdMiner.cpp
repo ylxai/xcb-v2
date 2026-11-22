@@ -368,7 +368,7 @@ bool Miner::start(const MinerConfig& cfg, std::string& err) {
     }
     m_impl->cfg = cfg;
     // Kontrak MinerConfig.threads: 0 = auto. Diselesaikan di sini supaya
-    // pemanggil selain ZcdMain juga mendapat perilaku yang sama.
+    // pemanggil selain ZcdRun juga mendapat perilaku yang sama.
     if (m_impl->cfg.threads <= 0) {
         const int n = static_cast<int>(usableCpus().size());
         m_impl->cfg.threads = n > 0 ? n : 1;

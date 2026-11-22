@@ -128,20 +128,24 @@ jobs:
           cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel "$(nproc)"
 
-      - name: Version menunjuk backend CONN
+      - name: Version menyebut semua backend
         run: |
           ./build/xcb --version | tee ver.log
-          grep -q 'ConnectCoin CONN' ver.log || {
-            echo "::error::--version tidak menyebut backend CONN"; exit 1; }
-          grep -qE 'xcb [0-9]+\.[0-9]+\.[0-9]+ \(ConnectCoin CONN - RandomX V2, [0-9a-f]+\)' ver.log || {
+          grep -q 'randomy, conn, bloz, zcd' ver.log || {
+            echo "::error::--version tidak menyebut keempat backend"; exit 1; }
+          grep -qE 'xcb [0-9]+\.[0-9]+\.[0-9]+ \(randomy, conn, bloz, zcd; [0-9a-f]+\)' ver.log || {
             echo "::error::format versi/commit salah"; exit 1; }
 
-      - name: Selftest (termasuk vektor RandomX V2)
+      - name: Selftest (keempat backend)
         run: |
           set -o pipefail
           ./build/xcb --selftest 2>&1 | tee st.log
           grep -q 'randomx-v2 : OK' st.log || {
             echo "::error::selftest RandomX V2 tidak jalan"; exit 1; }
+          grep -q 'backend bloz : OK' st.log || {
+            echo "::error::selftest backend bloz tidak jalan"; exit 1; }
+          grep -q 'backend zcd : OK' st.log || {
+            echo "::error::selftest backend zcd tidak jalan"; exit 1; }
           grep -q 'RESULT: PASS' st.log
 
       - name: Binary menemukan librandomx_v2.so
@@ -162,8 +166,12 @@ jobs:
           test -f stage/bin/librandomx_v2.so
           ( cd /tmp && "$GITHUB_WORKSPACE/stage/bin/xcb" --version )
 
-      - name: Backend CONN terdaftar di --help
-        run: ./build/xcb --help | grep -q -- '--conn-pool'
+      - name: Semua algo terdaftar di --help
+        run: |
+          ./build/xcb --help | tee help.log
+          grep -q -- '--conn-pool' help.log
+          grep -q -- 'randomy (XCB) | conn' help.log
+          grep -q -- 'bloz (Block Zero) | zcd' help.log
 
   build-2204:
     name: Build + artefak deploy (Ubuntu 22.04 / glibc 2.35)
