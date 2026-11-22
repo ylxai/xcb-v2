@@ -313,6 +313,21 @@ MinerConfig Config::loadChain(const std::vector<std::string>& candidates) {
     return cfg;
 }
 
+// Alias algo -> nama kanonik. String kosong = algo tidak dikenal.
+// Dipakai sebelum validasi pool: `-a connectcoin` harus lolos sebagai conn
+// (solo RPC, tanpa pool), bukan ditolak "No pool configured" karena namanya
+// belum dinormalisasi.
+static std::string canonicalAlgo(const std::string& in) {
+    std::string a = in;
+    for (auto& c : a) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    if (a == "randomy" || a == "randomx") return "randomy";
+    if (a == "conn" || a == "connectcoin" || a == "randomx-v2" || a == "randomxv2") return "conn";
+    if (a == "bloz" || a == "blockzero" || a == "rx/blockzero" || a == "rx-blockzero")
+        return "bloz";
+    if (a == "zcd" || a == "zycord") return "zcd";
+    return "";
+}
+
 MinerConfig Config::parse(int argc, char* argv[]) {
     MinerConfig cfg;
     
@@ -647,6 +662,21 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << std::endl;
     }
 
+    // --- Normalisasi algo. Alias: randomx = randomy; conn = ConnectCoin;
+    // blockzero/rx-blockzero = bloz; zycord = zcd. Algo tak dikenal => exit
+    // non-zero, bukan fallback diam-diam ke backend lain (share/blok pasti
+    // ditolak semua kalau salah backend). Dilakukan sebelum validasi pool
+    // supaya alias conn (`-a connectcoin`) tidak diminta pool. ---
+    {
+        const std::string canon = canonicalAlgo(cfg.algo);
+        if (canon.empty()) {
+            std::cerr << "[Config] Algo tidak dikenal: '" << cfg.algo
+                      << "' (pilihan: randomy, conn, bloz, zcd)" << std::endl;
+            exit(1);
+        }
+        cfg.algo = canon;
+    }
+
     // Validate — but only for modes that actually talk to a pool.
     // --selftest and --benchmark never open a stratum connection, so requiring
     // pool.cfg there breaks `miner-saya --selftest` from any directory (CI
@@ -667,18 +697,10 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             }
         }
     }
-    
-    // --- Normalisasi algo. Alias: randomx = randomy; conn = ConnectCoin;
-    // blockzero/rx-blockzero = bloz; zycord = zcd. Algo tak dikenal => exit
-    // non-zero, bukan fallback diam-diam ke backend lain (share/blok pasti
-    // ditolak semua kalau salah backend). ---
+
+    // Sisa kerja per-algo setelah pool tervalidasi.
     {
-        std::string a = cfg.algo;
-        for (auto& c : a) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
-        if (a == "randomy" || a == "randomx") {
-            cfg.algo = "randomy";
-        } else if (a == "conn" || a == "connectcoin" || a == "randomx-v2" || a == "randomxv2") {
-            cfg.algo = "conn";
+        if (cfg.algo == "conn") {
             // -u wallet dianggap alamat reward bila --address/--conn-address
             // tidak diberikan.
             if (cfg.connAddress.empty() && !cfg.pools.empty())
@@ -688,15 +710,6 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                           << std::endl;
                 exit(1);
             }
-        } else if (a == "bloz" || a == "blockzero" || a == "rx/blockzero" ||
-                   a == "rx-blockzero") {
-            cfg.algo = "bloz";
-        } else if (a == "zcd" || a == "zycord") {
-            cfg.algo = "zcd";
-        } else {
-            std::cerr << "[Config] Algo tidak dikenal: '" << cfg.algo
-                      << "' (pilihan: randomy, conn, bloz, zcd)" << std::endl;
-            exit(1);
         }
         // Default transport per backend: rplant BLOZ plain, rplant ZCD TLS.
         if (cfg.poolTlsAuto) cfg.poolTls = (cfg.algo == "zcd");

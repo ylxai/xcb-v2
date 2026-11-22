@@ -46,7 +46,8 @@ Konfigurasi miner:
   --worker NAMA         nama worker (default: hostname)
   --algo ALGO           backend: randomy | conn | bloz | zcd (default: conn)
   --pool HOST:PORT      pool backend (default per algo: conn 17194,
-                        bloz 7170, zcd 17197 di rplant)
+                        bloz 7170, zcd 17197 di rplant; randomy wajib
+                        ditulis karena pool XCB tidak menentu)
   --threads N           jumlah thread (default: nproc)
 
 Lainnya:
@@ -92,12 +93,16 @@ case "$ALGO" in
     *) die "--algo tidak dikenal: $ALGO (pilihan: randomy, conn, bloz, zcd)" ;;
 esac
 
-# Default pool per backend kalau --pool tidak diberikan.
+# Default pool per backend kalau --pool tidak diberikan. randomy tidak punya
+# default: pool XCB yang dipakai fleet berpindah-pindah (CatchThatRabbit,
+# rabbitminer, luckypool), jadi menebak satu alamat hanya akan membuat miner
+# login ke pool yang salah.
 if [ -z "$POOL" ]; then
     case "$ALGO" in
+        conn) POOL="eu.rplant.xyz:17194" ;;
         bloz) POOL="eu.rplant.xyz:7170" ;;
         zcd)  POOL="randomx.rplant.xyz:17197" ;;
-        *)    POOL="eu.rplant.xyz:17194" ;;
+        randomy) die "--algo randomy butuh --pool HOST:PORT (tidak ada default)" ;;
     esac
 fi
 
