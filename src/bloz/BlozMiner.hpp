@@ -41,6 +41,10 @@ public:
 
     bool start(const MinerConfig& cfg, std::string& err);
     void stop();
+    // Minta berhenti tanpa join. Aman dipanggil dari thread lain saat start()
+    // masih menunggu balasan login: connect() dibatalkan dalam hitungan
+    // milidetik, bukan menunggu timeout socket.
+    void requestStop();
     bool running() const { return m_running.load(std::memory_order_acquire); }
 
     std::string finalSummary() const;

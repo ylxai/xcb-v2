@@ -39,6 +39,12 @@ public:
     bool connect(std::string& err);
     void disconnect();
 
+    // Hentikan koneksi yang sedang berjalan. Berbeda dari disconnect(): flag
+    // ini dibaca recvLine/connect di tengah blocking read, jadi io thread yang
+    // sedang menunggu balasan login berhenti dalam hitungan milidetik, bukan
+    // menunggu SO_RCVTIMEO habis.
+    void requestStop() { m_stop.store(true, std::memory_order_release); }
+
     bool ready() const { return m_ready.load(std::memory_order_acquire); }
 
     // Tunggu job baru (notifikasi "job" atau job dari login) maksimal timeoutMs.
@@ -71,6 +77,9 @@ private:
     void* m_sslCtx = nullptr;     // SSL_CTX*
     std::string m_buf;
     std::atomic<bool> m_ready{false};
+    // Diminta berhenti; dibaca di tengah recvLine/connect supaya shutdown tidak
+    // menunggu timeout socket.
+    std::atomic<bool> m_stop{false};
     // m_ioMu hanya untuk pemilik socket: io thread dan disconnect(). Jangan
     // pernah menahannya selama menunggu worker — submit() tidak menyentuh
     // socket, ia hanya menaruh pesan di m_outBuf.

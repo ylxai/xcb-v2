@@ -82,9 +82,38 @@ int run(const ::MinerConfig& cfg, std::atomic<bool>& running) {
 
     Miner miner;
     std::string err;
-    if (!miner.start(mc, err)) {
+
+    // start() bisa menunggu balasan login sampai timeout socket. SIGTERM di
+    // jendela itu tidak akan terlihat oleh loop di bawah, jadi watchdog ini
+    // meneruskan permintaan berhenti ke Miner supaya connect() dibatalkan.
+    std::atomic<bool> watchDone{false};
+    std::thread stopWatch([&] {
+        while (!watchDone.load(std::memory_order_acquire) &&
+               running.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (!running.load(std::memory_order_acquire)) miner.requestStop();
+    });
+
+    const bool started = miner.start(mc, err);
+    watchDone.store(true, std::memory_order_release);
+    stopWatch.join();
+    if (!started) {
+        // Gagal karena diminta berhenti bukan kegagalan: systemd tidak perlu
+        // menandai unit failed saat SIGTERM datang di tengah connect.
+        if (!running.load(std::memory_order_acquire)) {
+            lg::info("bloz", "berhenti sebelum mulai");
+            return 0;
+        }
         lg::error("bloz", "start gagal: " + err);
         return 1;
+    }
+    if (!running.load(std::memory_order_acquire)) {
+        // Berhenti diminta saat start: stop() tetap dipanggil supaya worker
+        // dan io thread di-join, bukan ditinggal sebagai thread joinable.
+        miner.stop();
+        lg::info("sysd", miner.finalSummary());
+        return 0;
     }
 
     uint64_t lastHashes = 0;

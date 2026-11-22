@@ -64,6 +64,9 @@ struct Miner::Impl {
     std::thread ioThread;
     std::vector<std::thread> workers;
     std::atomic<bool> run{false};
+    // Di-set oleh requestStop(); start() memeriksanya sebelum menyalakan run
+    // supaya permintaan berhenti yang datang di tengah connect tidak diabaikan.
+    std::atomic<bool> stopRequested{false};
 
     std::mutex mu;
     std::shared_ptr<Work> work;
@@ -77,6 +80,17 @@ struct Miner::Impl {
     std::atomic<bool> engineFailed{false};
     std::mutex errMu;
     std::string engineError;
+
+    // Percobaan ulang engine yang gagal dibangun (mis. alokasi dataset gagal
+    // setelah seed berganti). Hanya disentuh io thread.
+    Job retryJob;
+    bool haveRetryJob = false;
+    std::chrono::steady_clock::time_point retryAt;
+
+    bool hasWork() {
+        std::lock_guard<std::mutex> lock(mu);
+        return work != nullptr;
+    }
 
     void clearEngineError() {
         std::lock_guard<std::mutex> lock(errMu);
@@ -99,7 +113,9 @@ struct Miner::Impl {
     // hugepages biasanya hanya cukup untuk satu. Tanpa penantian, alokasi baru
     // gagal mendapat hugepages lalu turun diam-diam ke page biasa dan hash rate
     // tetap rendah sampai proses di-restart.
-    void buildEngine(const Job& job) {
+    // Mengembalikan false bila engine gagal dibangun; pemanggil runtime
+    // menjadwalkan percobaan ulang supaya miner tidak diam sampai job berikut.
+    bool buildEngine(const Job& job) {
         engineFailed.store(false, std::memory_order_relaxed);
         clearEngineError();
 
@@ -125,7 +141,7 @@ struct Miner::Impl {
             // Engine lama tidak boleh tetap aktif: share untuk seed usang akan
             // ditolak pool, dan lebih buruk lagi menutupi kegagalan ini.
             invalidateWork();
-            return;
+            return false;
         }
         const char* mode = cfg.fastMem ? (ctx->usesLargePages() ? "FAST, hugepages"
                                                                 : "FAST, regular pages")
@@ -148,7 +164,7 @@ struct Miner::Impl {
                 setEngineError("VM gagal dibuat");
                 lg::error("bloz", "VM RandomX gagal dibuat");
                 invalidateWork();
-                return;
+                return false;
             }
             w->vms.push_back(std::move(vm));
         }
@@ -160,6 +176,7 @@ struct Miner::Impl {
             work = std::move(w);
         }
         engineRebuilds.fetch_add(1, std::memory_order_relaxed);
+        return true;
     }
 
     // Lepas work lama dan tunggu worker berhenti memakainya. Worker memegang
@@ -250,7 +267,15 @@ struct Miner::Impl {
         // saat releaseOldWork() menghitung use_count, penantiannya selalu
         // timeout dan dataset baru dibangun berdampingan dengan yang lama.
         cur.reset();
-        buildEngine(job);
+        if (buildEngine(job)) {
+            haveRetryJob = false;
+        } else {
+            // Pool boleh tidak mengirim notifikasi lagi sampai blok berikut,
+            // jadi kegagalan ini dicoba ulang oleh ioLoop, bukan didiamkan.
+            retryJob = job;
+            haveRetryJob = true;
+            retryAt = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        }
     }
 
     static bool sameJob(const Job& a, const Job& b) {
@@ -290,6 +315,18 @@ struct Miner::Impl {
             if (!err.empty() && err != "timeout menunggu data pool") {
                 lg::warn("bloz", "pool: " + err + " — sambung ulang");
                 pool->disconnect();
+            }
+            // Engine gagal dibangun saat job terakhir: ulangi tanpa menunggu
+            // notifikasi berikutnya. Hanya selama koneksi masih hidup, supaya
+            // job dari sesi lama tidak membangun engine yang tidak terpakai.
+            if (haveRetryJob && pool->ready() && !hasWork() &&
+                std::chrono::steady_clock::now() >= retryAt) {
+                lg::info("bloz", "membangun ulang engine setelah kegagalan sebelumnya");
+                if (buildEngine(retryJob)) {
+                    haveRetryJob = false;
+                } else {
+                    retryAt = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+                }
             }
             (void)mself;
         }
@@ -405,6 +442,7 @@ bool Miner::start(const MinerConfig& cfg, std::string& err) {
         err = "miner sudah berjalan";
         return false;
     }
+    m_impl->stopRequested.store(false, std::memory_order_release);
     m_impl->cfg = cfg;
     // Kontrak MinerConfig.threads: 0 = auto. Diselesaikan di sini supaya
     // pemanggil selain BlozRun juga mendapat perilaku yang sama.
@@ -419,6 +457,14 @@ bool Miner::start(const MinerConfig& cfg, std::string& err) {
     Job first;
     if (!m_impl->pool->currentJob(first)) {
         err = "pool tidak memberi job";
+        return false;
+    }
+
+    // Permintaan berhenti bisa datang selama connect(); jangan menyalakan
+    // miner yang sudah diminta berhenti (worker akan langsung keluar tanpa
+    // pernah di-join).
+    if (m_impl->stopRequested.load(std::memory_order_acquire)) {
+        err = "dihentikan";
         return false;
     }
 
@@ -450,15 +496,29 @@ bool Miner::start(const MinerConfig& cfg, std::string& err) {
     return true;
 }
 
-void Miner::stop() {
+void Miner::requestStop() {
     if (!m_impl) return;
+    m_impl->stopRequested.store(true, std::memory_order_release);
     m_impl->run.store(false, std::memory_order_release);
     m_running.store(false, std::memory_order_release);
+    if (m_impl->pool) m_impl->pool->requestStop();
+}
+
+void Miner::stop() {
+    if (!m_impl) return;
+    // requestStop dulu: io thread yang sedang di dalam connect()/recvLine
+    // (menunggu balasan login) harus berhenti sebelum disconnect() mencoba
+    // mengambil m_ioMu. Tanpa ini stop() menunggu sampai SO_RCVTIMEO habis.
+    requestStop();
     if (m_impl->pool) m_impl->pool->disconnect();
     for (auto& t : m_impl->workers)
         if (t.joinable()) t.join();
     m_impl->workers.clear();
     if (m_impl->ioThread.joinable()) m_impl->ioThread.join();
+    // connect() bisa selesai setelah disconnect() di atas (DNS/TCP sudah
+    // berjalan). Tutup sekali lagi setelah io thread berhenti supaya tidak ada
+    // socket yang tertinggal.
+    if (m_impl->pool) m_impl->pool->disconnect();
     {
         std::lock_guard<std::mutex> lock(m_impl->mu);
         m_impl->work.reset();

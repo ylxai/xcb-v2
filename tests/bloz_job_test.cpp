@@ -123,6 +123,16 @@ int main() {
         s.replace(s.find(from), from.size(), "\"target\":\"0000000000000000\"");
         check("target nol ditolak", !bloz::parseJob(s, job, err), err);
     }
+    // height 2^64: double membulatkan UINT64_MAX ke 2^64, jadi batas `>` lama
+    // meloloskannya dan static_cast<uint64_t> menjadi tidak terdefinisi.
+    {
+        bloz::Job job;
+        std::string err;
+        std::string s = kLoginReply;
+        const std::string from = "\"height\":23185";
+        s.replace(s.find(from), from.size(), "\"height\":18446744073709551616");
+        check("height 2^64 ditolak", !bloz::parseJob(s, job, err), err);
+    }
 
     std::printf(g_fail == 0 ? "SEMUA OK\n" : "%d GAGAL\n", g_fail);
     return g_fail == 0 ? 0 : 1;

@@ -140,6 +140,17 @@ int main() {
                              "\"seed_hash\":\"" +
                              std::string(64, 'b') + "\"}}}",
                              job, err));
+
+        // height 2^64: double membulatkan UINT64_MAX ke 2^64, jadi batas `>`
+        // lama meloloskannya dan static_cast<uint64_t> tidak terdefinisi.
+        err.clear();
+        check("height 2^64 ditolak",
+              !zcd::parseJob("{\"result\":{\"job\":{\"blob\":\""
+                             + std::string(84, 'a') +
+                             "\",\"job_id\":\"x\",\"target\":\"a38d23d6e2530000\","
+                             "\"height\":18446744073709551616,\"seed_hash\":\"" +
+                             std::string(64, 'b') + "\"}}}",
+                             job, err));
     }
 
     if (g_fail == 0) std::printf("SEMUA OK\n");

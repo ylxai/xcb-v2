@@ -123,6 +123,17 @@ static long long numOr(const std::string& s, long long fallback, long long min, 
     return v;
 }
 
+// Boolean dari config/env. Nilai tak dikenal tidak boleh berarti "false":
+// `tls=treu` pada zcd akan mematikan TLS tanpa peringatan dan login wallet
+// terkirim plaintext. Salah tulis harus berhenti, bukan menebak.
+static bool boolOrDie(const std::string& v, const char* what) {
+    if (v == "1" || v == "true" || v == "yes" || v == "on") return true;
+    if (v == "0" || v == "false" || v == "no" || v == "off") return false;
+    std::cerr << "[Config] " << what << ": nilai tidak dikenal '" << v
+              << "' (pakai true/false, 1/0, yes/no, on/off)" << std::endl;
+    exit(1);
+}
+
 // "host[:port]" -> host + port, dipakai bersama oleh --conn-pool dan
 // CONN_POOL. Aturan parsing ada di HostPort.hpp supaya bisa diuji ctest.
 static void parseHostPort(const std::string& v, std::string& host, int& port, int defaultPort,
@@ -233,10 +244,10 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsed
             if (!val.empty()) cfg.algo = val;
         } else if (key == "tls") {
             // Hanya untuk pool bloz/zcd; jalur randomy selalu plain.
-            cfg.poolTls = (val == "true" || val == "1" || val == "yes");
+            cfg.poolTls = boolOrDie(val, "tls");
             cfg.poolTlsAuto = false;
         } else if (key == "plain") {
-            cfg.poolTls = !(val == "true" || val == "1" || val == "yes");
+            cfg.poolTls = !boolOrDie(val, "plain");
             cfg.poolTlsAuto = false;
         } else if (key == "conn_rpc") {
             if (!val.empty()) cfg.connRpc = val;
@@ -375,13 +386,11 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                 static_cast<uint64_t>(numOr(envBench, 0, 0, 1000000000LL, "BENCHMARK"));
         if (envAlgo && envAlgo[0] != '\0') cfg.algo = envAlgo;
         if (envPoolTls && envPoolTls[0] != '\0') {
-            std::string t = envPoolTls;
-            cfg.poolTls = (t == "1" || t == "true" || t == "yes" || t == "on");
+            cfg.poolTls = boolOrDie(envPoolTls, "POOL_TLS");
             cfg.poolTlsAuto = false;
         }
         if (envPoolPlain && envPoolPlain[0] != '\0') {
-            std::string p = envPoolPlain;
-            cfg.poolTls = !(p == "1" || p == "true" || p == "yes" || p == "on");
+            cfg.poolTls = !boolOrDie(envPoolPlain, "POOL_PLAIN");
             cfg.poolTlsAuto = false;
         }
         if (envConnRpc && envConnRpc[0] != '\0') cfg.connRpc = envConnRpc;

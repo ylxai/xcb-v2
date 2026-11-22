@@ -126,6 +126,13 @@ bool Pool::recvLine(std::string& line, int timeoutMs, std::string& err) {
     const auto deadline = start + std::chrono::milliseconds(totalMs);
 
     for (int tries = 0; tries < 256; tries++) {
+        // Shutdown: jangan tunggu deadline. Tanpa cek ini io thread bisa
+        // menahan m_ioMu sampai 30 detik saat pool berhenti mengirim, dan
+        // Miner::stop() ikut tertahan di disconnect().
+        if (m_stop.load(std::memory_order_acquire)) {
+            err = "dihentikan";
+            return false;
+        }
         const size_t nl = m_buf.find('\n');
         if (nl != std::string::npos) {
             line = m_buf.substr(0, nl);
@@ -156,11 +163,12 @@ bool Pool::recvLine(std::string& line, int timeoutMs, std::string& err) {
             pfd.fd = m_fd;
             pfd.events = POLLIN;
             pfd.revents = 0;
-            const int pr = ::poll(&pfd, 1, waitMs);
-            if (pr == 0) {
-                err = "timeout menunggu data pool";
-                return false;
-            }
+            // Potong tunggu jadi 250 ms: flag stop hanya bisa dilihat di antara
+            // poll, jadi satu poll panjang (30 detik untuk balasan login)
+            // membuat shutdown menunggu selama itu.
+            const int sliceMs = waitMs > 250 ? 250 : waitMs;
+            const int pr = ::poll(&pfd, 1, sliceMs);
+            if (pr == 0) continue;
             if (pr < 0) {
                 if (errno == EINTR) continue;
                 err = std::string("poll gagal: ") + std::strerror(errno);
@@ -175,6 +183,11 @@ bool Pool::recvLine(std::string& line, int timeoutMs, std::string& err) {
             if (n <= 0) {
                 const int e = SSL_get_error(static_cast<SSL*>(m_ssl), n);
                 if (e == SSL_ERROR_WANT_READ) continue;
+                // SO_RCVTIMEO pendek: record TLS yang datang sebagian membuat
+                // SSL_read menunggu sisa record. Timeout di sini bukan error
+                // koneksi — deadline di atas yang menentukan.
+                if (e == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK))
+                    continue;
                 err = (n == 0 || e == SSL_ERROR_ZERO_RETURN) ? "pool menutup koneksi"
                                                              : "SSL_read gagal";
                 return false;
@@ -199,6 +212,10 @@ bool Pool::recvLine(std::string& line, int timeoutMs, std::string& err) {
 
 bool Pool::connect(std::string& err) {
     disconnect();
+    if (m_stop.load(std::memory_order_acquire)) {
+        err = "dihentikan";
+        return false;
+    }
 
     struct addrinfo hints;
     std::memset(&hints, 0, sizeof(hints));
@@ -219,8 +236,12 @@ bool Pool::connect(std::string& err) {
             lastErr = errno;
             continue;
         }
+        // Batas satu syscall baca/tulis, bukan batas satu pesan: recvLine
+        // memakai deadline absolut sendiri. Nilai pendek penting untuk TLS —
+        // SSL_read di atas socket blocking bisa menunggu sisa record selama
+        // SO_RCVTIMEO sambil memegang m_ioMu.
         struct timeval tv;
-        tv.tv_sec = kIoTimeoutSec;
+        tv.tv_sec = 1;
         tv.tv_usec = 0;
         ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
@@ -237,6 +258,13 @@ bool Pool::connect(std::string& err) {
 
     {
         std::lock_guard<std::mutex> lock(m_ioMu);
+        // Stop bisa datang selama DNS/TCP connect di atas; jangan pasang socket
+        // baru yang tidak akan pernah ditutup oleh disconnect().
+        if (m_stop.load(std::memory_order_acquire)) {
+            ::close(fd);
+            err = "dihentikan";
+            return false;
+        }
         m_fd = fd;
         m_buf.clear();
 
