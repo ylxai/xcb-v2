@@ -81,6 +81,10 @@ private:
     Job m_job;
     bool m_haveJob = false;
     std::atomic<long long> m_msgId{1};
+    // m_loginId ditulis io thread saat (re)connect dan dibaca worker di
+    // submit(). Kunci sendiri, bukan m_ioMu: worker tidak boleh menunggu
+    // socket hanya untuk menyalin session id.
+    mutable std::mutex m_loginMu;
     std::string m_loginId = "1";
     std::atomic<uint64_t> m_accepted{0};
     std::atomic<uint64_t> m_rejected{0};

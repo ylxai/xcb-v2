@@ -219,6 +219,7 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsed
             pool.host = val;
         } else if (key.compare(0, 4, "port") == 0 && key.back() == ']') {
             pool.port = static_cast<uint16_t>(numOr(val, 8008, 1, 65535, "port"));
+            pool.portSet = true;
         } else if (key == "threads") {
             cfg.threads = static_cast<int>(numOr(val, 0, 0, 4096, "threads"));
         } else if (key == "no_jit") {
@@ -410,6 +411,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             p.host = poolStr.substr(0, colon);
             p.port = static_cast<uint16_t>(
                 numOr(poolStr.substr(colon + 1), 8008, 1, 65535, "POOL port"));
+            p.portSet = true;
         } else {
             p.host = poolStr;
             p.port = 8008;
@@ -455,6 +457,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             if (colon != std::string::npos) {
                 p.host = s.substr(0, colon);
                 p.port = static_cast<uint16_t>(numOr(s.substr(colon + 1), 8008, 1, 65535, "-o port"));
+                p.portSet = true;
             } else {
                 p.host = s;
                 p.port = 8008;
@@ -697,6 +700,14 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         }
         // Default transport per backend: rplant BLOZ plain, rplant ZCD TLS.
         if (cfg.poolTlsAuto) cfg.poolTls = (cfg.algo == "zcd");
+        // Port default per backend bila pool ditulis tanpa port. Tanpa ini
+        // `-o eu.rplant.xyz` menyambung ke 8008 (default randomy) dan BLOZ
+        // tidak pernah login.
+        for (auto& p : cfg.pools) {
+            if (p.portSet) continue;
+            if (cfg.algo == "bloz") p.port = 7170;
+            else if (cfg.algo == "zcd") p.port = 17197;
+        }
     }
 
     // Default threads = jumlah CPU yang boleh dipakai proses ini.

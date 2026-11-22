@@ -43,7 +43,10 @@ std::vector<int> usableCpus() {
 // `work->job` diganti di tempat dengan move-assignment, yang membebaskan
 // buffer blob milik worker yang sedang memcpy — use-after-free setiap blok.
 struct Work {
-    uint64_t gen = 0;
+    // gen ditulis io thread saat job berganti dan dibaca worker di tengah
+    // batch. Atomik supaya pembacaan periodik itu tidak berlomba dengan
+    // penulisan; job sendiri dilindungi mu (lihat snapshot()).
+    std::atomic<uint64_t> gen{0};
     std::shared_ptr<const Job> job;
     std::shared_ptr<rxv2::Context> ctx;
     std::vector<std::unique_ptr<rxv2::Context::VM>> vms;
@@ -195,8 +198,17 @@ struct Miner::Impl {
         engineGen.fetch_add(1, std::memory_order_acq_rel);
     }
 
-    std::shared_ptr<Work> snapshot() {
+    // Salin job dan gen di bawah mu. Worker memegang shared_ptr<Work> sendiri,
+    // tetapi isi Work (job/gen) ditulis io thread saat job baru datang; menyalin
+    // keduanya di sini membuat worker tidak pernah membaca shared_ptr yang
+    // sedang di-assign (itu data race dan bisa merusak refcount).
+    std::shared_ptr<Work> snapshot(std::shared_ptr<const Job>* jobOut = nullptr,
+                                   uint64_t* genOut = nullptr) {
         std::lock_guard<std::mutex> lock(mu);
+        if (work) {
+            if (jobOut) *jobOut = work->job;
+            if (genOut) *genOut = work->gen.load(std::memory_order_relaxed);
+        }
         return work;
     }
 
@@ -248,6 +260,13 @@ struct Miner::Impl {
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
                     continue;
                 }
+                // Job yang dibawa balasan login belum pernah dipublikasikan.
+                // Pool boleh tidak mengirim notifikasi sampai blok berikutnya,
+                // jadi tanpa ini worker tetap menambang blob sebelum reconnect
+                // (dan share-nya basi). publishJob mengabaikan job yang sama.
+                Job loginJob;
+                if (pool->currentJob(loginJob)) publishJob(loginJob);
+                continue;
             }
 
             Job job;
@@ -280,8 +299,10 @@ struct Miner::Impl {
         std::shared_ptr<Work> engineAtStart;
 
         while (run.load(std::memory_order_acquire)) {
-            auto w = snapshot();
-            if (!w || !w->job || id >= static_cast<int>(w->vms.size())) {
+            std::shared_ptr<const Job> job;
+            uint64_t gen = 0;
+            auto w = snapshot(&job, &gen);
+            if (!w || !job || id >= static_cast<int>(w->vms.size())) {
                 // Work dikosongkan saat rekey: lepas juga referensi terakhir
                 // worker ke dataset lama, kalau tidak releaseOldWork() menunggu
                 // sampai timeout dan engine baru terpaksa memakai page biasa.
@@ -293,10 +314,6 @@ struct Miner::Impl {
             // ikut hidup saat engine baru dibangun.
             if (engineAtStart && engineAtStart->ctx != w->ctx) engineAtStart.reset();
             engineAtStart = w;
-            const uint64_t gen = w->gen;
-            // Snapshot job dipegang selama batch: shared_ptr menjaga buffer
-            // blob hidup walau ioLoop mengganti pointer job di tengah.
-            std::shared_ptr<const Job> job = w->job;
 
             auto& vm = w->vms[static_cast<size_t>(id)];
             // Hash satu per satu membuang satu lintasan penuh atas scratchpad:
@@ -314,7 +331,8 @@ struct Miner::Impl {
                 // load per hash memotong hash rate, dan 64 hash cukup cepat
                 // untuk job baru 30 detik. Nonce tetap unik karena diambil dari
                 // counter bersama per blok BATCH.
-                if ((i & 3) == 0 && w->gen != gen) break;
+                if ((i & 3) == 0 &&
+                    w->gen.load(std::memory_order_relaxed) != gen) break;
 
                 const Job& j = *job;
                 uint8_t blobs[BATCH][BLOB_SIZE];

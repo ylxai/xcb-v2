@@ -7,6 +7,9 @@
 struct PoolConfig {
     std::string host;
     uint16_t port = 8008;
+    // Port ditulis eksplisit (host:port / port[N]=). Kalau false, port diisi
+    // default per algo saat normalisasi: bloz 7170, zcd 17197, randomy 8008.
+    bool portSet = false;
     std::string wallet;
     std::string worker = "worker";
     std::string password = "x";

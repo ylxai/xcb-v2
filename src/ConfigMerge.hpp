@@ -40,6 +40,12 @@ inline void applyFileOverlay(MinerConfig& dst, const MinerConfig& src,
         dst.fullMemAuto = false;
     }
     if (keys.count("no_aes")) dst.hardAES = src.hardAES;
+    // tls=/plain= hanya berarti untuk pool bloz/zcd; bawa nilainya supaya
+    // partial berprioritas lebih tinggi tidak diam-diam memakai default algo.
+    if (keys.count("tls") || keys.count("plain")) {
+        dst.poolTls = src.poolTls;
+        dst.poolTlsAuto = false;
+    }
     if (keys.count("conn_cookie") && !src.connCookie.empty()) dst.connCookie = src.connCookie;
     if (keys.count("conn_nonce_offset")) dst.nonceOffset = src.nonceOffset;
 }

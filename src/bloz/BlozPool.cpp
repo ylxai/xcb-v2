@@ -82,7 +82,8 @@ bool Pool::sendLine(const std::string& line, std::string& err) {
             n = SSL_write(static_cast<SSL*>(m_ssl), payload.data() + off,
                           static_cast<int>(payload.size() - off));
         } else {
-            n = static_cast<int>(::send(m_fd, payload.data() + off, payload.size() - off, 0));
+            n = static_cast<int>(::send(m_fd, payload.data() + off, payload.size() - off,
+                                        MSG_NOSIGNAL));
         }
         if (n <= 0) {
             err = "tulis pool gagal";
@@ -320,7 +321,10 @@ bool Pool::connect(std::string& err) {
                                     ? m_cfg.login
                                     : (m_cfg.login + "." + m_cfg.worker);
         // m_msgId atomik: submit() di worker juga memakainya.
-        m_loginId.clear();
+        {
+            std::lock_guard<std::mutex> lock(m_loginMu);
+            m_loginId.clear();
+        }
         const std::string loginMsg =
             "{\"id\":" + std::to_string(m_msgId.fetch_add(1)) +
             ",\"jsonrpc\":\"2.0\",\"method\":\"login\"," +
@@ -368,14 +372,12 @@ bool Pool::connect(std::string& err) {
             std::string session;
             if (const Json* r = doc.get("result")) {
                 if (r->isObj() && r->getStr("id", session) && !session.empty()) {
-                    std::lock_guard<std::mutex> lock(m_ioMu);
+                    std::lock_guard<std::mutex> lock(m_loginMu);
                     m_loginId = session;
                 }
             }
-            if (m_loginId.empty()) {
-                std::lock_guard<std::mutex> lock(m_ioMu);
-                m_loginId = std::to_string(m_msgId.load() - 1);
-            }
+            std::lock_guard<std::mutex> lock(m_loginMu);
+            if (m_loginId.empty()) m_loginId = std::to_string(m_msgId.load() - 1);
         }
         {
             std::lock_guard<std::mutex> lock(m_jobMu);
@@ -510,10 +512,17 @@ bool Pool::submit(const Job& job, const uint8_t digest[32], std::string& err) {
     // pernah memegang kunci I/O. Versi lama menulis langsung di bawah m_ioMu
     // dan bisa kelaparan puluhan detik saat io thread menunggu job — share
     // jadi terlambat sampai melewati batas job.
+    // Salin session id di bawah kuncinya: io thread bisa menggantinya saat
+    // reconnect, dan membaca std::string sambil ditulis adalah data race.
+    std::string loginId;
+    {
+        std::lock_guard<std::mutex> lock(m_loginMu);
+        loginId = m_loginId;
+    }
     const std::string msg =
         "{\"id\":" + std::to_string(m_msgId.fetch_add(1)) +
         ",\"jsonrpc\":\"2.0\",\"method\":\"submit\"," +
-        "\"params\":{\"id\":\"" + jsonEscape(m_loginId) + "\",\"job_id\":\"" +
+        "\"params\":{\"id\":\"" + jsonEscape(loginId) + "\",\"job_id\":\"" +
         jsonEscape(job.id) + "\",\"nonce\":\"" + job.nonceHex(0) + "\",\"result\":\"" +
         toHex(digest, 32) + "\",\"algo\":\"" + jsonEscape(job.algo) + "\"}}";
     {

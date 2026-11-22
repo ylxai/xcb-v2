@@ -253,8 +253,16 @@ int main(int argc, char* argv[]) {
     // Keduanya dulu biner terpisah (bloz-miner, zcd-miner). Sekarang satu
     // biner seperti cpuminer: `-a bloz` / `-a zcd` memilih backend, Config
     // membaca wallet/pool/thread yang sama.
-    if (cfg.algo == "bloz") return bloz::run(cfg, g_running);
-    if (cfg.algo == "zcd") return zcd::run(cfg, g_running);
+    if (cfg.algo == "bloz" || cfg.algo == "zcd") {
+        // --benchmark hanya ada di jalur Miner (randomy). Backend ini butuh
+        // pool, jadi tolak dengan pesan jelas alih-alih "tidak ada pool".
+        if (cfg.benchmarkNonces > 0) {
+            lg::error("main", "--benchmark tidak didukung untuk -a " + cfg.algo +
+                                  " (backend pool-only)");
+            return 2;
+        }
+        return cfg.algo == "bloz" ? bloz::run(cfg, g_running) : zcd::run(cfg, g_running);
+    }
 
     lg::info("main", versionLine());
     lg::info("config", "Pools: " + std::to_string(cfg.pools.size()) + ", Threads: " +
