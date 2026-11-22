@@ -313,7 +313,10 @@ struct Miner::Impl {
                 continue;
             }
             if (!err.empty() && err != "timeout menunggu data pool") {
-                lg::warn("bloz", "pool: " + err + " — sambung ulang");
+                // "dihentikan" adalah jalur stop yang normal, bukan gangguan
+                // pool; jangan dicatat sebagai peringatan saat run sudah false.
+                if (run.load(std::memory_order_acquire))
+                    lg::warn("bloz", "pool: " + err + " — sambung ulang");
                 pool->disconnect();
             }
             // Engine gagal dibangun saat job terakhir: ulangi tanpa menunggu
