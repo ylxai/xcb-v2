@@ -405,17 +405,17 @@ MinerConfig Config::parse(int argc, char* argv[]) {
 
     if (envWallet && envPool) {
         PoolConfig p;
-        std::string poolStr = envPool;
-        auto colon = poolStr.find(':');
-        if (colon != std::string::npos) {
-            p.host = poolStr.substr(0, colon);
-            p.port = static_cast<uint16_t>(
-                numOr(poolStr.substr(colon + 1), 8008, 1, 65535, "POOL port"));
-            p.portSet = true;
-        } else {
-            p.host = poolStr;
-            p.port = 8008;
+        // Parser yang sama dengan --conn-pool: menangani [v6]:port dan literal
+        // IPv6 tanpa port. Split naif di ':' membuat POOL=[::1]:17197 menjadi
+        // host "[" dan port 8008.
+        int port = 8008;
+        bool portGiven = false;
+        if (!applyHostPort(envPool, p.host, port, 8008, &portGiven)) {
+            std::cerr << "[Config] POOL tidak valid ('" << envPool << "')" << std::endl;
+            exit(1);
         }
+        p.port = static_cast<uint16_t>(port);
+        p.portSet = portGiven;
         p.wallet = envWallet;
         p.worker = envWorker ? envWorker : "worker";
         cfg.pools.push_back(p);
@@ -450,18 +450,18 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         std::string arg = argv[i];
         
         if (arg == "-o" && i + 1 < argc) {
-            // pool:port format
+            // pool:port format, termasuk [v6]:port.
             PoolConfig p;
-            std::string s = argv[++i];
-            auto colon = s.find(':');
-            if (colon != std::string::npos) {
-                p.host = s.substr(0, colon);
-                p.port = static_cast<uint16_t>(numOr(s.substr(colon + 1), 8008, 1, 65535, "-o port"));
-                p.portSet = true;
-            } else {
-                p.host = s;
-                p.port = 8008;
+            const std::string s = argv[++i];
+            int port = 8008;
+            bool portGiven = false;
+            if (!applyHostPort(s, p.host, port, 8008, &portGiven)) {
+                std::cerr << "[Config] -o tidak valid ('" << s << "')" << std::endl;
+                exit(1);
             }
+            p.port = static_cast<uint16_t>(port);
+            p.portSet = portGiven;
+            p.fromCli = true;
             cfg.pools.push_back(p);
             
         } else if (arg == "-u" && i + 1 < argc) {

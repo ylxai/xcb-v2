@@ -177,6 +177,11 @@ struct Miner::Impl {
             engineGen.fetch_add(1, std::memory_order_acq_rel);
         }
         if (!old) return;
+        // Worker yang masih memegang Work ini membandingkan gen milik objek
+        // itu, bukan engineGen global. Tanpa kenaikan ini mereka menyelesaikan
+        // sisa 2048 hash dengan seed lama, dan releaseOldWork bisa menunggu
+        // sampai batas 10 detik sementara engine baru sudah dialokasikan.
+        old->gen.fetch_add(1, std::memory_order_acq_rel);
         // Tunggu sampai tidak ada worker yang masih memegang Work ini. Batas
         // waktu menjaga agar worker yang macet tidak menggantungkan ioLoop.
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -194,6 +199,9 @@ struct Miner::Impl {
     // berhasil dibangun.
     void invalidateWork() {
         std::lock_guard<std::mutex> lock(mu);
+        // Sama seperti releaseOldWork: worker melihat gen milik Work yang
+        // mereka pegang, bukan engineGen global.
+        if (work) work->gen.fetch_add(1, std::memory_order_acq_rel);
         work.reset();
         engineGen.fetch_add(1, std::memory_order_acq_rel);
     }

@@ -10,6 +10,10 @@ struct PoolConfig {
     // Port ditulis eksplisit (host:port / port[N]=). Kalau false, port diisi
     // default per algo saat normalisasi: bloz 7170, zcd 17197, randomy 8008.
     bool portSet = false;
+    // Pool datang dari -o (CLI), bukan dari file. Backend bloz/zcd memakai
+    // pool ini lebih dulu: `xcb -a bloz -o host:port` harus menambang ke pool
+    // yang disebut di CLI, bukan server[1] milik pool.cfg yang kebetulan ada.
+    bool fromCli = false;
     std::string wallet;
     std::string worker = "worker";
     std::string password = "x";
@@ -62,6 +66,16 @@ struct MinerConfig {
     // nonce 0.. dan menduplikasi pekerjaan.
     uint32_t nonceOffset = 0;
 };
+
+// Pool yang dipakai backend bloz/zcd. -o (CLI) menang atas isi pool.cfg,
+// karena `xcb -a bloz -o host:port` harus menambang ke pool yang disebut di
+// CLI; tanpa -o, pool pertama dari file/env yang dipakai.
+inline const PoolConfig* backendPool(const MinerConfig& cfg) {
+    if (cfg.pools.empty()) return nullptr;
+    for (const auto& p : cfg.pools)
+        if (p.fromCli) return &p;
+    return &cfg.pools[0];
+}
 
 class Config {
 public:

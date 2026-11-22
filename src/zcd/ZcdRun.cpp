@@ -85,17 +85,18 @@ namespace zcd {
 bool selftest() { return runSelftest(); }
 
 int run(const ::MinerConfig& cfg, std::atomic<bool>& running) {
-    if (cfg.pools.empty()) {
+    const ::PoolConfig* src = backendPool(cfg);
+    if (!src) {
         lg::error("zcd", "tidak ada pool: isi POOL=host:port atau -o host:port");
         return 1;
     }
 
     MinerConfig mc;
-    mc.pool.host = cfg.pools[0].host;
-    mc.pool.port = cfg.pools[0].port;
+    mc.pool.host = src->host;
+    mc.pool.port = src->port;
     mc.pool.tls = cfg.poolTls;
-    mc.pool.login = cfg.pools[0].wallet;
-    mc.pool.worker = cfg.pools[0].worker;
+    mc.pool.login = src->wallet;
+    mc.pool.worker = src->worker;
     mc.threads = cfg.threads;
     mc.fastMem = cfg.fullMem;
     mc.largePages = cfg.largePages;

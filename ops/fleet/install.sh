@@ -240,6 +240,9 @@ if [ -n "$WALLET" ]; then
             umask 077
             cat > "$CONF" <<EOF
 ALGO=${ALGO}
+# POOL dipakai backend randomy/bloz/zcd (Config butuh POOL + WALLET untuk
+# membentuk pool); CONN_POOL tetap ditulis untuk algo conn dan unit lama.
+POOL=${POOL}
 CONN_POOL=${POOL}
 WALLET=${WALLET}
 WORKER=${WORKER}
