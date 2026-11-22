@@ -429,7 +429,11 @@ struct Miner::Impl {
 };
 
 Miner::Miner() : m_impl(std::make_unique<Impl>()) {
-    m_impl->pool = nullptr;
+    // Pool dibuat sekali di sini, bukan di start(): requestStop() dari thread
+    // lain (watchdog di BlozRun) membaca pointer ini, dan mengganti unique_ptr
+    // saat start() berjalan adalah data race. Konfigurasi pool diisi lewat
+    // configure() sebelum connect pertama.
+    m_impl->pool = std::make_unique<Pool>(PoolConfig{});
 }
 
 Miner::~Miner() {
@@ -450,7 +454,7 @@ bool Miner::start(const MinerConfig& cfg, std::string& err) {
         const int n = static_cast<int>(usableCpus().size());
         m_impl->cfg.threads = n > 0 ? n : 1;
     }
-    m_impl->pool = std::make_unique<Pool>(cfg.pool);
+    m_impl->pool->configure(cfg.pool);
 
     if (!m_impl->pool->connect(err)) return false;
 

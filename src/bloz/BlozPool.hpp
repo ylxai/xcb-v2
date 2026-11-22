@@ -39,6 +39,14 @@ public:
     bool connect(std::string& err);
     void disconnect();
 
+    // Konfigurasi untuk koneksi berikutnya. Hanya dipanggil Miner::start()
+    // sebelum connect; tidak ada socket yang terbuka saat itu. Flag stop
+    // direset di sini supaya Miner yang dipakai ulang bisa connect lagi.
+    void configure(const PoolConfig& cfg) {
+        m_cfg = cfg;
+        m_stop.store(false, std::memory_order_release);
+    }
+
     // Hentikan koneksi yang sedang berjalan. Berbeda dari disconnect(): flag
     // ini dibaca recvLine/connect di tengah blocking read, jadi io thread yang
     // sedang menunggu balasan login berhenti dalam hitungan milidetik, bukan

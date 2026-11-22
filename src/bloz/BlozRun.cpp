@@ -88,11 +88,16 @@ int run(const ::MinerConfig& cfg, std::atomic<bool>& running) {
     // meneruskan permintaan berhenti ke Miner supaya connect() dibatalkan.
     std::atomic<bool> watchDone{false};
     std::thread stopWatch([&] {
-        while (!watchDone.load(std::memory_order_acquire) &&
-               running.load(std::memory_order_acquire)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        while (!watchDone.load(std::memory_order_acquire)) {
+            if (!running.load(std::memory_order_acquire)) {
+                // Diulang, bukan sekali: start() bisa baru saja mereset flag
+                // stop pool saat watchdog sudah membacanya.
+                miner.requestStop();
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
         }
-        if (!running.load(std::memory_order_acquire)) miner.requestStop();
     });
 
     const bool started = miner.start(mc, err);
