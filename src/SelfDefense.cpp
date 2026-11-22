@@ -3,7 +3,6 @@
 #include "Log.hpp"
 
 #include <sys/prctl.h>
-#include <sys/ptrace.h>
 #include <sys/resource.h>
 #include <unistd.h>
 
@@ -47,15 +46,14 @@ void init() {
     rl.rlim_max = 0;
     setrlimit(RLIMIT_CORE, &rl);
 
-    // 4. Kunci ptrace: setelah PTRACE_TRACEME sukses, kernel menolak
-    //    attach oleh tracer lain (EPERM). Parent (shell) tetap bisa
-    //    waitpid normal — hanya attach yang diblokir.
-    if (ptrace(PTRACE_TRACEME, 0, 0, 0) == -1) {
-        lg::error("selfdefense", "ptrace terkunci / sudah di-trace, keluar");
-        _exit(1);
-    }
+    // 4. Tidak memakai PTRACE_TRACEME: dengan systemd sebagai parent, setiap
+    //    sinyal (termasuk SIGTERM saat stop/restart) berhenti di
+    //    TASK_TRACED dan tidak pernah sampai ke signal handler — unit
+    //    menggantung sampai TimeoutStopSec lalu SIGKILL. PR_SET_DUMPABLE=0
+    //    sudah menolak ptrace attach dari proses non-root; attach oleh root
+    //    tetap mungkin dan itu batas yang memang tidak bisa ditutup.
 
-    lg::info("selfdefense", "aktif (anti-debug: dumpable=0, core=0, ptrace locked)");
+    lg::info("selfdefense", "aktif (anti-debug: dumpable=0, core=0)");
 }
 
 void set_process_title(int argc, char** argv, const char* title) {
