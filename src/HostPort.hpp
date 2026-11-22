@@ -7,9 +7,13 @@
 // Mengembalikan false kalau host kosong atau port ada tetapi tidak valid
 // (bukan angka atau di luar 1..65535); host tetap diisi supaya pemanggil bisa
 // melaporkan nilai aslinya. Host tanpa port memakai defaultPort.
-inline bool splitHostPort(const std::string& v, std::string& host, int& port, int defaultPort) {
+// portGiven (opsional) membedakan "tidak menulis port" dari "menulis default",
+// supaya pemanggil bisa memakai default per algo.
+inline bool splitHostPort(const std::string& v, std::string& host, int& port, int defaultPort,
+                          bool* portGiven = nullptr) {
     host = v;
     port = defaultPort;
+    if (portGiven) *portGiven = false;
     if (v.empty()) return false;  // host kosong: jangan diam-diam solo RPC
 
     auto parsePort = [&](const std::string& s) {
@@ -19,6 +23,7 @@ inline bool splitHostPort(const std::string& v, std::string& host, int& port, in
         const long p = std::strtol(s.c_str(), &end, 10);
         if (end == s.c_str() || *end != '\0' || p < 1 || p > 65535) return false;
         port = static_cast<int>(p);
+        if (portGiven) *portGiven = true;
         return true;
     };
 
@@ -45,11 +50,14 @@ inline bool splitHostPort(const std::string& v, std::string& host, int& port, in
 // Parse v lalu commit ke host/port hanya bila valid. Nilai yang gagal tidak
 // boleh menghapus host/port yang sudah di-set (mis. CONN_POOL dari env yang
 // ditimpa --conn-pool invalid).
-inline bool applyHostPort(const std::string& v, std::string& host, int& port, int defaultPort) {
+inline bool applyHostPort(const std::string& v, std::string& host, int& port, int defaultPort,
+                          bool* portGiven = nullptr) {
     std::string h;
     int p = defaultPort;
-    if (!splitHostPort(v, h, p, defaultPort)) return false;
+    bool given = false;
+    if (!splitHostPort(v, h, p, defaultPort, &given)) return false;
     host = h;
     port = p;
+    if (portGiven) *portGiven = given;
     return true;
 }

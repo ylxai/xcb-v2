@@ -5,6 +5,7 @@
 #include "ConnRpc.hpp"
 #include "Hashing/RandomXV2.hpp"
 #include "Log.hpp"
+#include "Redact.hpp"
 
 #include <openssl/sha.h>
 
@@ -284,7 +285,7 @@ struct ConnMiner::Impl {
     bool buildEngine(const std::string& keyHex) {
         std::vector<uint8_t> key;
         if (!hexToBytes(keyHex, key) || key.size() != 32) {
-            lg::error("conn", "randomxkey bukan 32 byte");
+            lg::error("sysd", "randomxkey bukan 32 byte");
             return false;
         }
         // Lepas engine lama sebelum mengalokasi dataset baru. Dataset 2 GiB
@@ -313,7 +314,7 @@ struct ConnMiner::Impl {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
             if (old.use_count() > 1) {
-                lg::warn("conn", "engine lama belum dilepas worker; dataset baru bisa jatuh ke 4K page");
+                lg::warn("sysd", "engine lama belum dilepas worker; dataset baru bisa jatuh ke 4K page");
             }
             // Referensi kita sendiri juga harus dilepas: selama `old` hidup,
             // dataset 2 GiB-nya tetap terpetakan dan hugepage pool tetap penuh.
@@ -322,25 +323,25 @@ struct ConnMiner::Impl {
 
         std::shared_ptr<rxv2::Context> ctx;
         if (cfg.fastMem) {
-            lg::info("conn", "RandomX V2 dataset FAST (~2 GiB) init dengan " +
+            lg::info("sysd", "dataset FAST (~2 GiB) init dengan " +
                                  std::to_string(cfg.threads) + " thread...");
             ctx = std::make_shared<rxv2::Context>(key.data(), true, cfg.largePages, cfg.threads);
             if (!ctx->ok()) {
-                lg::warn("conn", "FAST gagal (" + ctx->error() + "), fallback LIGHT");
+                lg::warn("sysd", "FAST gagal (" + ctx->error() + "), fallback LIGHT");
                 ctx = std::make_shared<rxv2::Context>(key.data(), false, false, 1);
             }
             // Sebelumnya fallback ini tidak meninggalkan jejak sama sekali.
             if (ctx->ok() && ctx->fast() && cfg.largePages && !ctx->usesLargePages()) {
-                lg::warn("conn", "dataset RandomX jatuh ke 4K page (hugepages tidak tersedia)");
+                lg::warn("sysd", "dataset jatuh ke 4K page (hugepages tidak tersedia)");
             }
         } else {
             ctx = std::make_shared<rxv2::Context>(key.data(), false, cfg.largePages, 1);
         }
         if (!ctx->ok()) {
-            lg::error("conn", "RandomX V2 context gagal: " + ctx->error());
+            lg::error("sysd", "context gagal: " + ctx->error());
             return false;
         }
-        lg::info("conn", std::string("RandomX V2 siap (") + (ctx->fast() ? "FAST" : "LIGHT") +
+        lg::info("sysd", std::string("Dataset siap (") + (ctx->fast() ? "FAST" : "LIGHT") +
                              (ctx->usesLargePages() ? ", hugepages" : ", regular pages") + ")");
 
         auto engine = std::make_shared<Engine>();
@@ -349,7 +350,7 @@ struct ConnMiner::Impl {
         for (int i = 0; i < cfg.threads; i++) {
             auto vm = ctx->createVM();
             if (!vm || !vm->ok()) {
-                lg::error("conn", "gagal membuat VM RandomX untuk worker " + std::to_string(i));
+                lg::error("sysd", "gagal membuat VM untuk worker " + std::to_string(i));
                 return false;
             }
             engine->vms.push_back(std::move(vm));
@@ -372,7 +373,7 @@ struct ConnMiner::Impl {
             uint32_t bits = 0;
             for (char c : t.bits) bits = (bits << 4) | static_cast<uint32_t>(nibble(c));
             if (!compactToTarget(bits, targetLE)) {
-                lg::error("conn", "target/bits template tidak valid");
+                lg::error("sysd", "target/bits template tidak valid");
                 return false;
             }
         }
@@ -394,7 +395,7 @@ struct ConnMiner::Impl {
             for (const auto& tx : t.txs) {
                 std::vector<uint8_t> w;
                 if (!hexToBytes(tx.wtxid, w) || w.size() != 32) {
-                    lg::error("conn", "wtxid template tidak valid");
+                    lg::error("sysd", "wtxid template tidak valid");
                     return false;
                 }
                 std::array<uint8_t, 32> leaf{};
@@ -476,7 +477,7 @@ struct ConnMiner::Impl {
         for (const auto& tx : t.txs) {
             std::vector<uint8_t> id;
             if (!hexToBytes(tx.txid, id) || id.size() != 32) {
-                lg::error("conn", "txid template tidak valid");
+                lg::error("sysd", "txid template tidak valid");
                 return false;
             }
             std::array<uint8_t, 32> leaf{};
@@ -497,7 +498,7 @@ struct ConnMiner::Impl {
             for (int i = 0; i < 4; i++) h[i] = static_cast<uint8_t>(version >> (8 * i));
             std::vector<uint8_t> prev;
             if (!hexToBytes(t.prevhash, prev) || prev.size() != 32) {
-                lg::error("conn", "prevhash template tidak valid");
+                lg::error("sysd", "prevhash template tidak valid");
                 return false;
             }
             for (int i = 0; i < 32; i++) h[4 + i] = prev[31 - static_cast<size_t>(i)];
@@ -519,7 +520,7 @@ struct ConnMiner::Impl {
             curPrev = t.prevhash;
             curHeight = t.height;
         }
-        lg::info("conn", "New job height " + std::to_string(t.height) + " txs " +
+        lg::info("sysd", "New job height " + std::to_string(t.height) + " txs " +
                              std::to_string(t.txs.size()) + " reward " +
                              std::to_string(t.coinbasevalue) + " connects");
         return true;
@@ -533,7 +534,7 @@ struct ConnMiner::Impl {
         work->target64 = j.target;
         work->poolJob = j;
         if (j.blob.size() != 80 && j.blob.size() != 76) {
-            lg::error("conn", "job pool blob bukan 76/80 byte");
+            lg::error("sysd", "job pool blob bukan 76/80 byte");
             return false;
         }
         memcpy(work->header, j.blob.data(), j.blob.size());
@@ -544,7 +545,7 @@ struct ConnMiner::Impl {
             snap.work = work;
             curHeight = static_cast<int>(j.height);
         }
-        lg::info("conn", "New pool job " + j.id + " height " + std::to_string(j.height) +
+        lg::info("sysd", "New pool job " + j.id + " height " + std::to_string(j.height) +
                              " target 0x" + toHex(reinterpret_cast<const uint8_t*>(&j.target),
                                                   sizeof(j.target)).substr(0, 8) + "...");
         return true;
@@ -588,7 +589,7 @@ struct ConnMiner::Impl {
                 // tidak pernah sampai ke pool, jadi jangan dihitung rejected.
                 if (!pool || !pool->alive()) return;
                 rejected.fetch_add(1);
-                lg::warn("conn", "submit pool gagal: " + err);
+                lg::warn("sysd", "submit pool gagal: " + err);
             }
             return;
         }
@@ -618,24 +619,24 @@ struct ConnMiner::Impl {
         if (!rpc->submitBlock(blockHex, reason, acc, err)) {
             rejected.fetch_add(1);
             w->done.store(false, std::memory_order_relaxed);
-            lg::warn("conn", "submitblock gagal: " + err);
+            lg::warn("sysd", "submitblock gagal: " + err);
             return;
         }
         if (acc) {
             accepted.fetch_add(1);
-            lg::good("conn", "BLOK DITERIMA height=" + std::to_string(w->height) + " nonce=" +
+            lg::good("sysd", "BLOK DITERIMA height=" + std::to_string(w->height) + " nonce=" +
                                  std::to_string(nonce) + " (" + blockHex.substr(0, 16) + "...)");
         } else if (reason == "inconclusive" || reason.rfind("duplicate", 0) == 0) {
             // "inconclusive": blok valid tetapi node tidak menjadikannya tip
             // (kalah balapan di tinggi yang sama, atau tip sudah pindah).
             // Bukan kesalahan kita; template berikutnya akan menyusul.
             stale.fetch_add(1);
-            lg::debug("conn", "Blok tidak menjadi tip (" + reason + ") height=" +
+            lg::debug("sysd", "Blok tidak menjadi tip (" + reason + ") height=" +
                                   std::to_string(w->height));
         } else {
             rejected.fetch_add(1);
             w->done.store(false, std::memory_order_relaxed);
-            lg::warn("conn", "Blok ditolak node: " + reason);
+            lg::warn("sysd", "Blok ditolak node: " + reason);
             // Diagnostik: simpan blok pertama yang ditolak agar bisa didekode
             // manual (mis. bad-cb-height) tanpa menebak.
             static int dumped = 0;
@@ -652,10 +653,10 @@ struct ConnMiner::Impl {
                     std::fputs(blockHex.c_str(), f);
                     std::fputc('\n', f);
                     std::fclose(f);
-                    lg::warn("conn", "Blok ditolak disimpan ke /tmp/conn-reject.hex");
+                    lg::warn("sysd", "Blok ditolak disimpan ke /tmp/conn-reject.hex");
                 } else {
                     if (fd >= 0) ::close(fd);
-                    lg::warn("conn", std::string("gagal menyimpan dump: ") +
+                    lg::warn("sysd", std::string("gagal menyimpan dump: ") +
                                          std::strerror(errno));
                 }
             }
@@ -674,7 +675,7 @@ struct ConnMiner::Impl {
             CPU_SET(cpu, &set);
             const int rc = pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
             if (rc != 0)
-                lg::warn("conn", "W" + std::to_string(id) + ": gagal pin ke CPU " +
+                lg::warn("sysd", "W" + std::to_string(id) + ": gagal pin ke CPU " +
                                      std::to_string(cpu) + " (" + std::strerror(rc) + ")");
         }
         setpriority(PRIO_PROCESS, 0, -10);
@@ -751,14 +752,14 @@ struct ConnMiner::Impl {
                 ConnPoolJob first;
                 std::string err;
                 if (!pool->connectAndLogin(first, err)) {
-                    lg::warn("conn", "pool login gagal: " + err + " (retry " +
+                    lg::warn("sysd", "pool login gagal: " + err + " (retry " +
                                          std::to_string(backoff) + "s)");
                     sleepFor(std::chrono::seconds(backoff));
                     backoff = std::min(backoff * 2, 30);
                     continue;
                 }
                 sessionStart = std::chrono::steady_clock::now();
-                lg::info("conn", "Pool login OK (" + cfg.poolHost + ") sebagai " +
+                lg::info("sysd", "Pool login OK (" + cfg.poolHost + ") sebagai " +
                                      cfg.poolWorker);
                 if (first.seedHex != curKey && !buildEngine(first.seedHex)) {
                     sleepFor(std::chrono::seconds(5));
@@ -779,12 +780,12 @@ struct ConnMiner::Impl {
                 buildPoolWork(j);
             } else if (ev == ConnPool::Event::Accepted) {
                 accepted.fetch_add(1);
-                lg::good("conn", "Share ACCEPTED (total " + std::to_string(accepted.load()) + ")");
+                lg::good("sysd", "Share ACCEPTED (total " + std::to_string(accepted.load()) + ")");
             } else if (ev == ConnPool::Event::Rejected) {
                 rejected.fetch_add(1);
-                lg::warn("conn", "Share ditolak: " + detail);
+                lg::warn("sysd", "Share ditolak: " + detail);
             } else if (ev == ConnPool::Event::Error) {
-                lg::warn("conn", "Koneksi pool terputus: " + detail);
+                lg::warn("sysd", "Koneksi pool terputus: " + detail);
                 pool->close();
                 // Backoff hanya di-reset kalau sesi bertahan lama. Pool yang
                 // menerima login lalu langsung menutup koneksi tidak boleh
@@ -796,7 +797,7 @@ struct ConnMiner::Impl {
                 if (lived >= 60) {
                     backoff = 2;
                 } else {
-                    lg::info("conn", "Sesi hanya " + std::to_string(lived) +
+                    lg::info("sysd", "Sesi hanya " + std::to_string(lived) +
                                          "s, reconnect dalam " + std::to_string(backoff) + "s");
                     sleepFor(std::chrono::seconds(backoff));
                     backoff = std::min(backoff * 2, 30);
@@ -817,7 +818,7 @@ struct ConnMiner::Impl {
                     std::lock_guard<std::mutex> lock(mu);
                     height = curHeight;
                 }
-                lg::info("conn", "HR " + std::to_string(static_cast<uint64_t>(hr)) + " H/s | A " +
+                lg::info("sysd", "HR " + std::to_string(static_cast<uint64_t>(hr)) + " H/s | A " +
                                      std::to_string(accepted.load()) + " R " +
                                      std::to_string(rejected.load()) + " S " +
                                      std::to_string(stale.load()) + " | pool height " +
@@ -837,7 +838,7 @@ struct ConnMiner::Impl {
             if (!rpc->getBlockTemplate(t, err)) {
                 // Node IBD menolak GBT; jangan banjiri log tiap 2 detik.
                 if ((gbtFails++ % 15) == 0)
-                    lg::warn("conn", "getblocktemplate gagal (" + std::to_string(gbtFails) +
+                    lg::warn("sysd", "getblocktemplate gagal (" + std::to_string(gbtFails) +
                                          "x): " + err);
                 sleepFor(std::chrono::seconds(2));
                 continue;
@@ -868,7 +869,7 @@ struct ConnMiner::Impl {
                     std::lock_guard<std::mutex> lock(mu);
                     height = curHeight;
                 }
-                lg::info("conn", "HR " + std::to_string(static_cast<uint64_t>(hr)) + " H/s | A " +
+                lg::info("sysd", "HR " + std::to_string(static_cast<uint64_t>(hr)) + " H/s | A " +
                                      std::to_string(accepted.load()) + " R " +
                                      std::to_string(rejected.load()) + " S " +
                                      std::to_string(stale.load()) + " | height " +
@@ -890,11 +891,11 @@ ConnMiner::~ConnMiner() { stop(); }
 bool ConnMiner::start(const ConnMinerConfig& cfg) {
     if (m_running.load()) return false;
     if (cfg.address.empty()) {
-        lg::error("conn", "alamat reward kosong (pakai -u <alamat> / --address)");
+        lg::error("sysd", "alamat reward kosong (pakai -u <alamat> / --address)");
         return false;
     }
     if (cfg.threads < 1) {
-        lg::error("conn", "thread harus >= 1");
+        lg::error("sysd", "thread harus >= 1");
         return false;
     }
 
@@ -908,10 +909,10 @@ bool ConnMiner::start(const ConnMinerConfig& cfg) {
         ConnPoolJob first;
         std::string err;
         if (!m_impl->pool->connectAndLogin(first, err)) {
-            lg::error("conn", "pool login gagal: " + err);
+            lg::error("sysd", "pool login gagal: " + err);
             return false;
         }
-        lg::info("conn", "Pool login OK (" + cfg.poolHost + ":" +
+        lg::info("sysd", "Pool login OK (" + cfg.poolHost + ":" +
                              std::to_string(cfg.poolPort) + (cfg.poolTls ? ", tls)" : ", plain)"));
         if (!m_impl->buildEngine(first.seedHex)) return false;
         if (!m_impl->buildPoolWork(first)) return false;
@@ -925,7 +926,7 @@ bool ConnMiner::start(const ConnMinerConfig& cfg) {
         for (int i = 0; i < cfg.threads; i++)
             m_impl->workers.emplace_back([this, i]() { m_impl->workerLoop(i); });
         m_impl->poolThread = std::thread([this]() { m_impl->poolLoop(); });
-        lg::info("conn", "Mining pool CONN rx/2b dengan " + std::to_string(cfg.threads) +
+        lg::info("sysd", "Mining pool dengan " + std::to_string(cfg.threads) +
                              " thread");
         return true;
     }
@@ -942,7 +943,7 @@ bool ConnMiner::start(const ConnMinerConfig& cfg) {
         }
         FILE* f = std::fopen(p.c_str(), "r");
         if (!f) {
-            lg::error("conn", "tidak bisa membaca cookie " + p +
+            lg::error("sysd", "tidak bisa membaca cookie " + p +
                                   " (isi --conn-user/--conn-pass atau --conn-cookie)");
             return false;
         }
@@ -950,14 +951,14 @@ bool ConnMiner::start(const ConnMinerConfig& cfg) {
         const bool got = std::fgets(line, sizeof(line), f) != nullptr;
         std::fclose(f);
         if (!got) {
-            lg::error("conn", "cookie kosong: " + p);
+            lg::error("sysd", "cookie kosong: " + p);
             return false;
         }
         std::string s(line);
         while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
         const auto colon = s.find(':');
         if (colon == std::string::npos) {
-            lg::error("conn", "format cookie salah (butuh user:pass): " + p);
+            lg::error("sysd", "format cookie salah (butuh user:pass): " + p);
             return false;
         }
         user = s.substr(0, colon);
@@ -968,26 +969,26 @@ bool ConnMiner::start(const ConnMinerConfig& cfg) {
 
     std::string scriptHex, err;
     if (!m_impl->rpc->getAddressScript(cfg.address, scriptHex, err)) {
-        lg::error("conn", "alamat reward ditolak node: " + err);
+        lg::error("sysd", "alamat reward ditolak node: " + err);
         return false;
     }
     if (!parseRewardScript(scriptHex, m_impl->rewardKey, err)) {
-        lg::error("conn", "alamat reward: " + err);
+        lg::error("sysd", "alamat reward: " + err);
         return false;
     }
-    lg::info("conn", "Reward address " + cfg.address + " -> key " +
+    lg::info("sysd", "Reward address " + xcb::redactWallet(cfg.address) + " -> key " +
                          toHex(m_impl->rewardKey, 32).substr(0, 16) + "...");
 
     std::string chain;
     int blocks = 0, headers = 0;
     if (m_impl->rpc->getBlockchainInfo(chain, blocks, headers, err)) {
-        lg::info("conn", "Node chain=" + chain + " blocks=" + std::to_string(blocks) +
+        lg::info("sysd", "Node chain=" + chain + " blocks=" + std::to_string(blocks) +
                              " headers=" + std::to_string(headers));
         if (blocks < headers)
-            lg::warn("conn", "Node masih sinkronisasi: blok yang ditambang bisa orphan sampai "
+            lg::warn("sysd", "Node masih sinkronisasi: blok yang ditambang bisa orphan sampai "
                              "node menyusul tip jaringan");
     } else {
-        lg::warn("conn", "getblockchaininfo gagal: " + err);
+        lg::warn("sysd", "getblockchaininfo gagal: " + err);
     }
 
     // Node yang masih initial block download menolak getblocktemplate
@@ -1000,7 +1001,7 @@ bool ConnMiner::start(const ConnMinerConfig& cfg) {
         if (!m_impl->buildEngine(first.randomxkey)) return false;
         if (!m_impl->buildWork(first)) return false;
     } else {
-        lg::warn("conn", "Belum bisa ambil template (" + err + ") — menunggu node selesai sync");
+        lg::warn("sysd", "Belum bisa ambil template (" + err + ") — menunggu node selesai sync");
     }
 
     m_running.store(true);
@@ -1008,7 +1009,7 @@ bool ConnMiner::start(const ConnMinerConfig& cfg) {
     for (int i = 0; i < cfg.threads; i++)
         m_impl->workers.emplace_back([this, i]() { m_impl->workerLoop(i); });
     m_impl->templateThread = std::thread([this]() { m_impl->templateLoop(); });
-    lg::info("conn", "Mining solo CONN dengan " + std::to_string(cfg.threads) + " thread");
+    lg::info("sysd", "Mining solo dengan " + std::to_string(cfg.threads) + " thread");
     return true;
 }
 
@@ -1025,8 +1026,8 @@ void ConnMiner::stop() {
 }
 
 std::string ConnMiner::finalSummary() {
-    if (!m_impl) return "CONN miner tidak berjalan";
-    return "CONN: hashes " + std::to_string(m_impl->hashes.load()) + ", found " +
+    if (!m_impl) return "miner tidak berjalan";
+    return "hashes " + std::to_string(m_impl->hashes.load()) + ", found " +
            std::to_string(m_impl->found.load()) + ", accepted " +
            std::to_string(m_impl->accepted.load()) + ", rejected " +
            std::to_string(m_impl->rejected.load()) + ", stale " +

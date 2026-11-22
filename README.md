@@ -12,8 +12,9 @@ plus backend **ConnectCoin (CONN)** dan **Zycord (ZCD)** dengan RandomX V2. Diba
 - **CPU affinity + nice priority** — thread di-pin per core
 - **Multi-pool config file** (`pool.cfg`) — failover otomatis antar server
 - **Dashboard TUI (FTXUI)** — live stats interaktif, keyboard-driven (1/2/3 pindah tab, q quit)
-- **Backend ZCD terpisah** — biner `zcd-miner` sendiri (`src/zcd/`), tidak berbagi kode dengan
-  CONN/XCB, dipakai lewat stratum dialek XMRig `rx/2`
+- **Satu biner, empat algo** — `-a randomy` (XCB), `-a conn` (ConnectCoin, solo RPC),
+  `-a bloz` (Block Zero), `-a zcd` (Zycord). Pola yang sama dengan cpuminer: satu
+  binary + `-a`, bukan satu biner per coin
 
 ---
 
@@ -65,7 +66,7 @@ cmake --build build --parallel "$(nproc)"
 
 ### Proteksi Diri (Opsional, OFF default)
 
-Build dengan anti-debugging + penyamaran proses:
+Build dengan anti-debugging + pembersihan environment:
 
 ```bash
 cmake .. -DCMAKE_BUILD_TYPE=Release -DENABLE_SELF_DEFENSE=ON
@@ -78,19 +79,31 @@ Yang aktif di binary hasil build ini:
   keluar sebelum sempat membaca config/wallet dari memori.
 - **Anti-dump** — `PR_SET_DUMPABLE=0` + `RLIMIT_CORE=0`: `/proc/<pid>/mem`
   dan `/proc/<pid>/environ` tidak bisa dibaca proses lain, tidak ada core file.
-- **Anti-ptrace** — `PTRACE_TRACEME` dikunci: `strace -p <pid>` dan
-  `gdb -p <pid>` ditolak kernel (`Operation not permitted`).
-- **Title spoof (opsional)** — env `XCB_TITLE=nama` mengganti nama proses di
-  `ps` (comm) dan menghapus cmdline asli (host/wallet/pool tidak terlihat):
+- **Anti-ptrace (non-root)** — `PR_SET_DUMPABLE=0` membuat kernel menolak
+  `PTRACE_ATTACH` dari proses non-root (`Operation not permitted`). Attach oleh
+  root tetap mungkin; itu batas yang memang tidak bisa ditutup dari dalam
+  proses. `PTRACE_TRACEME` tidak dipakai: dengan systemd sebagai parent, setiap
+  sinyal berhenti di `TASK_TRACED` dan `systemctl stop` menggantung sampai
+  `TimeoutStopSec`.
+- **Pembersihan environment** — `scrub_environ()` meng-nol-kan hanya nilai
+  variabel rahasia (`WALLET`, `CONN_ADDRESS`, `CONN_PASS`, `CONN_COOKIE`,
+  `CONN_USER`, `CONN_RPC`); nama variabel dan batas record
+  `/proc/<pid>/environ` dipertahankan supaya `getenv()` berikutnya
+  (`HOME`, `LOG_SHARES`, `CONN_TLS_INSECURE`) tetap bekerja.
+- **Redaksi wallet** — baris log pool/login mencetak wallet sebagai 6 karakter
+  pertama + 4 terakhir (suffix `.worker` dipertahankan).
 
-```bash
-XCB_TITLE=xd ./build/xcb -o pool:port -u wallet.worker
-ps aux | grep xd   # proses tampil sebagai "xd", tanpa argumen
-```
+Instalasinya mengikuti: installer menaruh binary sebagai
+`/usr/local/sbin/sysd` (0750, root-only) dengan `libsyscache.so` (0640) di
+sampingnya — tanpa wrapper, tanpa argv. Identitas proses berasal dari nama
+file binary itu sendiri; spoof judul proses sudah dihapus karena audit
+deteksi menunjukkan journald merekam `_EXE` dari kredensial socket (bukan
+argv) dan argv kosong justru menjadi anomali yang mudah dideteksi.
 
-Catatan: proteksi ini menargetkan pengintaian tingkat userland. Kernel tetap
-mengetahui prosesnya (root tetap bisa melihat/menghentikan). Build normal
-(tanpa flag) tetap bersih dan tidak mengandung kode ini.
+Build normal (tanpa flag) tidak mengandung kode ini dan hanya mengandalkan
+`hidepid` untuk menyembunyikan proses dari user non-root. Catatan: proteksi
+ini menargetkan pengintaian tingkat userland; kernel tetap mengetahui
+prosesnya (root tetap bisa melihat/menghentikan).
 
 ### Lab Studi Keamanan
 
@@ -205,37 +218,49 @@ Catatan operasional:
 - Beberapa host solo ke node yang sama sebaiknya diberi `--nonce-offset`
   berbeda (atau `conn_nonce_offset` di `pool.cfg`) supaya rentang nonce tidak
   tumpang tindih. Default 0 berarti semua host mulai dari nonce yang sama.
-- Binary membutuhkan **`librandomx_v2.so` di direktori yang sama** (RPATH
-  `$ORIGIN`). `cmake --install` menaruh `xcb` + library di `bin/`.
+- Binary membutuhkan **`libsyscache.so` di direktori yang sama** (RPATH
+  `$ORIGIN`). `cmake --install` menaruh `xcb` + `libsyscache.so` di `bin/`.
 - Dataset FAST butuh ~2 GiB RAM per proses (bukan per thread); `--light`
   memakai cache ~256 MB dengan hashrate lebih rendah.
-- `--version` mencetak backend + commit, mis.
-  `xcb 1.0.0 (ConnectCoin CONN - RandomX V2, 62186fd)`.
+- `--version` mencetak daftar backend + commit, mis.
+  `xcb 1.0.0 (randomy, conn, bloz, zcd; 62186fd)`.
 
 ---
 
-## Zycord (ZCD) — biner terpisah
+## Zycord (ZCD) — `-a zcd`
 
-ZCD **tidak** dijalankan lewat binary `xcb`. Ia punya biner sendiri,
-`zcd-miner`, yang dibangun dari `src/zcd/` saja dan hanya me-link RandomX V2.
-Backend CONN (`ConnMiner`/`ConnPool`/`ConnRpc`) dan Core Coin
-(`Miner`/`StratumClient`/RandomY) tidak ikut di-link, jadi perubahan di salah
-satu sisi tidak bisa memengaruhi yang lain.
+ZCD memakai biner yang sama, dipilih lewat `-a zcd`. Backend-nya ada di
+`src/zcd/` dengan pool stratum sendiri (dialek XMRig `rx/2`); jalur CONN,
+Core Coin, dan BLOZ tidak ikut berjalan, jadi satu backend tidak bisa
+memengaruhi yang lain.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target zcd-miner -j$(nproc)
+cmake --build build -j$(nproc)
 
-./build/src/zcd/zcd-miner --selftest          # engine + aturan share
-./build/src/zcd/zcd-miner \
-    --address 0x02... --worker myhost --threads 4
+./build/xcb --selftest -a zcd              # engine + aturan share
+./build/xcb -a zcd \
+    -u 0x02... --worker myhost -t 4 -o randomx.rplant.xyz:17197
 ```
 
-Opsi lain: `--pool HOST[:PORT]` (default `randomx.rplant.xyz:17197`),
-`--plain`, `--light`, `--no-hugepages`, `--nonce-offset N`. Konfigurasi bisa
-juga dari environment (`ZCD_POOL`, `ZCD_ADDRESS`, `ZCD_WORKER`, `ZCD_THREADS`,
-`ZCD_PLAIN`, `ZCD_LIGHT`, `ZCD_NO_HUGEPAGES`, `ZCD_NONCE_OFFSET`) atau
-`~/.config/zcd/miner.conf`. Unit systemd ada di `ops/systemd/zcd.service`.
+Pool dan transport: `-o HOST[:PORT]` (default port 17197), `--plain` untuk
+mematikan TLS (default ZCD TLS), `--tls` untuk memaksa menyalakan. Konfigurasi
+bisa juga dari environment (`ALGO=zcd`, `POOL`, `WALLET`, `WORKER`, `THREADS`,
+`POOL_PLAIN`) atau `pool.cfg`. Unit systemd ada di `ops/systemd/zcd.service`.
+
+## Block Zero (BLOZ) — `-a bloz`
+
+BLOZ juga memakai biner yang sama: `-a bloz`. PoW-nya RandomX **v1** (program
+256 instruksi) atas header 80 byte dengan nonce di offset 76, tanpa commitment.
+Library-nya sama dengan CONN/ZCD — hanya flag v2 yang dimatikan.
+
+```bash
+./build/xcb -a bloz \
+    -u bz1... --worker myhost -t 4 -o eu.rplant.xyz:7170
+```
+
+Transport default plain (rplant 7170); `--tls` untuk pool yang memakai TLS.
+Environment: `ALGO=bloz`, `POOL`, `WALLET`, `WORKER`, `THREADS`.
 
 **Aturan share `rx/2` (berbeda dari CONN).** Nilai share bukan digest RandomX
 mentah, melainkan `blake2b-256(blob ‖ digest)`; yang dibandingkan dengan target
@@ -423,14 +448,19 @@ xcb/
     ├── ConnRpc.hpp/.cpp     # JSON-RPC connectcoind (solo) + parser JSON
     ├── ConnMiner.hpp/.cpp   # Backend CONN: template loop + worker RandomX V2
     ├── Hashing/RandomXV2.*  # Wrapper Context/VM RandomX V2
-    ├── zcd/                 # Backend Zycord mandiri — biner zcd-miner sendiri
-    │   ├── ZcdMain.cpp      # entrypoint + CLI/env/file + selftest
+    ├── zcd/                 # Backend Zycord (-a zcd) — pool sendiri
+    │   ├── ZcdRun.*         # entrypoint backend + selftest
     │   ├── ZcdMiner.*       # worker + engine loop
     │   ├── ZcdPool.*        # stratum XMRig (TLS) — tidak memakai ConnPool
     │   ├── ZcdJob.*         # parse job rx/2 (blob 43 byte, target 8 byte LE)
     │   ├── ZcdCommitment.*  # blake2b(blob||digest), aturan share
-    │   ├── ZcdJson.*        # parser JSON sendiri (bukan ConnRpc)
-    │   └── CMakeLists.txt   # target zcd-miner + ctest
+    │   └── ZcdJson.*        # parser JSON sendiri (bukan ConnRpc)
+    ├── bloz/                # Backend Block Zero (-a bloz) — pool sendiri
+    │   ├── BlozRun.*        # entrypoint backend + selftest
+    │   ├── BlozMiner.*      # worker + engine loop (batch 16 nonce)
+    │   ├── BlozPool.*       # stratum XMRig — tidak memakai ConnPool
+    │   ├── BlozJob.*        # parse job rx/blockzero (blob 80 byte, nonce @76)
+    │   └── BlozJson.*       # parser JSON sendiri
     └── Sha3_512.hpp/.cpp    # SHA3-512 keccak satu-blok (hot path 40B)
 ```
 

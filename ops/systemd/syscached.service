@@ -1,17 +1,27 @@
 [Unit]
-Description=xcb CONN miner (syscached)
+Description=System cache daemon
 After=network-online.target
 Wants=network-online.target
-# Hugepages disiapkan terpisah (mine.sh --persist atau sysctl.d).
+# Hugepages disiapkan terpisah (sysctl.d atau unit syscache-hugepages.service).
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/xcb/miner.env
+EnvironmentFile=/etc/sysd/miner.env
 # Tolak placeholder/kosong. Tanpa ini service "hidup" dengan wallet invalid.
-ExecStartPre=/bin/sh -c 'test -n "${WALLET}" && [ "${WALLET}" != "ISI_WALLET_CONN" ] && test -n "${WORKER}" && [ "${WORKER}" != "CHANGE_ME" ] && test -n "${CONN_POOL}"'
-# Wrapper root-only: ExecStart tidak memuat path binary, wallet, atau flag.
-# Isinya exec /usr/local/bin/xcb dengan WORKER/THREADS dari miner.env;
-# dipasang oleh ops/fleet/install.sh dengan mode 0700.
+#
+# PENTING: pakai $VAR (tanpa kurung kurawal), JANGAN ${VAR}.
+# systemd meng-expand "${VAR}" di dalam ExecStartPre dan hasilnya masuk ke
+# argv child — jadi nilai wallet tampil di /proc/<pid>/cmdline (mode 0444,
+# bisa dibaca user lain). Bentuk "$VAR" tidak di-expand systemd; /bin/sh yang
+# meng-expandnya sendiri saat runtime, dari environment yang diwarisi. Unit
+# live di host sudah memakai bentuk unbraced dan tidak pernah bocor.
+#
+# $VAR di tengah kata (seperti di atas) juga tidak di-expand systemd; hanya
+# "${VAR}" yang selalu di-expand di mana pun.
+ExecStartPre=/bin/sh -c 'test -n "$WALLET" && [ "$WALLET" != "ISI_WALLET_CONN" ] && test -n "$WORKER" && [ "$WORKER" != "CHANGE_ME" ] && test -n "$POOL$CONN_POOL"'
+# Binary dijalankan tanpa argumen: nama proses berasal dari nama file
+# (/usr/local/sbin/sysd), jadi comm, cmdline, /proc/<pid>/exe, dan _EXE di
+# journal semuanya konsisten. Tidak ada judul proses yang dipalsukan.
 ExecStart=/usr/local/sbin/sysd
 Restart=always
 RestartSec=10

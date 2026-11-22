@@ -3,7 +3,6 @@
 #include "Log.hpp"
 
 #include <sys/prctl.h>
-#include <sys/ptrace.h>
 #include <sys/resource.h>
 #include <unistd.h>
 
@@ -47,46 +46,50 @@ void init() {
     rl.rlim_max = 0;
     setrlimit(RLIMIT_CORE, &rl);
 
-    // 4. Kunci ptrace: setelah PTRACE_TRACEME sukses, kernel menolak
-    //    attach oleh tracer lain (EPERM). Parent (shell) tetap bisa
-    //    waitpid normal — hanya attach yang diblokir.
-    if (ptrace(PTRACE_TRACEME, 0, 0, 0) == -1) {
-        lg::error("selfdefense", "ptrace terkunci / sudah di-trace, keluar");
-        _exit(1);
-    }
+    // 4. Tidak memakai PTRACE_TRACEME: dengan systemd sebagai parent, setiap
+    //    sinyal (termasuk SIGTERM saat stop/restart) berhenti di
+    //    TASK_TRACED dan tidak pernah sampai ke signal handler — unit
+    //    menggantung sampai TimeoutStopSec lalu SIGKILL. PR_SET_DUMPABLE=0
+    //    sudah menolak ptrace attach dari proses non-root; attach oleh root
+    //    tetap mungkin dan itu batas yang memang tidak bisa ditutup.
 
-    lg::info("selfdefense", "aktif (anti-debug: dumpable=0, core=0, ptrace locked)");
+    lg::info("selfdefense", "aktif (anti-debug: dumpable=0, core=0)");
 }
 
-void set_process_title(int argc, char** argv, const char* title) {
-    if (!argv || !argv[0] || !title) return;
+void scrub_environ() {
+    if (!environ) return;
 
-    // Salin dulu: title biasanya menunjuk ke string env (getenv), dan area
-    // env ikut di-zero oleh memset di bawah — memakai title setelah memset
-    // berarti prctl menerima string kosong.
-    char buf[64];
-    size_t tlen = strlen(title);
-    if (tlen >= sizeof buf) tlen = sizeof buf - 1;
-    memcpy(buf, title, tlen);
-    buf[tlen] = '\0';
+    // Hanya variabel yang isinya identitas/rahasia yang dihapus. Area
+    // environment tidak dikosongkan seluruhnya: HOME, LOG_SHARES, dan
+    // CONN_TLS_INSECURE dibaca jauh setelah Config::parse (dipakai untuk
+    // ekspansi "~" path cookie, verbose share, dan verifikasi sertifikat
+    // pool). Menghapus semuanya membuat fitur itu mati diam-diam.
+    //
+    // Yang dihapus hanya byte nilainya; nama variabel tetap utuh supaya
+    // getenv() untuk variabel lain tidak terganggu dan supaya batas
+    // /proc/<pid>/environ tidak bergeser.
+    static const char* const kSecret[] = {
+        "WALLET",     // alamat reward
+        "CONN_ADDRESS",
+        "CONN_PASS",  // kredensial RPC CONN
+        "CONN_COOKIE",
+        "CONN_USER",
+        "CONN_RPC",   // bisa memuat user:pass di dalam URL
+    };
 
-    // Luas area kontigu argv+env (Linux: argv dan env berurutan di stack).
-    size_t total = 0;
-    for (int i = 0; i < argc && argv[i]; i++) total += strlen(argv[i]) + 1;
-    for (char** e = environ; *e; e++) total += strlen(*e) + 1;
-    if (total == 0) return;
-
-    size_t need = tlen + 1;
-    if (need > total) need = total;
-
-    // Zero seluruh area: argumen asli (host/wallet/pool) hilang dari
-    // /proc/<pid>/cmdline dan /proc/<pid>/environ.
-    memset(argv[0], 0, total);
-    memcpy(argv[0], buf, need - 1);
-    argv[0][need - 1] = '\0';
-
-    // /proc/<pid>/comm (kolom CMD di ps) ikut diganti.
-    prctl(PR_SET_NAME, buf, 0, 0, 0);
+    for (char** e = environ; *e; e++) {
+        const char* eq = strchr(*e, '=');
+        if (!eq || eq[1] == '\0') continue;
+        const size_t nlen = static_cast<size_t>(eq - *e);
+        for (const char* name : kSecret) {
+            if (strlen(name) != nlen || strncmp(*e, name, nlen) != 0) continue;
+            // Nolkan nilai termasuk terminator-nya: getenv() lalu mengembalikan
+            // string kosong, dan isi aslinya hilang dari area environment yang
+            // dibaca /proc/<pid>/environ.
+            memset(const_cast<char*>(eq + 1), 0, strlen(eq + 1));
+            break;
+        }
+    }
 }
 
 }  // namespace xcb::selfdefense

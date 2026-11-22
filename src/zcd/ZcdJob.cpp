@@ -176,8 +176,11 @@ bool parseJob(const std::string& line, Job& out, std::string& err) {
 
     // height datang dari JSON pool sebagai double. Nilai negatif, NaN, inf,
     // atau di luar rentang uint64_t membuat static_cast tidak terdefinisi.
-    if (!std::isfinite(height) || height < 0 ||
-        height > static_cast<double>(std::numeric_limits<uint64_t>::max())) {
+    // Batas atas harus 2^64, bukan static_cast<double>(UINT64_MAX): double
+    // membulatkan UINT64_MAX ke 2^64, sehingga perbandingan `>` meloloskan
+    // height == 2^64 dan cast-nya tetap tidak terdefinisi.
+    constexpr double kTwoPow64 = 18446744073709551616.0;
+    if (!std::isfinite(height) || height < 0 || height >= kTwoPow64) {
         err = "job: height di luar rentang";
         return false;
     }

@@ -41,7 +41,7 @@ masih terbuka. Ini bukan pengganti `README.md`; baca juga:
    Jangan pernah deploy binary build 24.04 ke worker 22.04.
 4. **Jangan commit secret, wallet, alamat host internal, atau SSH key.**
    Konfigurasi host ada di `~/.config/xcb/fleet.hosts`; environment unit ada di
-   `/etc/xcb/miner.env`. Keduanya tidak masuk repo.
+   `/etc/sysd/miner.env`. Keduanya tidak masuk repo.
 5. **`AGENTS.md` adalah file lokal** (sudah di `.gitignore`). Jangan commit,
    jangan hapus, dan jangan menganggapnya dokumentasi proyek.
 6. **Shell script wajib lolos ShellCheck style terendah:**
@@ -65,8 +65,11 @@ masih terbuka. Ini bukan pengganti `README.md`; baca juga:
   `ConnRpc`, `ConnMiner`, `Stats`, `Dashboard`, `Submitter`, `Hashing/RandomXV2`).
 - **Dependensi:** `external/RandomY` dan `external/FTXUI` adalah submodule;
   `external/randomx-v2` adalah vendored source.
-- **Library runtime:** `librandomx_v2.so` harus berada di direktori yang sama
-  dengan binary `xcb` karena RPATH `$ORIGIN`.
+- **Library runtime:** `libsyscache.so` harus berada di direktori yang sama
+  dengan binary karena RPATH `$ORIGIN`. Installer menaruh binary sebagai
+  `/usr/local/sbin/sysd` (0750 root:root) dan library sebagai
+  `/usr/local/sbin/libsyscache.so` (0640) — keduanya root-only, jadi
+  `ldd`/`--version` dijalankan lewat sudo.
 - **Config precedence (aktual):** **CLI > env `WALLET`+`POOL` > `pool.cfg`**.
   - Jalur env hanya dipakai kalau `WALLET` **dan** `POOL` sama-sama tidak kosong;
     kalau salah satu kosong/tidak ada, `pool.cfg` yang dimuat.
@@ -75,12 +78,12 @@ masih terbuka. Ini bukan pengganti `README.md`; baca juga:
     setelah sekitar 3 kegagalan; kalau wallet-nya tidak di-set, login pool itu
     bisa gagal. Hindari mencampur `-o` dengan env/`pool.cfg` kecuali memang
     memahami perilaku ini.
-  - Unit systemd tidak lagi menulis `-u/--worker/-t` untuk wallet. Backend
-    CONN membaca `CONN_ADDRESS` (menang) atau `WALLET` (fallback), plus
-    `CONN_POOL`/`WORKER`/`THREADS`, dari `EnvironmentFile`. Wrapper
-    `/usr/local/sbin/sysd` menyalin `WALLET` tanpa suffix `.worker` ke
-    `CONN_ADDRESS` supaya kedua variabel tidak pernah menunjuk alamat reward
-    yang berbeda; `THREADS` kosong tetap berarti auto.
+  - Unit systemd tidak menulis `-u/--worker/-t` untuk wallet. Backend CONN
+    membaca `CONN_ADDRESS` (menang) atau `WALLET` (fallback), plus
+    `CONN_POOL`/`WORKER`/`THREADS`, langsung dari `EnvironmentFile`
+    `/etc/sysd/miner.env`. Tidak ada wrapper: `ExecStart` menunjuk binary
+    langsung (`/usr/local/sbin/sysd`, 0750 root-only) tanpa argv, dan
+    `THREADS` kosong tetap berarti auto.
 
 ---
 
@@ -140,11 +143,11 @@ Job CI yang harus hijau:
 
 - Skrip: `ops/fleet/deploy.sh`, `apply.sh`, `watch.sh`.
 - Daftar host **tidak** di repo: `~/.config/xcb/fleet.hosts`.
-- Alur deploy: canary host pertama → stop → backup binary + library → install →
-  cek `ldd`/`--version` → start → tunggu `RandomX V2 siap` → rollback otomatis
-  bila gagal.
-- Backup tersimpan di samping binary: `xcb.bak-STAMP` dan
-  `librandomx_v2.so.bak-STAMP`.
+- Alur deploy: canary host pertama → stop → backup → install → cek
+  `ldd`/`--version` (sudo — binary 0750 root-only) → start → tunggu
+  `Dataset siap` → rollback otomatis bila gagal.
+- Backup deploy: `/root/sysd-rollback-<stamp>` (binary, library, unit, config)
+  dan dipulihkan sekaligus oleh `apply.sh rollback`.
 - Kondisi 2026-11-06: `fl` menjalankan build page-mode `e9fd6e2` (lokal, sebelum
   PR #17 merged). Build `870433f` sudah dibuat di `~/xcb-build/build` tetapi
   **belum dipasang**; lima worker lain masih build 2026-10-25.
@@ -161,17 +164,21 @@ Job CI yang harus hijau:
 ### systemd
 
 - Template: `ops/systemd/syscached.service`.
-- Environment: `/etc/xcb/miner.env` (mode 600, tidak di repo).
-- `ExecStartPre` menolak `WALLET`/`WORKER` placeholder dan `CONN_POOL` kosong.
-- `ExecStart` memakai wrapper `/usr/local/sbin/sysd` (0700 root); wrapper
-  memvalidasi `WALLET`/`WORKER`, menyalin `WALLET` tanpa suffix `.worker` ke
-  `CONN_ADDRESS`, dan `exec` `xcb`, sehingga unit metadata tidak memuat path
-  binary, wallet, atau flag. `THREADS` kosong berarti auto.
-- `XCB_TITLE=sysd` di `miner.env` mengganti comm dan mengosongkan argv/env,
-  tetapi hanya pada build `ENABLE_SELF_DEFENSE=ON`.
-- `xcb-proc-hidepid.service` + drop-in `10-hidepid.conf` me-remount `/proc`
+- Environment: `/etc/sysd/miner.env` (mode 600, tidak di repo).
+- `ExecStartPre` menolak placeholder (mis. `CHANGE_ME`); konfigurasi salah
+  berarti service gagal start, bukan diam-diam memakai default.
+- `ExecStart` menunjuk binary langsung `/usr/local/sbin/sysd` (0750 root:root),
+  tanpa wrapper dan tanpa argv: wallet/pool/worker dibaca dari
+  `EnvironmentFile`, sehingga unit metadata maupun `/proc/<pid>/cmdline`
+  tidak memuat wallet atau flag.
+- Spoof judul proses sudah dihapus: audit deteksi menunjukkan journald
+  merekam `_EXE` dari kredensial socket (bukan argv) dan argv kosong justru
+  jadi anomali. Identitas proses kini murni nama file binary; self-defense
+  (`ENABLE_SELF_DEFENSE=ON`) berisi anti-debug, `scrub_environ()`, dan
+  redaksi wallet di log.
+- `sysd-proc-hidepid.service` + drop-in `10-hidepid.conf` me-remount `/proc`
   dengan `hidepid=2` sebelum `syscached`, sehingga user non-root tidak melihat
-  proses root. `ops/fleet/install.sh` memasang keduanya.
+  proses root. `apply.sh` memasang unit + config + hidepid sebagai satu paket.
 - `EnvironmentFile` sengaja tanpa prefix `-`: file hilang = service gagal start,
   bukan diam-diam memakai default.
 
@@ -253,7 +260,7 @@ Tag yang ada: `v0.1`, `archive/vps1-2026-10-25`.
 
 1. **Verifikasi ganti seed page-mode di `fl`.** PR #17 (merged `870433f`) baru
    terbukti lewat harness. Pada ganti seed berikutnya log harus tetap
-   `RandomX V2 siap (FAST, hugepages)`, tanpa `jatuh ke 4K page`, dan
+   `Dataset siap (FAST, hugepages)`, tanpa `jatuh ke 4K page`, dan
    `HugePages_Free` kembali ke ~156 — bukan melompat ke 1200. Ganti seed
    mengikuti tinggi blok ≡ 64 (mod 12288), kira-kira tiap 34 jam.
 2. **Deploy `870433f` ke lima worker lain.** Masih build 2026-10-25 (tanpa kolom
@@ -265,7 +272,7 @@ Tag yang ada: `v0.1`, `archive/vps1-2026-10-25`.
    sebagai risiko yang diterima.
 4. **systemd hardening.** `ops/systemd/syscached.service` belum punya `User=`,
    jadi miner jalan sebagai root di 6 host. Perlu uji per host karena
-   menyangkut `/etc/xcb/miner.env`, `LD_PRELOAD`, dan akses hugepage.
+   menyangkut `/etc/sysd/miner.env`, `LD_PRELOAD`, dan akses hugepage.
 5. **`deploy.sh` — deteksi sukses.** `ops/fleet/deploy.sh:222` masih menyimpulkan
    sukses dari `grep -q 'HASIL=OK'` atas stdout+stderr, bukan exit code
    `apply.sh`.

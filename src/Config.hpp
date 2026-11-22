@@ -7,6 +7,13 @@
 struct PoolConfig {
     std::string host;
     uint16_t port = 8008;
+    // Port ditulis eksplisit (host:port / port[N]=). Kalau false, port diisi
+    // default per algo saat normalisasi: bloz 7170, zcd 17197, randomy 8008.
+    bool portSet = false;
+    // Pool datang dari -o (CLI), bukan dari file. Backend bloz/zcd memakai
+    // pool ini lebih dulu: `xcb -a bloz -o host:port` harus menambang ke pool
+    // yang disebut di CLI, bukan server[1] milik pool.cfg yang kebetulan ada.
+    bool fromCli = false;
     std::string wallet;
     std::string worker = "worker";
     std::string password = "x";
@@ -32,9 +39,17 @@ struct MinerConfig {
     uint64_t benchmarkNonces = 0; // >0 => benchmark mode (no pool)
     bool selftest = false;        // run SHA3/keccak self test and exit
     std::string ui = "auto";      // auto | ftxui | ansi | log (display mode)
-    // Backend PoW: "randomy" (RandomY, Core Coin XCB) atau "conn"
-    // (ConnectCoin — RandomX V2, mining solo lewat RPC node, tanpa stratum).
+    // Backend PoW, dipilih lewat -a/--algo seperti cpuminer:
+    //   randomy  RandomY (Core Coin XCB), pool stratum
+    //   conn     ConnectCoin (RandomX V2), solo lewat RPC node
+    //   bloz     Block Zero (RandomX v1), pool stratum dialek xmrig
+    //   zcd      Zycord (RandomX V2 + commitment), pool stratum
     std::string algo = "randomy";
+    // TLS pool bloz/zcd (backend punya pool stratum sendiri; jalur randomy
+    // selalu plain TCP). poolTlsAuto = belum ditentukan user, jadi diisi dari
+    // default per algo saat normalisasi: bloz plain, zcd TLS.
+    bool poolTls = false;
+    bool poolTlsAuto = true;
     // Parameter hanya untuk algo=conn.
     std::string connRpc = "http://127.0.0.1:48172";
     std::string connUser;
@@ -51,6 +66,16 @@ struct MinerConfig {
     // nonce 0.. dan menduplikasi pekerjaan.
     uint32_t nonceOffset = 0;
 };
+
+// Pool yang dipakai backend bloz/zcd. -o (CLI) menang atas isi pool.cfg,
+// karena `xcb -a bloz -o host:port` harus menambang ke pool yang disebut di
+// CLI; tanpa -o, pool pertama dari file/env yang dipakai.
+inline const PoolConfig* backendPool(const MinerConfig& cfg) {
+    if (cfg.pools.empty()) return nullptr;
+    for (const auto& p : cfg.pools)
+        if (p.fromCli) return &p;
+    return &cfg.pools[0];
+}
 
 class Config {
 public:

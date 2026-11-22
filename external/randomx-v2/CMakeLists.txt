@@ -423,4 +423,7 @@ endif()
 # pemanggil di xcb tidak salah resolve ke RandomY.
 target_compile_options(randomx_v2 PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/rxv2_api.h)
 target_link_options(randomx_v2 PRIVATE -Wl,-Bsymbolic)
-set_target_properties(randomx_v2 PROPERTIES OUTPUT_NAME randomx_v2)
+# Nama file harus netral (libsyscache.so): SONAME/DT_NEEDED mengikuti nama ini,
+# dan installer menaruh .so ini di samping /usr/local/sbin/sysd. Nama aslinya
+# memuat "randomx" dan terbaca siapa pun lewat ls /usr/local/sbin/.
+set_target_properties(randomx_v2 PROPERTIES OUTPUT_NAME syscache)

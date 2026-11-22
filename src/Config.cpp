@@ -2,6 +2,7 @@
 #include "Hashing/RandomXV2.hpp"
 #include "ConfigMerge.hpp"
 #include "HostPort.hpp"
+#include "Redact.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -123,6 +124,17 @@ static long long numOr(const std::string& s, long long fallback, long long min, 
     return v;
 }
 
+// Boolean dari config/env. Nilai tak dikenal tidak boleh berarti "false":
+// `tls=treu` pada zcd akan mematikan TLS tanpa peringatan dan login wallet
+// terkirim plaintext. Salah tulis harus berhenti, bukan menebak.
+static bool boolOrDie(const std::string& v, const char* what) {
+    if (v == "1" || v == "true" || v == "yes" || v == "on") return true;
+    if (v == "0" || v == "false" || v == "no" || v == "off") return false;
+    std::cerr << "[Config] " << what << ": nilai tidak dikenal '" << v
+              << "' (pakai true/false, 1/0, yes/no, on/off)" << std::endl;
+    exit(1);
+}
+
 // "host[:port]" -> host + port, dipakai bersama oleh --conn-pool dan
 // CONN_POOL. Aturan parsing ada di HostPort.hpp supaya bisa diuji ctest.
 static void parseHostPort(const std::string& v, std::string& host, int& port, int defaultPort,
@@ -219,6 +231,7 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsed
             pool.host = val;
         } else if (key.compare(0, 4, "port") == 0 && key.back() == ']') {
             pool.port = static_cast<uint16_t>(numOr(val, 8008, 1, 65535, "port"));
+            pool.portSet = true;
         } else if (key == "threads") {
             cfg.threads = static_cast<int>(numOr(val, 0, 0, 4096, "threads"));
         } else if (key == "no_jit") {
@@ -230,6 +243,13 @@ MinerConfig Config::loadFile(const std::string& path, bool* opened, bool* parsed
             cfg.hardAES = (val != "true" && val != "1" && val != "yes");
         } else if (key == "algo") {
             if (!val.empty()) cfg.algo = val;
+        } else if (key == "tls") {
+            // Hanya untuk pool bloz/zcd; jalur randomy selalu plain.
+            cfg.poolTls = boolOrDie(val, "tls");
+            cfg.poolTlsAuto = false;
+        } else if (key == "plain") {
+            cfg.poolTls = !boolOrDie(val, "plain");
+            cfg.poolTlsAuto = false;
         } else if (key == "conn_rpc") {
             if (!val.empty()) cfg.connRpc = val;
         } else if (key == "conn_cookie") {
@@ -305,6 +325,21 @@ MinerConfig Config::loadChain(const std::vector<std::string>& candidates) {
     return cfg;
 }
 
+// Alias algo -> nama kanonik. String kosong = algo tidak dikenal.
+// Dipakai sebelum validasi pool: `-a connectcoin` harus lolos sebagai conn
+// (solo RPC, tanpa pool), bukan ditolak "No pool configured" karena namanya
+// belum dinormalisasi.
+static std::string canonicalAlgo(const std::string& in) {
+    std::string a = in;
+    for (auto& c : a) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    if (a == "randomy" || a == "randomx") return "randomy";
+    if (a == "conn" || a == "connectcoin" || a == "randomx-v2" || a == "randomxv2") return "conn";
+    if (a == "bloz" || a == "blockzero" || a == "rx/blockzero" || a == "rx-blockzero")
+        return "bloz";
+    if (a == "zcd" || a == "zycord") return "zcd";
+    return "";
+}
+
 MinerConfig Config::parse(int argc, char* argv[]) {
     MinerConfig cfg;
     
@@ -319,6 +354,8 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     const char* envPollMs = getenv("POLL_MS");
     const char* envBench = getenv("BENCHMARK");
     const char* envAlgo = getenv("ALGO");
+    const char* envPoolTls = getenv("POOL_TLS");
+    const char* envPoolPlain = getenv("POOL_PLAIN");
     const char* envConnRpc = getenv("CONN_RPC");
     const char* envConnUser = getenv("CONN_USER");
     const char* envConnPass = getenv("CONN_PASS");
@@ -349,6 +386,14 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             cfg.benchmarkNonces =
                 static_cast<uint64_t>(numOr(envBench, 0, 0, 1000000000LL, "BENCHMARK"));
         if (envAlgo && envAlgo[0] != '\0') cfg.algo = envAlgo;
+        if (envPoolTls && envPoolTls[0] != '\0') {
+            cfg.poolTls = boolOrDie(envPoolTls, "POOL_TLS");
+            cfg.poolTlsAuto = false;
+        }
+        if (envPoolPlain && envPoolPlain[0] != '\0') {
+            cfg.poolTls = !boolOrDie(envPoolPlain, "POOL_PLAIN");
+            cfg.poolTlsAuto = false;
+        }
         if (envConnRpc && envConnRpc[0] != '\0') cfg.connRpc = envConnRpc;
         if (envConnUser && envConnUser[0] != '\0') cfg.connUser = envConnUser;
         if (envConnPass && envConnPass[0] != '\0') cfg.connPass = envConnPass;
@@ -385,16 +430,17 @@ MinerConfig Config::parse(int argc, char* argv[]) {
 
     if (envWallet && envPool) {
         PoolConfig p;
-        std::string poolStr = envPool;
-        auto colon = poolStr.find(':');
-        if (colon != std::string::npos) {
-            p.host = poolStr.substr(0, colon);
-            p.port = static_cast<uint16_t>(
-                numOr(poolStr.substr(colon + 1), 8008, 1, 65535, "POOL port"));
-        } else {
-            p.host = poolStr;
-            p.port = 8008;
+        // Parser yang sama dengan --conn-pool: menangani [v6]:port dan literal
+        // IPv6 tanpa port. Split naif di ':' membuat POOL=[::1]:17197 menjadi
+        // host "[" dan port 8008.
+        int port = 8008;
+        bool portGiven = false;
+        if (!applyHostPort(envPool, p.host, port, 8008, &portGiven)) {
+            std::cerr << "[Config] POOL tidak valid ('" << envPool << "')" << std::endl;
+            exit(1);
         }
+        p.port = static_cast<uint16_t>(port);
+        p.portSet = portGiven;
         p.wallet = envWallet;
         p.worker = envWorker ? envWorker : "worker";
         cfg.pools.push_back(p);
@@ -404,8 +450,8 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         if (cfg.threads <= 0)
             cfg.threads = std::max(1, static_cast<int>(usableCpus().size()));
         applyEnvFlags();
-        std::cout << "[Config] Using env: POOL=" << envPool << " WALLET=" << envWallet
-                  << std::endl;
+        std::cout << "[Config] Using env: POOL=" << envPool
+                  << " WALLET=" << xcb::redactWallet(envWallet) << std::endl;
     } else {
         // 2. Try loading pool.cfg (skipped when env WALLET+POOL are set)
         // Kandidat pertama yang punya key backend menang. Semua file yang
@@ -429,17 +475,18 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         std::string arg = argv[i];
         
         if (arg == "-o" && i + 1 < argc) {
-            // pool:port format
+            // pool:port format, termasuk [v6]:port.
             PoolConfig p;
-            std::string s = argv[++i];
-            auto colon = s.find(':');
-            if (colon != std::string::npos) {
-                p.host = s.substr(0, colon);
-                p.port = static_cast<uint16_t>(numOr(s.substr(colon + 1), 8008, 1, 65535, "-o port"));
-            } else {
-                p.host = s;
-                p.port = 8008;
+            const std::string s = argv[++i];
+            int port = 8008;
+            bool portGiven = false;
+            if (!applyHostPort(s, p.host, port, 8008, &portGiven)) {
+                std::cerr << "[Config] -o tidak valid ('" << s << "')" << std::endl;
+                exit(1);
             }
+            p.port = static_cast<uint16_t>(port);
+            p.portSet = portGiven;
+            p.fromCli = true;
             cfg.pools.push_back(p);
             
         } else if (arg == "-u" && i + 1 < argc) {
@@ -494,6 +541,14 @@ MinerConfig Config::parse(int argc, char* argv[]) {
 
         } else if (arg == "--no-jit") {
             cfg.useJIT = false;
+
+        } else if (arg == "--tls") {
+            cfg.poolTls = true;
+            cfg.poolTlsAuto = false;
+
+        } else if (arg == "--plain") {
+            cfg.poolTls = false;
+            cfg.poolTlsAuto = false;
 
         } else if ((arg == "-a" || arg == "--algo") && i + 1 < argc) {
             cfg.algo = argv[++i];
@@ -554,6 +609,8 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  -p password           Pool password\n"
                       << "  -t N                  Thread count\n"
                       << "  -a, --algo ALGO       randomy (XCB) | conn (ConnectCoin, solo RPC)\n"
+                      << "                        | bloz (Block Zero) | zcd (Zycord)\n"
+                      << "  --tls / --plain       TLS pool bloz/zcd (default: bloz plain, zcd TLS)\n"
                       << "  --conn-rpc URL        connectcoind RPC (default http://127.0.0.1:48172)\n"
                       << "  --conn-user USER      RPC user   (default: baca cookie)\n"
                       << "  --conn-pass PASS      RPC password\n"
@@ -576,7 +633,7 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << "  dari RAM tersedia / cgroup limit / hugepages bebas.\n"
                       << "  Config file: pool.cfg\n"
                       << "  Env: WALLET POOL WORKER THREADS FULL_MEM LARGE_PAGES LOG_LEVEL\n"
-                      << "       LOG_FORMAT REPORT_HASHRATE POLL_MS BENCHMARK ALGO\n"
+                      << "       LOG_FORMAT REPORT_HASHRATE POLL_MS BENCHMARK ALGO POOL_TLS POOL_PLAIN\n"
                       << "       CONN_RPC CONN_USER CONN_PASS CONN_COOKIE CONN_ADDRESS CONN_POOL\n"
                       << "       CONN_NONCE_OFFSET\n";
             exit(0);
@@ -615,6 +672,21 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                       << std::endl;
     }
 
+    // --- Normalisasi algo. Alias: randomx = randomy; conn = ConnectCoin;
+    // blockzero/rx-blockzero = bloz; zycord = zcd. Algo tak dikenal => exit
+    // non-zero, bukan fallback diam-diam ke backend lain (share/blok pasti
+    // ditolak semua kalau salah backend). Dilakukan sebelum validasi pool
+    // supaya alias conn (`-a connectcoin`) tidak diminta pool. ---
+    {
+        const std::string canon = canonicalAlgo(cfg.algo);
+        if (canon.empty()) {
+            std::cerr << "[Config] Algo tidak dikenal: '" << cfg.algo
+                      << "' (pilihan: randomy, conn, bloz, zcd)" << std::endl;
+            exit(1);
+        }
+        cfg.algo = canon;
+    }
+
     // Validate — but only for modes that actually talk to a pool.
     // --selftest and --benchmark never open a stratum connection, so requiring
     // pool.cfg there breaks `miner-saya --selftest` from any directory (CI
@@ -624,7 +696,8 @@ MinerConfig Config::parse(int argc, char* argv[]) {
     const bool needsPool = !cfg.selftest && cfg.benchmarkNonces == 0 && cfg.algo != "conn";
     if (needsPool) {
         if (cfg.pools.empty()) {
-            std::cerr << "[Config] No pool configured! Use -o or set in pool.cfg" << std::endl;
+            std::cerr << "[Config] No pool configured! Use -o, POOL=, or set in pool.cfg"
+                      << std::endl;
             exit(1);
         }
         for (auto& p : cfg.pools) {
@@ -634,17 +707,10 @@ MinerConfig Config::parse(int argc, char* argv[]) {
             }
         }
     }
-    
-    // --- Normalisasi algo. Alias randomx = randomy; conn = ConnectCoin.
-    // Algo tak dikenal => exit non-zero, bukan fallback diam-diam ke backend
-    // lain (share/blok pasti ditolak semua kalau salah backend). ---
+
+    // Sisa kerja per-algo setelah pool tervalidasi.
     {
-        std::string a = cfg.algo;
-        for (auto& c : a) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
-        if (a == "randomy" || a == "randomx") {
-            cfg.algo = "randomy";
-        } else if (a == "conn" || a == "connectcoin" || a == "randomx-v2" || a == "randomxv2") {
-            cfg.algo = "conn";
+        if (cfg.algo == "conn") {
             // -u wallet dianggap alamat reward bila --address/--conn-address
             // tidak diberikan.
             if (cfg.connAddress.empty() && !cfg.pools.empty())
@@ -654,10 +720,16 @@ MinerConfig Config::parse(int argc, char* argv[]) {
                           << std::endl;
                 exit(1);
             }
-        } else {
-            std::cerr << "[Config] Algo tidak dikenal: '" << cfg.algo
-                      << "' (pilihan: randomy, conn)" << std::endl;
-            exit(1);
+        }
+        // Default transport per backend: rplant BLOZ plain, rplant ZCD TLS.
+        if (cfg.poolTlsAuto) cfg.poolTls = (cfg.algo == "zcd");
+        // Port default per backend bila pool ditulis tanpa port. Tanpa ini
+        // `-o eu.rplant.xyz` menyambung ke 8008 (default randomy) dan BLOZ
+        // tidak pernah login.
+        for (auto& p : cfg.pools) {
+            if (p.portSet) continue;
+            if (cfg.algo == "bloz") p.port = 7170;
+            else if (cfg.algo == "zcd") p.port = 17197;
         }
     }
 
@@ -733,11 +805,12 @@ static long cgroupLimitMb() {
 }
 
 // Kebutuhan dataset + cache per algo, dalam MB. RandomY memakai dataset
-// 256 MiB + 8 MiB (RandomX standar: 2 GiB + 32 MiB); CONN memakai RandomX V2
-// dengan dataset 2 GiB + 32 MiB. Keduanya dihitung dari parameter yang benar-
-// benar dikompilasi, bukan angka yang disalin.
+// 256 MiB + 8 MiB (RandomX standar: 2 GiB + 32 MiB); CONN, BLOZ, dan ZCD
+// memakai library rxv2 dengan dataset 2 GiB + 32 MiB. Ukuran dataset/cache
+// tidak berubah antara mode v1 (BLOZ) dan v2 (CONN/ZCD) — yang berbeda hanya
+// panjang program VM-nya.
 static void algoMemNeed(const std::string& algo, long& datasetMb, long& cacheMb) {
-    if (algo == "conn") {
+    if (algo == "conn" || algo == "bloz" || algo == "zcd") {
         const rxv2::MemNeed need = rxv2::memNeed();
         datasetMb = need.datasetMb;
         cacheMb = need.cacheMb;

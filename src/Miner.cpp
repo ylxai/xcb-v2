@@ -115,7 +115,7 @@ bool Miner::start(const MinerConfig& cfg) {
     if (!cfg.useJIT) m_flags = static_cast<randomx_flags>(m_flags & ~RANDOMX_FLAG_JIT);
     if (!cfg.hardAES) m_flags = static_cast<randomx_flags>(m_flags & ~RANDOMX_FLAG_HARD_AES);
 
-    lg::info("sysd", "RandomY flags: JIT=" + std::to_string((m_flags & RANDOMX_FLAG_JIT) != 0) +
+    lg::info("sysd", "flags: JIT=" + std::to_string((m_flags & RANDOMX_FLAG_JIT) != 0) +
                            " FULL_MEM=" +
                            std::to_string((m_flags & RANDOMX_FLAG_FULL_MEM) != 0) +
                            " HARD_AES=" +
@@ -336,7 +336,7 @@ bool Miner::initDataset() {
 
     auto t2 = std::chrono::steady_clock::now();
     auto initMs = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
-    lg::info("sysd", "Dataset ready in " + std::to_string(initMs / 1000.0) + "s");
+    lg::info("sysd", "Dataset siap dalam " + std::to_string(initMs / 1000.0) + "s");
     return true;
 }
 
@@ -400,7 +400,7 @@ void Miner::onPoolChange(int idx, const std::string& host) {
     std::lock_guard<std::mutex> lock(m_stats.farm().mu);
     m_stats.farm().poolIndex = idx;
     m_stats.farm().poolHost = host;
-    lg::info("stratum", "Active pool: " + host);
+    lg::info("sysd", "Active pool: " + host);
 }
 
 bool Miner::submitShareCallback(const Share& s) {

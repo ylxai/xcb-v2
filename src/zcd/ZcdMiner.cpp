@@ -111,13 +111,13 @@ struct Miner::Impl {
         uint8_t key[32];
         std::memcpy(key, job.key, sizeof(key));
 
-        lg::info("zcd", "membangun engine RandomX V2 (seed " + kh.substr(0, 16) + "…, " +
+        lg::info("sysd", "membangun engine (seed " + kh.substr(0, 16) + "…, " +
                             std::to_string(cfg.fastMem ? 2080 : 256) + " MB)");
         auto ctx = std::make_shared<rxv2::Context>(key, sizeof(key), cfg.fastMem, cfg.largePages,
                                                   static_cast<int>(cfg.threads));
         if (!ctx->ok()) {
             setEngineError(ctx->error());
-            lg::error("zcd", "engine gagal: " + ctx->error());
+            lg::error("sysd", "engine gagal: " + ctx->error());
             // Engine lama tidak boleh tetap aktif: share untuk seed usang akan
             // ditolak pool, dan lebih buruk lagi menutupi kegagalan ini.
             invalidateWork();
@@ -126,11 +126,11 @@ struct Miner::Impl {
         const char* mode = cfg.fastMem ? (ctx->usesLargePages() ? "FAST, hugepages"
                                                                 : "FAST, regular pages")
                                        : "LIGHT";
-        lg::info("zcd", std::string("RandomX V2 siap (") + mode + ")");
+        lg::info("sysd", std::string("Dataset siap (") + mode + ")");
         // Jatuh ke page biasa menurunkan hash rate sekitar setengah dan tidak
         // terlihat dari log biasa, jadi diperingatkan sekali di sini.
         if (cfg.fastMem && cfg.largePages && !ctx->usesLargePages()) {
-            lg::warn("zcd", "hugepages tidak terpakai (minta " +
+            lg::warn("sysd", "hugepages tidak terpakai (minta " +
                                 std::to_string(cfg.fastMem ? 2080 : 256) +
                                 " MB); hash rate turun ~50%. Periksa vm.nr_hugepages "
                                 "atau HugePages_Free.");
@@ -142,7 +142,7 @@ struct Miner::Impl {
             auto vm = ctx->createVM();
             if (!vm || !vm->ok()) {
                 setEngineError("VM gagal dibuat");
-                lg::error("zcd", "VM RandomX gagal dibuat");
+                lg::error("sysd", "VM gagal dibuat");
                 invalidateWork();
                 return;
             }
@@ -180,7 +180,7 @@ struct Miner::Impl {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
         if (old.use_count() > 1) {
-            lg::warn("zcd", "worker masih memegang dataset lama setelah 10 detik; "
+            lg::warn("sysd", "worker masih memegang dataset lama setelah 10 detik; "
                             "engine baru mungkin jatuh ke page biasa");
         }
     }
@@ -242,7 +242,7 @@ struct Miner::Impl {
             std::string err;
             if (!pool->ready()) {
                 if (!pool->connect(err)) {
-                    lg::warn("zcd", "pool: " + err + " — coba lagi dalam 5 s");
+                    lg::warn("sysd", "pool: " + err + " — coba lagi dalam 5 s");
                     for (int i = 0; i < 50 && run.load(); i++)
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
                     continue;
@@ -255,12 +255,12 @@ struct Miner::Impl {
                 // baru ke miner yang sudah diminta berhenti.
                 if (!run.load(std::memory_order_acquire)) break;
                 publishJob(job);
-                lg::info("zcd", "job baru tinggi " + std::to_string(job.height) + " diff " +
+                lg::info("sysd", "job baru tinggi " + std::to_string(job.height) + " diff " +
                                     std::to_string(static_cast<long long>(job.difficultyValue())));
                 continue;
             }
             if (!err.empty() && err != "timeout menunggu data pool") {
-                lg::warn("zcd", "pool: " + err + " — sambung ulang");
+                lg::warn("sysd", "pool: " + err + " — sambung ulang");
                 pool->disconnect();
             }
             (void)mself;
@@ -337,7 +337,7 @@ struct Miner::Impl {
                     // mengotori statistik). Nonce sudah terpakai, jadi
                     // melewatkannya tidak kehilangan peluang.
                     if (w->gen != gen) continue;
-                    lg::good("zcd", "[share] tinggi " + std::to_string(solved.height) + " nonce 0x" +
+                    lg::good("sysd", "[share] tinggi " + std::to_string(solved.height) + " nonce 0x" +
                                         solved.nonceHex(0) + " value 0x" +
                                         std::to_string(shareValue(commit)) + " < target 0x" +
                                         std::to_string(solved.target));
@@ -345,7 +345,7 @@ struct Miner::Impl {
                     if (pool->submit(solved, digest, commit, serr))
                         submitted.fetch_add(1, std::memory_order_relaxed);
                     else
-                        lg::warn("zcd", "submit gagal: " + serr);
+                        lg::warn("sysd", "submit gagal: " + serr);
                 }
             }
         }
@@ -368,7 +368,7 @@ bool Miner::start(const MinerConfig& cfg, std::string& err) {
     }
     m_impl->cfg = cfg;
     // Kontrak MinerConfig.threads: 0 = auto. Diselesaikan di sini supaya
-    // pemanggil selain ZcdMain juga mendapat perilaku yang sama.
+    // pemanggil selain ZcdRun juga mendapat perilaku yang sama.
     if (m_impl->cfg.threads <= 0) {
         const int n = static_cast<int>(usableCpus().size());
         m_impl->cfg.threads = n > 0 ? n : 1;
@@ -405,8 +405,8 @@ bool Miner::start(const MinerConfig& cfg, std::string& err) {
     }
     m_impl->ioThread = std::thread([this]() { m_impl->ioLoop(*this); });
 
-    lg::info("zcd", "miner ZCD jalan: " + std::to_string(n) + " thread, algo " + first.algo +
-                        ", tinggi " + std::to_string(first.height) + ", diff " +
+    lg::info("sysd", "miner jalan: " + std::to_string(n) + " thread, tinggi " +
+                        std::to_string(first.height) + ", diff " +
                         std::to_string(static_cast<long long>(first.difficultyValue())));
     return true;
 }
@@ -432,7 +432,7 @@ std::string Miner::finalSummary() const {
     const uint64_t f = m_impl->found.load(std::memory_order_relaxed);
     const uint64_t acc = m_impl->pool ? m_impl->pool->acceptedCount() : 0;
     const uint64_t rej = m_impl->pool ? m_impl->pool->rejectedCount() : 0;
-    std::string s = "ZCD: hash " + std::to_string(h) + " | found " + std::to_string(f) +
+    std::string s = "hash " + std::to_string(h) + " | found " + std::to_string(f) +
                     " | submit " + std::to_string(m_impl->submitted.load()) + " | pool OK " +
                     std::to_string(acc) + " ditolak " + std::to_string(rej);
     if (rej > 0 && m_impl->pool) {

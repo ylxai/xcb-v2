@@ -8,7 +8,7 @@
 //
 // Ditulis khusus di sini, bukan memakai ConnRpc.hpp, karena ConnRpc adalah
 // modul backend CONN: mengikutkannya akan menyeret state RPC/template blok
-// CONN ke dalam biner zcd-miner dan menghapus kemandirian backend. Yang
+// CONN ke dalam backend zcd dan menghapus kemandirian backend. Yang
 // dibutuhkan stratum hanya objek, array, string, angka, bool, null.
 namespace zcd {
 

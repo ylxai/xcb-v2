@@ -1,5 +1,8 @@
 #include "ZcdPool.hpp"
 
+#include "Log.hpp"
+#include "Redact.hpp"
+
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cstring>
@@ -356,8 +359,8 @@ bool Pool::connect(std::string& err) {
             m_haveJob = true;
         }
         m_ready.store(true, std::memory_order_release);
-        lg::info("zcd", "login pool OK (" + m_cfg.host + ":" + std::to_string(m_cfg.port) +
-                            (m_cfg.tls ? ", tls)" : ")") + " worker " + loginName +
+        lg::info("sysd", "login pool OK (" + m_cfg.host + ":" + std::to_string(m_cfg.port) +
+                            (m_cfg.tls ? ", tls)" : ")") + " worker " + xcb::redactWallet(loginName) +
                             ", tinggi " + std::to_string(job.height) + ", diff " +
                             std::to_string(static_cast<long long>(job.difficultyValue())));
         return true;

@@ -43,24 +43,29 @@ std::string toHex(const uint8_t* p, size_t n) {
     return s;
 }
 
-rxv2_flags baseFlags() {
+rxv2_flags baseFlags(bool v2) {
     rxv2_flags f = randomx_get_flags();
     // HAPUS flag FULL_MEM/LARGE_PAGES/SECURE/V2 yang mungkin terwarisi, lalu
     // set ulang sesuai kebutuhan.
     f = static_cast<rxv2_flags>(f & ~(RANDOMX_FLAG_FULL_MEM | RANDOMX_FLAG_LARGE_PAGES |
                                          RANDOMX_FLAG_SECURE | RANDOMX_FLAG_V2));
-    // Consensus ConnectCoin WAJIB V2 (program 384). Tanpa flag ini library
-    // menghitung RandomX 256-program -> semua share/blok invalid.
-    return static_cast<rxv2_flags>(f | RANDOMX_FLAG_V2);
+    // Consensus ConnectCoin dan Zycord WAJIB V2 (program 384). Tanpa flag ini
+    // library menghitung RandomX 256-program -> semua share/blok invalid.
+    // Sebaliknya Block Zero memakai program 256 (v1), jadi flag hanya
+    // ditambahkan saat v2 diminta.
+    if (v2) return static_cast<rxv2_flags>(f | RANDOMX_FLAG_V2);
+    return f;
 }
 
 }  // namespace
 
-Context::Context(const uint8_t key[32], bool fast, bool largePages, int initThreads)
-    : Context(key, 32, fast, largePages, initThreads) {}
+Context::Context(const uint8_t key[32], bool fast, bool largePages, int initThreads, bool v2)
+    : Context(key, 32, fast, largePages, initThreads, v2) {}
 
-Context::Context(const uint8_t* key, size_t keyLen, bool fast, bool largePages, int initThreads) {
-    const rxv2_flags base = baseFlags();
+Context::Context(const uint8_t* key, size_t keyLen, bool fast, bool largePages, int initThreads,
+                 bool v2)
+    : m_v2(v2) {
+    const rxv2_flags base = baseFlags(m_v2);
     rxv2_flags allocFlags = base;
     if (largePages) allocFlags = static_cast<rxv2_flags>(allocFlags | RANDOMX_FLAG_LARGE_PAGES);
 
@@ -68,7 +73,7 @@ Context::Context(const uint8_t* key, size_t keyLen, bool fast, bool largePages, 
         m_cache = randomx_alloc_cache(allocFlags);
         if (!m_cache && largePages) m_cache = randomx_alloc_cache(base);
         if (!m_cache) {
-            m_error = "alokasi RandomX cache gagal";
+            m_error = "alokasi cache gagal";
             return;
         }
         randomx_init_cache(static_cast<randomx_cache*>(m_cache), key, keyLen);
@@ -79,7 +84,7 @@ Context::Context(const uint8_t* key, size_t keyLen, bool fast, bool largePages, 
         if (!m_dataset) {
             randomx_release_cache(static_cast<randomx_cache*>(m_cache));
             m_cache = nullptr;
-            m_error = "alokasi RandomX dataset (2 GiB) gagal";
+            m_error = "alokasi dataset (2 GiB) gagal";
             return;
         }
 
@@ -112,7 +117,7 @@ Context::Context(const uint8_t* key, size_t keyLen, bool fast, bool largePages, 
     m_cache = randomx_alloc_cache(allocFlags);
     if (!m_cache && largePages) m_cache = randomx_alloc_cache(base);
     if (!m_cache) {
-        m_error = "alokasi RandomX cache gagal";
+        m_error = "alokasi cache gagal";
         return;
     }
     randomx_init_cache(static_cast<randomx_cache*>(m_cache), key, keyLen);
@@ -127,7 +132,7 @@ Context::~Context() {
 
 std::unique_ptr<Context::VM> Context::createVM() {
     if (!m_ok) return nullptr;
-    rxv2_flags f = baseFlags();
+    rxv2_flags f = baseFlags(m_v2);
     if (m_fast) f = static_cast<rxv2_flags>(f | RANDOMX_FLAG_FULL_MEM);
 
     randomx_cache* cache = m_fast ? nullptr : static_cast<randomx_cache*>(m_cache);
@@ -151,17 +156,29 @@ void Context::VM::hash(const uint8_t* data, size_t len, uint8_t out[32]) {
     randomx_calculate_hash(static_cast<randomx_vm*>(m_vm), data, len, out);
 }
 
+void Context::VM::hashFirst(const uint8_t* data, size_t len) {
+    randomx_calculate_hash_first(static_cast<randomx_vm*>(m_vm), data, len);
+}
+
+void Context::VM::hashNext(const uint8_t* data, size_t len, uint8_t out[32]) {
+    randomx_calculate_hash_next(static_cast<randomx_vm*>(m_vm), data, len, out);
+}
+
+void Context::VM::hashLast(uint8_t out[32]) {
+    randomx_calculate_hash_last(static_cast<randomx_vm*>(m_vm), out);
+}
+
 bool selftest(std::string& detail) {
     static const char kGoldenKey[] = "test key 000";  // 12 byte, bukan 32
     Context ctx(reinterpret_cast<const uint8_t*>(kGoldenKey), sizeof(kGoldenKey) - 1,
                 /*fast=*/false, /*largePages=*/false, 1);
     if (!ctx.ok()) {
-        detail = "RandomX V2 context gagal: " + ctx.error();
+        detail = "context gagal: " + ctx.error();
         return false;
     }
     auto vm = ctx.createVM();
     if (!vm || !vm->ok()) {
-        detail = "RandomX V2 VM gagal dibuat";
+        detail = "VM gagal dibuat";
         return false;
     }
     uint8_t out[32];
@@ -170,6 +187,82 @@ bool selftest(std::string& detail) {
     const bool ok = (got == kGoldenHash);
     detail = "vec key=\"test key 000\" got=" + got;
     return ok;
+}
+
+bool selftestV1(std::string& detail) {
+    // Vektor diambil dari cpuminer-rplant 6.0.26 (lihat komentar di header).
+    static const char kBlobHex[] =
+        "0000002071dffbd94c0715ffe9f56079eeb6f3658926c2a48f0824a354c31ec1"
+        "8b5e6177d8fe1b9feea005d2a7fb485bfda7641ffc6716fd7fcf6d64b4062038"
+        "ebb831fa27e9016b5680071d00000000";
+    static const char kSeedHex[] =
+        "7b5cdc9c17790fb2e9400cf29a3b373167d29657303269362d5e61e332de1edd";
+    static const char kWant[] =
+        "d51a8c17b9e6720eb696bf766cd904b4317bb03e0c5a848882349dc061390900";
+
+    auto unhex = [](const char* s, uint8_t* out, size_t n) {
+        for (size_t i = 0; i < n; i++) {
+            auto nib = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                return -1;
+            };
+            const int hi = nib(s[2 * i]);
+            const int lo = nib(s[2 * i + 1]);
+            if (hi < 0 || lo < 0) return false;
+            out[i] = static_cast<uint8_t>((hi << 4) | lo);
+        }
+        return true;
+    };
+
+    uint8_t blob[80];
+    uint8_t seed[32];
+    if (!unhex(kBlobHex, blob, sizeof(blob)) || !unhex(kSeedHex, seed, sizeof(seed))) {
+        detail = "vektor v1 bukan hex";
+        return false;
+    }
+    // Nonce 0x00000355 little-endian pada offset 76 (posisi nonce header Bitcoin).
+    blob[76] = 0x55;
+    blob[77] = 0x03;
+    blob[78] = 0x00;
+    blob[79] = 0x00;
+
+    Context ctx(seed, sizeof(seed), /*fast=*/false, /*largePages=*/false, 1, /*v2=*/false);
+    if (!ctx.ok()) {
+        detail = "context gagal: " + ctx.error();
+        return false;
+    }
+    auto vm = ctx.createVM();
+    if (!vm || !vm->ok()) {
+        detail = "VM gagal dibuat";
+        return false;
+    }
+    uint8_t out[32];
+    vm->hash(blob, sizeof(blob), out);
+    const std::string got = toHex(out, 32);
+    const bool ok = (got == kWant);
+    detail = "vec rx/blockzero got=" + got;
+    if (!ok) return false;
+
+    // Jalur batch yang dipakai miner harus menghasilkan digest yang sama
+    // persis dengan hash tunggal. Nonce kedua 0x356 supaya inputnya berbeda.
+    uint8_t blob2[80];
+    std::memcpy(blob2, blob, sizeof(blob));
+    blob2[76] = 0x56;
+    uint8_t single2[32];
+    vm->hash(blob2, sizeof(blob2), single2);
+
+    uint8_t batchA[32];
+    uint8_t batchB[32];
+    vm->hashFirst(blob, sizeof(blob));
+    vm->hashNext(blob2, sizeof(blob2), batchA);
+    vm->hashLast(batchB);
+    if (std::memcmp(batchA, out, 32) != 0 || std::memcmp(batchB, single2, 32) != 0) {
+        detail = "batch != hash tunggal";
+        return false;
+    }
+    return true;
 }
 
 }  // namespace rxv2
