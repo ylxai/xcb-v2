@@ -540,6 +540,7 @@ void Miner::workerLoop(Worker* w) {
     // Take a snapshot of the current job (may be null until first job).
     auto current = loadJob();
     bool headerOk = current && current->header.size() == 32;
+    if (headerOk) memcpy(blob, current->header.data(), 32);
     int idleSpins = 0;
 
     while (m_running.load(std::memory_order_relaxed)) {
@@ -562,6 +563,7 @@ void Miner::workerLoop(Worker* w) {
             // lain, tapi memcpy di bawah membaca 32 byte tanpa syarat — jadi
             // periksa juga di sisi konsumen, bukan percaya pemanggil.
             headerOk = (current->header.size() == 32);
+            if (headerOk) memcpy(blob, current->header.data(), 32);
             if (!headerOk)
                 lg::error("sysd", "Job " + current->jobId + " header " +
                                        std::to_string(current->header.size()) +
@@ -584,8 +586,8 @@ void Miner::workerLoop(Worker* w) {
         for (int i = 0; i < BLOCKSIZE && m_running.load(std::memory_order_relaxed); i++) {
             uint64_t nonce = nonceBase + i;
 
-            // blob = header(32) || nonce LE(8)
-            memcpy(blob, headerPtr, 32);
+            // blob = header(32) || nonce LE(8). The header is immutable for
+            // this job, so it is copied only when the job changes above.
             memcpy(blob + 32, &nonce, 8);
 
             sha3::sha3_512_40(blob, seed);
