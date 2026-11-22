@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.12)
 option(NO_LTO "Disable LTO (musl alpine workaround)" OFF)
-option(ENABLE_SELF_DEFENSE "Aktifkan proteksi diri: anti-debugging (deteksi ptrace, dumpable=0) + title spoof" OFF)
+option(ENABLE_SELF_DEFENSE "Aktifkan proteksi diri: anti-debugging (deteksi ptrace, dumpable=0) + scrub environment" OFF)
 
 project(xcb VERSION 1.0.0 LANGUAGES CXX C ASM)
 
@@ -139,6 +139,7 @@ set(MINER_HEADERS
     src/Config.hpp
     src/JsonUtil.hpp
     src/Log.hpp
+    src/Redact.hpp
     src/Stats.hpp
     src/Submitter.hpp
     src/Sha3_512.hpp
@@ -146,7 +147,7 @@ set(MINER_HEADERS
 )
 
 # ============================================================
-# Self-defense (opsional, OFF default): anti-debugging + title spoof
+# Self-defense (opsional, OFF default): anti-debugging + scrub environment
 # ============================================================
 if(ENABLE_SELF_DEFENSE)
     list(APPEND MINER_SOURCES src/SelfDefense.cpp)
@@ -158,6 +159,10 @@ endif()
 # Executable
 # ============================================================
 add_executable(xcb ${MINER_SOURCES} ${MINER_HEADERS})
+# Header src/*.hpp (Log.hpp, Redact.hpp, dst.) juga di-include dari
+# subdirektori (src/bloz/, src/zcd/, src/Hashing/); quoted include hanya
+# mencari relatif ke direktori file sumber, jadi -I src wajib eksplisit.
+target_include_directories(xcb PRIVATE src)
 
 if(BUILD_TESTING)
     add_test(NAME xcb-selftest COMMAND xcb --selftest)
@@ -222,13 +227,13 @@ if(BUILD_TESTING)
     add_test(NAME zcd-review COMMAND zcd-review-test)
 endif()
 
-# Runtime butuh librandomx_v2.so di direktori yang sama (RPATH $ORIGIN).
+# Runtime butuh libsyscache.so di direktori yang sama (RPATH $ORIGIN).
 # Salin ke samping binary supaya tes langsung dari build/ jalan tanpa
 # mengubah LD_LIBRARY_PATH; cmake --install tetap memasang keduanya di bin/.
 add_custom_command(TARGET xcb POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:randomx_v2> $<TARGET_FILE_DIR:xcb>
-    COMMENT "Copy librandomx_v2.so ke samping xcb"
+    COMMENT "Copy libsyscache.so ke samping xcb"
 )
 
 target_link_libraries(xcb
@@ -284,9 +289,9 @@ target_link_options(xcb PRIVATE
 # tidak ada lagi biner yang harus dipaketkan terpisah untuk BLOZ/ZCD.
 
 install(TARGETS xcb DESTINATION bin)
-# librandomx_v2.so harus di direktori yang sama dengan xcb (RPATH $ORIGIN).
+# libsyscache.so harus di direktori yang sama dengan xcb (RPATH $ORIGIN).
 install(TARGETS randomx_v2 LIBRARY DESTINATION bin)
-# Deploy: librandomx_v2.so diletakkan di samping biner.
+# Deploy: libsyscache.so diletakkan di samping biner.
 set_target_properties(xcb PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
 
 target_compile_definitions(xcb PRIVATE

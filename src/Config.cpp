@@ -2,6 +2,7 @@
 #include "Hashing/RandomXV2.hpp"
 #include "ConfigMerge.hpp"
 #include "HostPort.hpp"
+#include "Redact.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -449,8 +450,8 @@ MinerConfig Config::parse(int argc, char* argv[]) {
         if (cfg.threads <= 0)
             cfg.threads = std::max(1, static_cast<int>(usableCpus().size()));
         applyEnvFlags();
-        std::cout << "[Config] Using env: POOL=" << envPool << " WALLET=" << envWallet
-                  << std::endl;
+        std::cout << "[Config] Using env: POOL=" << envPool
+                  << " WALLET=" << xcb::redactWallet(envWallet) << std::endl;
     } else {
         // 2. Try loading pool.cfg (skipped when env WALLET+POOL are set)
         // Kandidat pertama yang punya key backend menang. Semua file yang

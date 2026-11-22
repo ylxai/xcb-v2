@@ -73,7 +73,7 @@ Context::Context(const uint8_t* key, size_t keyLen, bool fast, bool largePages, 
         m_cache = randomx_alloc_cache(allocFlags);
         if (!m_cache && largePages) m_cache = randomx_alloc_cache(base);
         if (!m_cache) {
-            m_error = "alokasi RandomX cache gagal";
+            m_error = "alokasi cache gagal";
             return;
         }
         randomx_init_cache(static_cast<randomx_cache*>(m_cache), key, keyLen);
@@ -84,7 +84,7 @@ Context::Context(const uint8_t* key, size_t keyLen, bool fast, bool largePages, 
         if (!m_dataset) {
             randomx_release_cache(static_cast<randomx_cache*>(m_cache));
             m_cache = nullptr;
-            m_error = "alokasi RandomX dataset (2 GiB) gagal";
+            m_error = "alokasi dataset (2 GiB) gagal";
             return;
         }
 
@@ -117,7 +117,7 @@ Context::Context(const uint8_t* key, size_t keyLen, bool fast, bool largePages, 
     m_cache = randomx_alloc_cache(allocFlags);
     if (!m_cache && largePages) m_cache = randomx_alloc_cache(base);
     if (!m_cache) {
-        m_error = "alokasi RandomX cache gagal";
+        m_error = "alokasi cache gagal";
         return;
     }
     randomx_init_cache(static_cast<randomx_cache*>(m_cache), key, keyLen);
@@ -173,12 +173,12 @@ bool selftest(std::string& detail) {
     Context ctx(reinterpret_cast<const uint8_t*>(kGoldenKey), sizeof(kGoldenKey) - 1,
                 /*fast=*/false, /*largePages=*/false, 1);
     if (!ctx.ok()) {
-        detail = "RandomX V2 context gagal: " + ctx.error();
+        detail = "context gagal: " + ctx.error();
         return false;
     }
     auto vm = ctx.createVM();
     if (!vm || !vm->ok()) {
-        detail = "RandomX V2 VM gagal dibuat";
+        detail = "VM gagal dibuat";
         return false;
     }
     uint8_t out[32];
@@ -230,12 +230,12 @@ bool selftestV1(std::string& detail) {
 
     Context ctx(seed, sizeof(seed), /*fast=*/false, /*largePages=*/false, 1, /*v2=*/false);
     if (!ctx.ok()) {
-        detail = "RandomX v1 context gagal: " + ctx.error();
+        detail = "context gagal: " + ctx.error();
         return false;
     }
     auto vm = ctx.createVM();
     if (!vm || !vm->ok()) {
-        detail = "RandomX v1 VM gagal dibuat";
+        detail = "VM gagal dibuat";
         return false;
     }
     uint8_t out[32];

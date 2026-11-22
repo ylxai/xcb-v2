@@ -87,7 +87,7 @@ bool selftest() { return runSelftest(); }
 int run(const ::MinerConfig& cfg, std::atomic<bool>& running) {
     const ::PoolConfig* src = backendPool(cfg);
     if (!src) {
-        lg::error("zcd", "tidak ada pool: isi POOL=host:port atau -o host:port");
+        lg::error("sysd", "tidak ada pool: isi POOL=host:port atau -o host:port");
         return 1;
     }
 
@@ -102,7 +102,7 @@ int run(const ::MinerConfig& cfg, std::atomic<bool>& running) {
     mc.largePages = cfg.largePages;
     mc.nonceOffset = cfg.nonceOffset;
 
-    lg::info("zcd", "xcb -a zcd — pool " + mc.pool.host + ":" +
+    lg::info("sysd", "mulai: pool " + mc.pool.host + ":" +
                         std::to_string(mc.pool.port) + (mc.pool.tls ? " (tls)" : " (plain)") +
                         ", worker " + mc.pool.worker + ", threads " +
                         std::to_string(mc.threads) + (mc.fastMem ? ", FAST" : ", LIGHT"));
@@ -110,7 +110,7 @@ int run(const ::MinerConfig& cfg, std::atomic<bool>& running) {
     Miner miner;
     std::string err;
     if (!miner.start(mc, err)) {
-        lg::error("zcd", "start gagal: " + err);
+        lg::error("sysd", "start gagal: " + err);
         return 1;
     }
 
@@ -126,11 +126,11 @@ int run(const ::MinerConfig& cfg, std::atomic<bool>& running) {
         const double rate = (static_cast<double>(h - lastHashes) * 1000.0) / static_cast<double>(dt);
         lastHashes = h;
         lastTick = now;
-        lg::info("zcd", "HR " + std::to_string(static_cast<long long>(rate)) + " H/s | found " +
+        lg::info("sysd", "HR " + std::to_string(static_cast<long long>(rate)) + " H/s | found " +
                             std::to_string(miner.found()));
     }
 
-    lg::info("zcd", "berhenti…");
+    lg::info("sysd", "berhenti…");
     miner.stop();
     lg::info("sysd", miner.finalSummary());
     return 0;

@@ -2,7 +2,7 @@
 # pool-workers.sh — status worker XCB di pool CatchThatRabbit.
 #
 # POSIX sh (jalan dengan `sh pool-workers.sh`), butuh curl dan jq.
-# Wallet diambil dari -w, lalu $WALLET, lalu /etc/xcb/miner.env — env file itu
+# Wallet diambil dari -w, lalu $WALLET, lalu /etc/sysd/miner.env — env file itu
 # hanya dipakai kalau POOL-nya memang CatchThatRabbit.
 #
 #   sh pool-workers.sh                    # sekali tampil
@@ -25,7 +25,7 @@ usage() {
     cat <<'EOF'
 Pakai: sh pool-workers.sh [-w WALLET] [-r REGION] [-i DETIK]
 
-  -w WALLET   alamat wallet (default: $WALLET atau /etc/xcb/miner.env)
+  -w WALLET   alamat wallet (default: $WALLET atau /etc/sysd/miner.env)
   -r REGION   region API pool: sg (default), eu, us
   -i DETIK    ulangi tiap DETIK detik (0 = sekali, default)
   -h          tampilkan bantuan ini
@@ -64,25 +64,25 @@ esac
 # Wallet dari env file hanya dipakai kalau file itu konfigurasi pool XCB.
 # install.sh menulis environment CONN (CONN_ADDRESS/CONN_POOL); mengambil
 # WALLET dari sana akan menanyakan akun yang salah ke API CatchThatRabbit.
-if [ -z "$WALLET" ] && [ -r /etc/xcb/miner.env ]; then
-    env_pool=$(sed -n 's/^POOL=//p' /etc/xcb/miner.env | head -n 1)
+if [ -z "$WALLET" ] && [ -r /etc/sysd/miner.env ]; then
+    env_pool=$(sed -n 's/^POOL=//p' /etc/sysd/miner.env | head -n 1)
     case $env_pool in
         *catchthatrabbit*)
-            WALLET=$(sed -n 's/^WALLET=//p' /etc/xcb/miner.env | head -n 1)
+            WALLET=$(sed -n 's/^WALLET=//p' /etc/sysd/miner.env | head -n 1)
             ;;
         '')
-            echo "peringatan: /etc/xcb/miner.env tidak menyebut POOL XCB (kemungkinan" >&2
+            echo "peringatan: /etc/sysd/miner.env tidak menyebut POOL XCB (kemungkinan" >&2
             echo "environment CONN); pakai -w untuk wallet pool CatchThatRabbit" >&2
             ;;
         *)
-            echo "peringatan: POOL di /etc/xcb/miner.env adalah '$env_pool', bukan" >&2
+            echo "peringatan: POOL di /etc/sysd/miner.env adalah '$env_pool', bukan" >&2
             echo "CatchThatRabbit; pakai -w untuk wallet pool XCB" >&2
             ;;
     esac
 fi
 WALLET=${WALLET%%.*}
 if [ -z "$WALLET" ]; then
-    echo "wallet kosong: pakai -w, \$WALLET, atau jalankan di host dengan /etc/xcb/miner.env" >&2
+    echo "wallet kosong: pakai -w, \$WALLET, atau jalankan di host dengan /etc/sysd/miner.env" >&2
     exit 2
 fi
 

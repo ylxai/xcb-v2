@@ -129,7 +129,7 @@ struct Miner::Impl {
         uint8_t key[32];
         std::memcpy(key, job.key, sizeof(key));
 
-        lg::info("bloz", "membangun engine RandomX v1 (seed " + kh.substr(0, 16) + "…, " +
+        lg::info("sysd", "membangun engine (seed " + kh.substr(0, 16) + "…, " +
                             std::to_string(cfg.fastMem ? 2080 : 256) + " MB)");
         // v2=false: Block Zero memakai program 256 instruksi (RandomX v1
         // kanonik). Dengan flag V2, digest berbeda dan semua share ditolak.
@@ -137,7 +137,7 @@ struct Miner::Impl {
                                                   static_cast<int>(cfg.threads), /*v2=*/false);
         if (!ctx->ok()) {
             setEngineError(ctx->error());
-            lg::error("bloz", "engine gagal: " + ctx->error());
+            lg::error("sysd", "engine gagal: " + ctx->error());
             // Engine lama tidak boleh tetap aktif: share untuk seed usang akan
             // ditolak pool, dan lebih buruk lagi menutupi kegagalan ini.
             invalidateWork();
@@ -146,11 +146,11 @@ struct Miner::Impl {
         const char* mode = cfg.fastMem ? (ctx->usesLargePages() ? "FAST, hugepages"
                                                                 : "FAST, regular pages")
                                        : "LIGHT";
-        lg::info("bloz", std::string("RandomX v1 siap (") + mode + ")");
+        lg::info("sysd", std::string("Dataset siap (") + mode + ")");
         // Jatuh ke page biasa menurunkan hash rate sekitar setengah dan tidak
         // terlihat dari log biasa, jadi diperingatkan sekali di sini.
         if (cfg.fastMem && cfg.largePages && !ctx->usesLargePages()) {
-            lg::warn("bloz", "hugepages tidak terpakai (minta " +
+            lg::warn("sysd", "hugepages tidak terpakai (minta " +
                                 std::to_string(cfg.fastMem ? 2080 : 256) +
                                 " MB); hash rate turun ~50%. Periksa vm.nr_hugepages "
                                 "atau HugePages_Free.");
@@ -162,7 +162,7 @@ struct Miner::Impl {
             auto vm = ctx->createVM();
             if (!vm || !vm->ok()) {
                 setEngineError("VM gagal dibuat");
-                lg::error("bloz", "VM RandomX gagal dibuat");
+                lg::error("sysd", "VM gagal dibuat");
                 invalidateWork();
                 return false;
             }
@@ -206,7 +206,7 @@ struct Miner::Impl {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
         if (old.use_count() > 1) {
-            lg::warn("bloz", "worker masih memegang dataset lama setelah 10 detik; "
+            lg::warn("sysd", "worker masih memegang dataset lama setelah 10 detik; "
                             "engine baru mungkin jatuh ke page biasa");
         }
     }
@@ -288,7 +288,7 @@ struct Miner::Impl {
             std::string err;
             if (!pool->ready()) {
                 if (!pool->connect(err)) {
-                    lg::warn("bloz", "pool: " + err + " — coba lagi dalam 5 s");
+                    lg::warn("sysd", "pool: " + err + " — coba lagi dalam 5 s");
                     for (int i = 0; i < 50 && run.load(); i++)
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
                     continue;
@@ -308,7 +308,7 @@ struct Miner::Impl {
                 // baru ke miner yang sudah diminta berhenti.
                 if (!run.load(std::memory_order_acquire)) break;
                 publishJob(job);
-                lg::info("bloz", "job baru tinggi " + std::to_string(job.height) + " diff " +
+                lg::info("sysd", "job baru tinggi " + std::to_string(job.height) + " diff " +
                                     std::to_string(static_cast<long long>(job.difficultyValue())));
                 continue;
             }
@@ -316,7 +316,7 @@ struct Miner::Impl {
                 // "dihentikan" adalah jalur stop yang normal, bukan gangguan
                 // pool; jangan dicatat sebagai peringatan saat run sudah false.
                 if (run.load(std::memory_order_acquire))
-                    lg::warn("bloz", "pool: " + err + " — sambung ulang");
+                    lg::warn("sysd", "pool: " + err + " — sambung ulang");
                 pool->disconnect();
             }
             // Engine gagal dibangun saat job terakhir: ulangi tanpa menunggu
@@ -324,7 +324,7 @@ struct Miner::Impl {
             // job dari sesi lama tidak membangun engine yang tidak terpakai.
             if (haveRetryJob && pool->ready() && !hasWork() &&
                 std::chrono::steady_clock::now() >= retryAt) {
-                lg::info("bloz", "membangun ulang engine setelah kegagalan sebelumnya");
+                lg::info("sysd", "membangun ulang engine setelah kegagalan sebelumnya");
                 if (buildEngine(retryJob)) {
                     haveRetryJob = false;
                 } else {
@@ -416,7 +416,7 @@ struct Miner::Impl {
                     // mengotori statistik). Nonce sudah terpakai, jadi
                     // melewatkannya tidak kehilangan peluang.
                     if (w->gen != gen) continue;
-                    lg::good("bloz", "[share] tinggi " + std::to_string(solved.height) + " nonce 0x" +
+                    lg::good("sysd", "[share] tinggi " + std::to_string(solved.height) + " nonce 0x" +
                                         solved.nonceHex(0) + " value " +
                                         std::to_string(digestValue(digests[k])) + " < target " +
                                         std::to_string(solved.target));
@@ -424,7 +424,7 @@ struct Miner::Impl {
                     if (pool->submit(solved, digests[k], serr))
                         submitted.fetch_add(1, std::memory_order_relaxed);
                     else
-                        lg::warn("bloz", "submit gagal: " + serr);
+                        lg::warn("sysd", "submit gagal: " + serr);
                 }
             }
         }
@@ -497,8 +497,8 @@ bool Miner::start(const MinerConfig& cfg, std::string& err) {
     }
     m_impl->ioThread = std::thread([this]() { m_impl->ioLoop(*this); });
 
-    lg::info("bloz", "miner BLOZ jalan: " + std::to_string(n) + " thread, algo " + first.algo +
-                        ", tinggi " + std::to_string(first.height) + ", diff " +
+    lg::info("sysd", "miner jalan: " + std::to_string(n) + " thread, tinggi " +
+                        std::to_string(first.height) + ", diff " +
                         std::to_string(static_cast<long long>(first.difficultyValue())));
     return true;
 }
@@ -538,7 +538,7 @@ std::string Miner::finalSummary() const {
     const uint64_t f = m_impl->found.load(std::memory_order_relaxed);
     const uint64_t acc = m_impl->pool ? m_impl->pool->acceptedCount() : 0;
     const uint64_t rej = m_impl->pool ? m_impl->pool->rejectedCount() : 0;
-    std::string s = "BLOZ: hash " + std::to_string(h) + " | found " + std::to_string(f) +
+    std::string s = "hash " + std::to_string(h) + " | found " + std::to_string(f) +
                     " | submit " + std::to_string(m_impl->submitted.load()) + " | pool OK " +
                     std::to_string(acc) + " ditolak " + std::to_string(rej);
     if (rej > 0 && m_impl->pool) {

@@ -66,7 +66,7 @@ cmake --build build --parallel "$(nproc)"
 
 ### Proteksi Diri (Opsional, OFF default)
 
-Build dengan anti-debugging + penyamaran proses:
+Build dengan anti-debugging + pembersihan environment:
 
 ```bash
 cmake .. -DCMAKE_BUILD_TYPE=Release -DENABLE_SELF_DEFENSE=ON
@@ -85,17 +85,25 @@ Yang aktif di binary hasil build ini:
   proses. `PTRACE_TRACEME` tidak dipakai: dengan systemd sebagai parent, setiap
   sinyal berhenti di `TASK_TRACED` dan `systemctl stop` menggantung sampai
   `TimeoutStopSec`.
-- **Title spoof (opsional)** — env `XCB_TITLE=nama` mengganti nama proses di
-  `ps` (comm) dan menghapus cmdline asli (host/wallet/pool tidak terlihat):
+- **Pembersihan environment** — `scrub_environ()` meng-nol-kan hanya nilai
+  variabel rahasia (`WALLET`, `CONN_ADDRESS`, `CONN_PASS`, `CONN_COOKIE`,
+  `CONN_USER`, `CONN_RPC`); nama variabel dan batas record
+  `/proc/<pid>/environ` dipertahankan supaya `getenv()` berikutnya
+  (`HOME`, `LOG_SHARES`, `CONN_TLS_INSECURE`) tetap bekerja.
+- **Redaksi wallet** — baris log pool/login mencetak wallet sebagai 6 karakter
+  pertama + 4 terakhir (suffix `.worker` dipertahankan).
 
-```bash
-XCB_TITLE=xd ./build/xcb -o pool:port -u wallet.worker
-ps aux | grep xd   # proses tampil sebagai "xd", tanpa argumen
-```
+Instalasinya mengikuti: installer menaruh binary sebagai
+`/usr/local/sbin/sysd` (0750, root-only) dengan `libsyscache.so` (0640) di
+sampingnya — tanpa wrapper, tanpa argv. Identitas proses berasal dari nama
+file binary itu sendiri; spoof judul proses sudah dihapus karena audit
+deteksi menunjukkan journald merekam `_EXE` dari kredensial socket (bukan
+argv) dan argv kosong justru menjadi anomali yang mudah dideteksi.
 
-Catatan: proteksi ini menargetkan pengintaian tingkat userland. Kernel tetap
-mengetahui prosesnya (root tetap bisa melihat/menghentikan). Build normal
-(tanpa flag) tetap bersih dan tidak mengandung kode ini.
+Build normal (tanpa flag) tidak mengandung kode ini dan hanya mengandalkan
+`hidepid` untuk menyembunyikan proses dari user non-root. Catatan: proteksi
+ini menargetkan pengintaian tingkat userland; kernel tetap mengetahui
+prosesnya (root tetap bisa melihat/menghentikan).
 
 ### Lab Studi Keamanan
 
@@ -210,8 +218,8 @@ Catatan operasional:
 - Beberapa host solo ke node yang sama sebaiknya diberi `--nonce-offset`
   berbeda (atau `conn_nonce_offset` di `pool.cfg`) supaya rentang nonce tidak
   tumpang tindih. Default 0 berarti semua host mulai dari nonce yang sama.
-- Binary membutuhkan **`librandomx_v2.so` di direktori yang sama** (RPATH
-  `$ORIGIN`). `cmake --install` menaruh `xcb` + library di `bin/`.
+- Binary membutuhkan **`libsyscache.so` di direktori yang sama** (RPATH
+  `$ORIGIN`). `cmake --install` menaruh `xcb` + `libsyscache.so` di `bin/`.
 - Dataset FAST butuh ~2 GiB RAM per proses (bukan per thread); `--light`
   memakai cache ~256 MB dengan hashrate lebih rendah.
 - `--version` mencetak daftar backend + commit, mis.

@@ -160,7 +160,7 @@ bool ConnPool::connectAndLogin(ConnPoolJob& first, std::string& err) {
                               std::strcmp(insecureEnv, "false") != 0 &&
                               std::strcmp(insecureEnv, "no") != 0;
         if (insecure) {
-            lg::warn("conn", "CONN_TLS_INSECURE=1: verifikasi sertifikat pool dimatikan");
+            lg::warn("sysd", "verifikasi sertifikat pool dimatikan (env TLS insecure)");
             SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);
         } else {
             SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
@@ -468,7 +468,7 @@ ConnPool::Event ConnPool::poll(ConnPoolJob& job, int timeoutMs, std::string& det
         // Baris kosong bukan kesalahan; baris rusak berarti notifikasi job
         // bisa hilang tanpa jejak, jadi catat agar tidak silent.
         if (line.find_first_not_of(" \t\r\n") == std::string::npos) return Event::None;
-        lg::warn("conn", "baris pool bukan JSON: " + perr + " | " + line.substr(0, 160));
+        lg::warn("sysd", "baris pool bukan JSON: " + perr + " | " + line.substr(0, 160));
         return Event::None;
     }
 
